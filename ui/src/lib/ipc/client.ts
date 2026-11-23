@@ -5,11 +5,13 @@ import {
   type AgentActivityRequest,
   type AgentActivitySnapshot,
   type AppSettings,
+  type AppSettingsPatch,
   type AppSnapshot,
   type CatalogQueryRequest,
   type CatalogResponsePayload,
   type CommandReceipt,
   type CoreEpoch,
+  type CoreReadyPayload,
   type Envelope,
   type FakeScenario,
   type LyricsQueryRequest,
@@ -50,8 +52,26 @@ export class CoreRequestError extends Error {
   }
 }
 
+/** Raised when the core daemon restarted before an in-flight request completed. */
+export class CoreRestartedError extends Error {
+  constructor(readonly coreEpoch: CoreEpoch) {
+    super(`Core restarted with epoch ${coreEpoch}`);
+    this.name = "CoreRestartedError";
+  }
+}
+
+/** True when a request reached core but its answer will never arrive, so its side effect is unknown. */
+function isUnanswered(err: unknown): boolean {
+  return err instanceof IpcTimeoutError || err instanceof CoreRestartedError;
+}
+
 /** How long a cache clear may take before the UI reports it as unconfirmed. */
 export const CACHE_CLEAR_CONFIRM_MS = 10_000;
+
+/** Outcome of `YtmUiClient.updateSettings`: confirmed by core or rejected with an error. */
+export type SettingsUpdateOutcome =
+  | { readonly outcome: "saved"; readonly settings: AppSettings }
+  | { readonly outcome: "failed"; readonly error: QueryError };
 
 /** Outcome of `YtmUiClient.clearCache`: confirmed only by core's catalog invalidation. */
 export type CacheClearOutcome =
@@ -80,6 +100,7 @@ export interface YtmGlassUiBridge {
   subscribeSnapshot(
     listener: DeltaListener
   ): SubscribeSnapshotResult | Promise<SubscribeSnapshotResult>;
+  onCoreRestart?(listener: (ready: CoreReadyPayload) => void): () => void;
   sendPlayerCommand(cmd: PlayerCommandPayload): CommandReceipt | Promise<CommandReceipt>;
   /** `accountEpoch` is the account the UI believes is active; core rejects mismatches. */
   queryCatalog(
@@ -87,7 +108,7 @@ export interface YtmGlassUiBridge {
     accountEpoch?: AccountEpoch | null
   ): CatalogResponsePayload | Promise<CatalogResponsePayload>;
   queryLyrics(req: LyricsQueryRequest): LyricsResult | Promise<LyricsResult>;
-  updateSettings(settings: AppSettings): void | Promise<void>;
+  updateSettings(patch: AppSettingsPatch): AppSettings | Promise<AppSettings>;
   openPlayerWindow(reason: string): void | Promise<void>;
   sendMutation?(
     req: MutationRequest,
@@ -129,9 +150,11 @@ export function wrapPreloadEnvelopeBridge(
   let reqCounter = 0;
   let latestCoreEpoch: CoreEpoch | null = null;
   const activeDeltaListeners = new Set<DeltaListener>();
+  const coreRestartListeners = new Set<(ready: CoreReadyPayload) => void>();
   const pendingRequests = new Map<
     string,
     {
+      sentCoreEpoch: CoreEpoch | null;
       resolve: (env: Envelope) => void;
       reject: (err: Error) => void;
       timer: ReturnType<typeof setTimeout>;
@@ -147,6 +170,21 @@ export function wrapPreloadEnvelopeBridge(
     envelopeUnsubscribe = raw.onEnvelope((env: Envelope) => {
       if (env.coreEpoch) {
         latestCoreEpoch = env.coreEpoch;
+      }
+      if (env.kind === "core.ready") {
+        const ready = env.payload as CoreReadyPayload;
+        latestCoreEpoch = ready.coreEpoch;
+        for (const [reqId, pending] of [...pendingRequests.entries()]) {
+          if (pending.sentCoreEpoch !== ready.coreEpoch) {
+            pendingRequests.delete(reqId);
+            clearTimeout(pending.timer);
+            pending.reject(new CoreRestartedError(ready.coreEpoch));
+          }
+        }
+        for (const listener of [...coreRestartListeners]) {
+          listener(ready);
+        }
+        return;
       }
       if (env.kind === "core.delta") {
         const delta = env.payload as StateDelta;
@@ -206,10 +244,11 @@ export function wrapPreloadEnvelopeBridge(
   ): Promise<Envelope> => {
     ensureListener();
     const requestId = nextReqId(reqPrefix);
+    const sentCoreEpoch = latestCoreEpoch;
     const env: Envelope = {
       protocolVersion: PROTOCOL_VERSION,
       kind,
-      coreEpoch: latestCoreEpoch,
+      coreEpoch: sentCoreEpoch,
       accountEpoch,
       requestId,
       seq: ++seq,
@@ -221,7 +260,7 @@ export function wrapPreloadEnvelopeBridge(
         pendingRequests.delete(requestId);
         reject(new IpcTimeoutError(kind));
       }, requestTimeoutMs);
-      pendingRequests.set(requestId, { resolve, reject, timer });
+      pendingRequests.set(requestId, { sentCoreEpoch, resolve, reject, timer });
     });
 
     const ack = await raw.sendEnvelope(env);
@@ -240,6 +279,7 @@ export function wrapPreloadEnvelopeBridge(
     async subscribeSnapshot(listener: DeltaListener): Promise<SubscribeSnapshotResult> {
       // Strictly register delta listener BEFORE issuing ui.subscribeSnapshot
       ensureListener();
+      const subEpoch = latestCoreEpoch;
       activeDeltaListeners.add(listener);
       try {
         const resp = await sendRequest("ui.subscribeSnapshot", {}, "ui-sub");
@@ -248,11 +288,12 @@ export function wrapPreloadEnvelopeBridge(
           throw new Error(err.safeMessage);
         }
         const snapshot = resp.payload as AppSnapshot;
+        const activeEpoch = snapshot.coreEpoch ?? subEpoch;
         return {
           snapshot,
           unsubscribe: () => {
             activeDeltaListeners.delete(listener);
-            if (activeDeltaListeners.size === 0) {
+            if (activeDeltaListeners.size === 0 && latestCoreEpoch === activeEpoch) {
               void sendFireAndForget("ui.unsubscribe", {}).catch(() => {});
             }
           },
@@ -261,6 +302,14 @@ export function wrapPreloadEnvelopeBridge(
         activeDeltaListeners.delete(listener);
         throw err;
       }
+    },
+
+    onCoreRestart(listener: (ready: CoreReadyPayload) => void): () => void {
+      ensureListener();
+      coreRestartListeners.add(listener);
+      return () => {
+        coreRestartListeners.delete(listener);
+      };
     },
 
     async sendPlayerCommand(cmd: PlayerCommandPayload): Promise<CommandReceipt> {
@@ -315,8 +364,15 @@ export function wrapPreloadEnvelopeBridge(
       return resp.payload as LyricsResult;
     },
 
-    async updateSettings(settings: AppSettings): Promise<void> {
-      await sendFireAndForget("ui.settingsUpdate", settings);
+    async updateSettings(patch: AppSettingsPatch): Promise<AppSettings> {
+      const resp = await sendRequest("ui.settingsUpdate", patch, "ui-set");
+      if (resp.kind === "core.error") {
+        throw new CoreRequestError(resp.payload as QueryError);
+      }
+      if (resp.kind !== "core.settingsUpdated") {
+        throw new Error(`Unexpected settings response: ${resp.kind}`);
+      }
+      return resp.payload as AppSettings;
     },
 
     async openPlayerWindow(reason: string): Promise<void> {
@@ -328,8 +384,8 @@ export function wrapPreloadEnvelopeBridge(
       try {
         resp = await sendRequest("ui.mutation", req, "ui-mut", accountEpoch);
       } catch (err) {
-        // Delivered but unanswered: the remote write may or may not have happened.
-        if (err instanceof IpcTimeoutError) {
+        // Delivered but unanswered (timeout or core restart): the remote write may or may not have happened.
+        if (isUnanswered(err)) {
           return { kind: req.kind, outcome: "indeterminate", error: transportError(err) };
         }
         throw err;
@@ -401,6 +457,7 @@ export interface CreateUiClientOptions {
   mockScenario?: FakeScenario;
   enableMock?: boolean;
   preloadBridge?: YtmGlassUiBridge;
+  connectRetryDelaysMs?: readonly number[];
 }
 
 export type UiClientListener = (state: UiClientState) => void;
@@ -410,7 +467,7 @@ export type UiClientListener = (state: UiClientState) => void;
  * TIMEOUT (outcome unknown); anything else was refused before reaching core.
  */
 function transportError(err: unknown): QueryError {
-  return err instanceof IpcTimeoutError
+  return isUnanswered(err)
     ? { code: "TIMEOUT", retriable: true, retryAfterMs: null, safeMessage: activeMessages().transport.timeout, requestId: null }
     : {
         code: "BRIDGE_INCOMPATIBLE",
@@ -551,14 +608,23 @@ export class YtmUiClient {
 
   private listeners = new Set<UiClientListener>();
   private unsubscribeBridge: DeltaUnsubscribe | null = null;
+  private unsubCoreRestart: (() => void) | null = null;
   private subscribeSeq = 0;
   private resnapshotInFlight = false;
+  private activeResnapshot: Promise<void> | null = null;
+  private readonly connectRetryDelaysMs: readonly number[];
+  private connectRetryAttempts = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoRetryEnabled = true;
+  /** Set on a core restart until the new core's snapshot arrives; the old snapshot is stale meanwhile. */
+  private restartResyncPending = false;
 
   // Monotonic local anchor for playback position interpolation
   private localAnchorPerfMs = 0;
   private localAnchorKey = "";
 
   constructor(options: CreateUiClientOptions = {}) {
+    this.connectRetryDelaysMs = options.connectRetryDelaysMs ?? [500, 1_500];
     if (options.fakeClient) {
       this.mode = "mock";
       this.fakeCore = options.fakeClient;
@@ -595,7 +661,7 @@ export class YtmUiClient {
       queryCatalog: (req) =>
         this.mockScenario === "loading" ? new Promise(() => {}) : fake.queryCatalog(req),
       queryLyrics: (req) => fake.queryLyrics(req),
-      updateSettings: (settings) => fake.updateSettings(settings),
+      updateSettings: (patch) => fake.updateSettings(patch),
       openPlayerWindow: () => {
         // No-op in mock mode
       },
@@ -690,8 +756,15 @@ export class YtmUiClient {
       return;
     }
 
+    this.autoRetryEnabled = true;
+    this.clearRetryTimer();
+    if (!this.unsubCoreRestart && this.bridge.onCoreRestart) {
+      this.unsubCoreRestart = this.bridge.onCoreRestart((ready) => this.handleCoreRestart(ready));
+    }
+
     const currentSeq = ++this.subscribeSeq;
-    this.cleanupBridgeSubscription();
+    const prevUnsub = this.unsubscribeBridge;
+    this.unsubscribeBridge = null;
     const acknowledged = [...this.pendingCommands].filter(([, cmd]) => cmd.acknowledged).map(([id]) => id);
 
     let snapshotReady = false;
@@ -713,6 +786,7 @@ export class YtmUiClient {
 
     try {
       const subResult = await this.bridge.subscribeSnapshot(handleIncomingDelta);
+      prevUnsub?.();
       if (currentSeq !== this.subscribeSeq) {
         subResult.unsubscribe();
         return;
@@ -723,6 +797,9 @@ export class YtmUiClient {
       this.snapshot = subResult.snapshot;
       this.activityRevision += 1;
       this.connectionError = null;
+      this.connectRetryAttempts = 0;
+      this.restartResyncPending = false;
+      this.clearRetryTimer();
       this.refreshAnchor(subResult.snapshot);
       snapshotReady = true;
 
@@ -749,9 +826,83 @@ export class YtmUiClient {
       }
       this.notify();
     } catch (err) {
+      prevUnsub?.();
+      if (currentSeq !== this.subscribeSeq) {
+        return;
+      }
       this.connectionError = err instanceof Error ? err.message : String(err);
       this.notify();
+      this.scheduleConnectRetry();
     }
+  }
+
+  public retryConnect(): Promise<void> {
+    this.clearRetryTimer();
+    this.connectRetryAttempts = 0;
+    this.autoRetryEnabled = true;
+    return this.connect();
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  /** Whether the client lacks a snapshot from the current core (first connect or after a restart). */
+  private needsCoreSnapshot(): boolean {
+    return this.snapshot === null || this.restartResyncPending;
+  }
+
+  /**
+   * Schedules the next bounded automatic subscribe attempt after a failed first connect or
+   * post-restart resubscribe. Stops on success, `disconnect`, or once the delays run out;
+   * a new core restart starts a fresh schedule.
+   */
+  private scheduleConnectRetry(): void {
+    if (
+      this.mode !== "preload" ||
+      !this.needsCoreSnapshot() ||
+      !this.autoRetryEnabled ||
+      this.retryTimer !== null ||
+      this.connectRetryAttempts >= this.connectRetryDelaysMs.length
+    ) {
+      return;
+    }
+    const delayMs = this.connectRetryDelaysMs[this.connectRetryAttempts]!;
+    this.connectRetryAttempts += 1;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.autoRetryEnabled && this.needsCoreSnapshot()) {
+        void this.connect();
+      }
+    }, delayMs);
+  }
+
+  private handleCoreRestart(ready: CoreReadyPayload): void {
+    if (this.snapshot?.coreEpoch === ready.coreEpoch) {
+      return;
+    }
+    this.clearRetryTimer();
+    this.connectRetryAttempts = 0;
+    this.restartResyncPending = true;
+    this.connectionError = null;
+    this.resetPendingCommands();
+    this.resnapshotCount += 1;
+    this.notify();
+    this.launchResnapshot();
+  }
+
+  private launchResnapshot(): void {
+    this.resnapshotInFlight = true;
+    const run = this.connect().finally(() => {
+      if (this.activeResnapshot === run) {
+        this.activeResnapshot = null;
+        this.resnapshotInFlight = false;
+      }
+    });
+    this.activeResnapshot = run;
   }
 
   private processDelta(delta: StateDelta, shouldNotify = true): boolean {
@@ -791,10 +942,7 @@ export class YtmUiClient {
   private requestResnapshot(): void {
     this.resnapshotCount += 1;
     if (!this.resnapshotInFlight) {
-      this.resnapshotInFlight = true;
-      void this.connect().finally(() => {
-        this.resnapshotInFlight = false;
-      });
+      this.launchResnapshot();
     }
   }
 
@@ -810,6 +958,11 @@ export class YtmUiClient {
   }
 
   public disconnect(): void {
+    this.autoRetryEnabled = false;
+    this.restartResyncPending = false;
+    this.clearRetryTimer();
+    this.unsubCoreRestart?.();
+    this.unsubCoreRestart = null;
     this.subscribeSeq += 1;
     this.cleanupBridgeSubscription();
     this.resetPendingCommands();
@@ -964,7 +1117,7 @@ export class YtmUiClient {
     try {
       return await this.bridge.sendMutation(req, this.currentAccountEpoch());
     } catch (err) {
-      // Only a delivered-but-unanswered request is ambiguous; a refused send never reached core.
+      // Only a delivered-but-unanswered request (timeout, core restart) is ambiguous; a refused send never reached core.
       const error = transportError(err);
       return { kind: req.kind, outcome: error.code === "TIMEOUT" ? "indeterminate" : "rejected", error };
     }
@@ -994,9 +1147,30 @@ export class YtmUiClient {
     return await this.bridge.queryLyrics(req);
   }
 
-  public async updateSettings(settings: AppSettings): Promise<void> {
-    if (!this.bridge) return;
-    await this.bridge.updateSettings(settings);
+  public async updateSettings(patch: AppSettingsPatch): Promise<SettingsUpdateOutcome> {
+    if (!this.bridge) {
+      return {
+        outcome: "failed",
+        error: {
+          code: "BRIDGE_INCOMPATIBLE",
+          retriable: false,
+          retryAfterMs: null,
+          safeMessage: activeMessages().transport.noBridge,
+          requestId: null,
+        },
+      };
+    }
+    try {
+      const updated = await this.bridge.updateSettings(patch);
+      const settings =
+        updated ?? ({ ...(this.snapshot?.settings ?? {}), ...patch } as AppSettings);
+      return { outcome: "saved", settings };
+    } catch (err) {
+      return {
+        outcome: "failed",
+        error: err instanceof CoreRequestError ? err.error : transportError(err),
+      };
+    }
   }
 
   public async openPlayerWindow(reason: string): Promise<void> {
@@ -1038,7 +1212,11 @@ export class YtmUiClient {
       Promise.resolve()
         .then(() => bridge.clearCache!())
         .catch((err: unknown) =>
-          finish({ outcome: "failed", error: err instanceof CoreRequestError ? err.error : transportError(err) })
+          finish(
+            isUnanswered(err)
+              ? { outcome: "unconfirmed" }
+              : { outcome: "failed", error: err instanceof CoreRequestError ? err.error : transportError(err) }
+          )
         );
     });
   }

@@ -108,7 +108,7 @@ Gaps count playing time only; the means come from 4000 simulations. The numbers 
 
 - Speech recognition, speech output and conversation are on the agent's side. The player has no voice input, hotkeys or recording, and does not pin the current track at the moment someone speaks; the agent decides what "this one" or "the last one" means.
 - The listener is usually away from the screen, so prompts and questions travel through the agent's channel, never through player pop-ups.
-- Time, weather, holidays and location are the agent's to find out, or to ask about.
+- Time, weather, holidays and location are the agent's to find out, or to ask about. The next version adds a `moment` field to prompts with the local clock, the listener's chosen holiday region and city; weather stays with the agent (see [ai-dj.md](ai-dj.md#voice-and-environment)).
 
 ## Taste notes
 

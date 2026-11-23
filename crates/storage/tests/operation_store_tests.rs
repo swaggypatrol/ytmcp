@@ -9,8 +9,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use ytm_control_api::{
     AccountHandoffGoal, AccountHandoffState, ControlError, ErrorCode, ItemPhase, ItemResult,
-    OperationPhase, OperationReceipt, OperationResource, Preconditions, RetryDisposition,
-    Verification, VerificationLevel, WriteAction, WriteInput,
+    OperationPhase, OperationReceipt, OperationResource, Preconditions, RemovedItem, ResumeAction,
+    RetryDisposition, Verification, VerificationLevel, WriteAction, WriteInput,
 };
 use ytm_core::control::journal::{Claim, OperationKey, OperationStore};
 use ytm_core::ports::{MockClock, StoragePort};
@@ -206,6 +206,14 @@ fn item(input_index: u32, phase: ItemPhase, id: Option<&str>) -> ItemResult {
     }
 }
 
+fn removed_entry() -> RemovedItem {
+    RemovedItem::LocalHistoryEntry {
+        entry_id: "history-entry".into(),
+        video_id: VideoId::new("video-a").unwrap(),
+        recorded_at_ms: 5,
+    }
+}
+
 fn add_action() -> WriteAction {
     WriteAction::AddPlaylistEntries {
         playlist_id: PlaylistId::new("synthetic-playlist").unwrap(),
@@ -269,8 +277,42 @@ async fn recovery_fixture_child() {
 
     let unsent_key = key("unsent");
     let (input, initial) = input_and_receipt(&unsent_key, add_action());
+    // A claim already carries its planned items and what a removal would take away.
+    let initial = OperationReceipt {
+        item_results: (0..3)
+            .map(|index| item(index, ItemPhase::NotStarted, None))
+            .collect(),
+        removed: vec![removed_entry()],
+        ..initial
+    };
     storage
         .claim(unsent_key, input, [3; 32], initial, 15)
+        .await
+        .unwrap();
+
+    let cancel_unsent_key = key("cancel-unsent");
+    let (input, initial) = input_and_receipt(
+        &cancel_unsent_key,
+        WriteAction::Cancel {
+            target_operation_id: "batch".into(),
+        },
+    );
+    storage
+        .claim(cancel_unsent_key, input, [6; 32], initial, 15)
+        .await
+        .unwrap();
+
+    let resume_key = key("resume-running");
+    let (input, initial) = input_and_receipt(
+        &resume_key,
+        WriteAction::ResumeOperation {
+            target_operation_id: "batch".into(),
+            expected_operation_revision: 2,
+            action: ResumeAction::Reconcile,
+        },
+    );
+    storage
+        .claim(resume_key, input, [8; 32], initial, 15)
         .await
         .unwrap();
 
@@ -411,8 +453,35 @@ async fn process_death_recovers_maybe_sent_to_unknown_and_preserves_prepared_req
 
     let unsent_key = key("unsent");
     let unsent = storage.get(unsent_key.clone()).await.unwrap().unwrap();
-    assert_eq!(unsent.phase, OperationPhase::Accepted);
-    assert!(unsent.scheduling_stopped && !unsent.settled);
+    assert_eq!(unsent.phase, OperationPhase::Cancelled);
+    assert!(unsent.scheduling_stopped && unsent.settled);
+    assert_eq!(unsent.retry_disposition, RetryDisposition::NewPlanRequired);
+    assert_eq!(
+        unsent.error.as_ref().map(|e| e.code),
+        Some(ErrorCode::Unavailable)
+    );
+    // Settled the way a live cancellation settles: nothing started and nothing to restore.
+    assert_eq!(
+        unsent.item_results,
+        (0..3)
+            .map(|index| item(index, ItemPhase::Cancelled, None))
+            .collect::<Vec<_>>()
+    );
+    assert!(unsent.removed.is_empty());
+    let (unsent_input, unsent_initial) = input_and_receipt(&unsent_key, add_action());
+    assert_eq!(
+        storage
+            .claim(
+                unsent_key.clone(),
+                unsent_input,
+                [3; 32],
+                unsent_initial,
+                23
+            )
+            .await
+            .unwrap(),
+        Claim::Existing(unsent.clone())
+    );
     assert_eq!(
         storage
             .load_request(unsent_key.clone())
@@ -422,8 +491,50 @@ async fn process_death_recovers_maybe_sent_to_unknown_and_preserves_prepared_req
             .action,
         add_action()
     );
+    // A new operation ID can proceed after the unsent one settled as Cancelled.
+    let retry_key = key("unsent-retry-new-id");
+    let (retry_input, retry_initial) = input_and_receipt(&retry_key, add_action());
+    assert!(matches!(
+        storage
+            .claim(retry_key, retry_input, [7; 32], retry_initial, 24)
+            .await
+            .unwrap(),
+        Claim::New(_)
+    ));
+
+    // Management actions ran only in the worker that died; they end settled and point at the
+    // target's receipt instead of claiming that nothing was sent.
+    let cancel_unsent_key = key("cancel-unsent");
+    let cancel_unsent = storage
+        .get(cancel_unsent_key.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancel_unsent.phase, OperationPhase::Cancelled);
+    assert!(cancel_unsent.scheduling_stopped && cancel_unsent.settled);
+    assert_eq!(
+        cancel_unsent.retry_disposition,
+        RetryDisposition::NotRetryable
+    );
+    let message = &cancel_unsent.error.as_ref().unwrap().message;
+    assert!(message.contains("target operation"), "{message}");
+    assert!(!message.contains("was sent"), "{message}");
+    let resume_key = key("resume-running");
+    let resume = storage.get(resume_key.clone()).await.unwrap().unwrap();
+    assert_eq!(resume.phase, OperationPhase::Cancelled);
+    assert!(resume.scheduling_stopped && resume.settled);
+    assert_eq!(resume.retry_disposition, RetryDisposition::NewPlanRequired);
+    let message = &resume.error.as_ref().unwrap().message;
+    assert!(message.contains("target operation"), "{message}");
+    assert!(!message.contains("was sent"), "{message}");
+
     storage.recover(30).await.unwrap();
     assert_eq!(storage.get(unsent_key).await.unwrap(), Some(unsent));
+    assert_eq!(
+        storage.get(cancel_unsent_key).await.unwrap(),
+        Some(cancel_unsent)
+    );
+    assert_eq!(storage.get(resume_key).await.unwrap(), Some(resume));
     assert_eq!(storage.get(delete_key).await.unwrap(), Some(delete));
     assert_eq!(
         storage.get(key("create-remote")).await.unwrap(),

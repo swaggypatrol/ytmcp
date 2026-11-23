@@ -84,7 +84,7 @@ function ensureValidators(): {
       "ui.lyricsQuery": compileRef("#/definitions/LyricsQueryRequest"),
       "ui.mutation": compileRef("#/definitions/MutationRequest"),
       "ui.agentActivity": compileRef("#/definitions/AgentActivityRequest"),
-      "ui.settingsUpdate": compileRef("#/definitions/AppSettings"),
+      "ui.settingsUpdate": compileRef("#/definitions/AppSettingsPatch"),
       "ui.openPlayerWindow": compileRef("#/definitions/OpenPlayerWindowPayload"),
       "core.snapshot": compileRef("#/definitions/AppSnapshot"),
       "core.delta": compileRef("#/definitions/StateDelta"),
@@ -93,6 +93,7 @@ function ensureValidators(): {
       "core.lyricsResponse": compileRef("#/definitions/LyricsResult"),
       "core.mutationResponse": compileRef("#/definitions/MutationResult"),
       "core.agentActivity": compileRef("#/definitions/AgentActivitySnapshot"),
+      "core.settingsUpdated": compileRef("#/definitions/AppSettings"),
       "core.error": compileRef("#/definitions/QueryError"),
       "bridge.error": compileRef("#/definitions/QueryError"),
       "host.hello": compileRef("#/definitions/HostHelloPayload"),
@@ -183,6 +184,7 @@ export function isKindAllowedForRole(kind: MessageKind, role: SenderRole): boole
         kind === "core.lyricsResponse" ||
         kind === "core.mutationResponse" ||
         kind === "core.agentActivity" ||
+        kind === "core.settingsUpdated" ||
         kind === "core.error" ||
         kind === "core.pong" ||
         kind === "core.outputGateControl" ||
@@ -261,6 +263,18 @@ export function validatePayloadByKind(
         ok: false,
         code: "INVALID_PAYLOAD",
         message: `limit ${q.limit} outside [1, ${MAX_PAGE_SIZE}]`,
+      };
+    }
+  } else if (kind === "ui.settingsUpdate") {
+    const patch = payload as { uiScalePercent?: number | null };
+    if (
+      typeof patch.uiScalePercent === "number" &&
+      (patch.uiScalePercent < 75 || patch.uiScalePercent > 150)
+    ) {
+      return {
+        ok: false,
+        code: "INVALID_PAYLOAD",
+        message: `uiScalePercent ${patch.uiScalePercent} outside [75, 150]`,
       };
     }
   }

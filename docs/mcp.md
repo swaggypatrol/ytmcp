@@ -68,7 +68,7 @@ Grants follow what a mistake would cost, not whether a tool reads or writes.
 2. The daemon checks the token, the expiry and that the registered account scope matches the player's current account; any mismatch is refused.
 3. Reads need a valid registration; writes also need the matching grant.
 4. The adapter waits up to 22 seconds for a reply; the daemon gives a read at most 20 seconds. A reply is at most 64 KiB, beyond which the tool asks for a smaller page. Pages hold at most 100 items, and a write takes at most 50 items.
-5. The structured content of each result is the full JSON reply. The text content is one plain sentence, except for `ytm_wait_dj_prompt`, whose text carries the whole prompt so clients that show only text still get it.
+5. The structured content of each result is the full JSON reply. The text content serves clients that pass only text to the model: for a read it is a one-line summary followed by the same JSON reply on the next line (video IDs, context token, `nextCursor` and all), so an agent can page and act from the text alone; if that JSON is over 48 KB, only the summary is kept, with a note to ask for a smaller page. For a write or a refusal it is one plain sentence, and for `ytm_wait_dj_prompt` it is the whole prompt.
 
 ## Writes
 

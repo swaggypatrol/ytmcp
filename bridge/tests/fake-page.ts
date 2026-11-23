@@ -33,12 +33,21 @@ interface Renderer {
 export function createTransport() {
   const sent: Envelope[] = [];
   const listeners = new Set<(env: Envelope) => void>();
+  interface EnvelopeWaiter {
+    predicate: (env: Envelope) => boolean;
+    resolve: (env: Envelope) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }
+  const waiters = new Set<EnvelopeWaiter>();
   const transport: BridgeTransport = {
     sendEnvelope(envelope) {
       const check = validateEnvelopeObject(envelope);
       if (!check.ok) throw new Error(`invalid envelope ${envelope.kind}: ${check.message}`);
       if (!isKindAllowedForRole(envelope.kind, "playerBridge")) throw new Error(`role forbids ${envelope.kind}`);
       sent.push(envelope);
+      for (const waiter of [...waiters]) {
+        if (waiter.predicate(envelope)) waiter.resolve(envelope);
+      }
       return { ok: true };
     },
     onEnvelope(listener) {
@@ -47,6 +56,52 @@ export function createTransport() {
     },
   };
   let seq = 0;
+  const waitFor = (
+    predicate: (env: Envelope) => boolean,
+    label = "envelope",
+    fromIndex = 0,
+    timeoutMs = 2_000
+  ): Promise<Envelope> => {
+    const existing = sent.slice(fromIndex).find(predicate);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const waiter: EnvelopeWaiter = {
+        predicate,
+        resolve: (env) => {
+          clearTimeout(waiter.timer);
+          waiters.delete(waiter);
+          resolve(env);
+        },
+        timer: setTimeout(() => {
+          waiters.delete(waiter);
+          reject(new Error(`timed out waiting for ${label} after ${timeoutMs}ms (saw ${sent.length} envelopes)`));
+        }, timeoutMs),
+      };
+      waiters.add(waiter);
+    });
+  };
+  const waitForReady = (
+    requiredCaps: string[] = [],
+    fromIndex = 0,
+    timeoutMs = 2_000
+  ) =>
+    waitFor(
+      (env) => {
+        if (env.kind !== "bridge.ready") return false;
+        const caps = (env.payload as { capabilities?: Record<string, string> })?.capabilities ?? {};
+        return requiredCaps.every((cap) => caps[cap] === "supported");
+      },
+      `bridge.ready(${requiredCaps.join(",")})`,
+      fromIndex,
+      timeoutMs
+    );
+  const waitForAck = (commandId: string, fromIndex = 0, timeoutMs = 2_000) =>
+    waitFor(
+      (env) => env.kind === "bridge.commandAck" && (env.payload as { commandId?: string })?.commandId === commandId,
+      `bridge.commandAck(${commandId})`,
+      fromIndex,
+      timeoutMs
+    );
   const command = (op: string, args: Record<string, unknown> | null = null, commandId = `cmd-${op}-${seq + 1}`) => {
     seq += 1;
     for (const l of [...listeners]) {
@@ -62,7 +117,7 @@ export function createTransport() {
   };
   const of = <T>(kind: string) => sent.filter((e) => e.kind === kind).map((e) => e.payload as T);
   const last = <T>(kind: string) => of<T>(kind).at(-1);
-  return { transport, sent, command, snapshotRequest, of, last, listenerCount: () => listeners.size };
+  return { transport, sent, command, snapshotRequest, of, last, listenerCount: () => listeners.size, waitFor, waitForReady, waitForAck };
 }
 
 export function createFakePage(options: {

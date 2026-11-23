@@ -1,6 +1,6 @@
 use crate::domain::{
-    AgentActivityRequest, AgentActivitySnapshot, AppSettings, AppSnapshot, AssetResolvedPayload,
-    BridgeCommandAckPayload, BridgeHealthPayload, BridgeLifecyclePayload,
+    AgentActivityRequest, AgentActivitySnapshot, AppSettings, AppSettingsPatch, AppSnapshot,
+    AssetResolvedPayload, BridgeCommandAckPayload, BridgeHealthPayload, BridgeLifecyclePayload,
     BridgePlaybackObservedPayload, BridgeReadyPayload, CatalogQueryRequest, CatalogResponsePayload,
     CommandReceipt, CoreReadyPayload, HostHelloPayload, HostWindowVisibilityPayload,
     LyricsQueryRequest, LyricsResult, MutationRequest, MutationResult, NetworkState,
@@ -63,6 +63,8 @@ pub enum MessageKind {
     CoreMutationResponse,
     #[serde(rename = "core.agentActivity")]
     CoreAgentActivity,
+    #[serde(rename = "core.settingsUpdated")]
+    CoreSettingsUpdated,
     #[serde(rename = "core.error")]
     CoreError,
     #[serde(rename = "core.pong")]
@@ -173,6 +175,7 @@ impl MessageKind {
                     | Self::CoreLyricsResponse
                     | Self::CoreMutationResponse
                     | Self::CoreAgentActivity
+                    | Self::CoreSettingsUpdated
                     | Self::CoreError
                     | Self::CorePong
                     | Self::CoreOutputGateControl
@@ -379,6 +382,18 @@ pub fn validate_typed_payload(env: &Envelope) -> Result<(), CodecError> {
                 serde_json::from_value(env.payload.clone()).map_err(map_err)?;
         }
         MessageKind::UiSettingsUpdate => {
+            let patch: AppSettingsPatch =
+                serde_json::from_value(env.payload.clone()).map_err(map_err)?;
+            if let Some(scale) = patch.ui_scale_percent
+                && !(75..=150).contains(&scale)
+            {
+                return Err(CodecError::InvalidPayload {
+                    kind,
+                    reason: format!("uiScalePercent {scale} outside [75, 150]"),
+                });
+            }
+        }
+        MessageKind::CoreSettingsUpdated => {
             let _: AppSettings = serde_json::from_value(env.payload.clone()).map_err(map_err)?;
         }
         MessageKind::UiOpenPlayerWindow => {
@@ -555,6 +570,7 @@ pub struct ProtocolSchemaRoot {
     pub agent_activity_request: AgentActivityRequest,
     pub agent_activity_snapshot: AgentActivitySnapshot,
     pub app_settings: AppSettings,
+    pub app_settings_patch: AppSettingsPatch,
     pub host_hello: HostHelloPayload,
     pub core_ready: CoreReadyPayload,
     pub host_window_visibility: HostWindowVisibilityPayload,

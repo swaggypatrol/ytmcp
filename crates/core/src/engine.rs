@@ -18,10 +18,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use ytm_protocol::{
-    AccountEpoch, AccountScope, AppSettings, AppSnapshot, AssetId, AssetResolvedPayload, AuthState,
-    AuthStatusInfo, BridgeCommandAckPayload, BridgeEpoch, BridgeHealthPayload,
-    BridgeLifecyclePayload, BridgePlaybackObservedPayload, BridgeReadyPayload, CapabilitySet,
-    CapabilitySupport, CatalogQueryRequest, CatalogResponsePayload, CommandId,
+    AccountEpoch, AccountScope, AppSettings, AppSettingsPatch, AppSnapshot, AssetId,
+    AssetResolvedPayload, AuthState, AuthStatusInfo, BridgeCommandAckPayload, BridgeEpoch,
+    BridgeHealthPayload, BridgeLifecyclePayload, BridgePlaybackObservedPayload, BridgeReadyPayload,
+    CapabilitySet, CapabilitySupport, CatalogQueryRequest, CatalogResponsePayload, CommandId,
     CommandLifecycleStatus, CommandReceipt, CoreEpoch, CredentialRevision, EnqueuePosition,
     HostHealth, HostHelloPayload, HostWindowVisibilityPayload, LyricsKind, LyricsQueryRequest,
     LyricsResult, MAX_COMMAND_QUEUE, MutationRequest, MutationResult, NetworkState,
@@ -654,15 +654,22 @@ impl CoreEngine {
         rx.await.map_err(|_| CoreError::EngineStopped)
     }
 
-    /// Persists settings, then applies them (publishing `settingsChanged`). Updates are
-    /// serialized so disk and memory end in the same order; a save failure is returned and
-    /// leaves the applied settings unchanged.
-    pub async fn update_settings(&self, settings: AppSettings) -> Result<AppSettings, QueryError> {
+    /// Reads the latest settings, merges a UI field patch, persists, and publishes under the
+    /// same `settings_lock` used by `patch_control_settings` so concurrent MCP/UI edits on
+    /// different fields never overwrite each other. Disk and memory end in the same order; a
+    /// save failure is returned and leaves the applied settings unchanged. An empty patch
+    /// changes nothing and only returns the current settings.
+    pub async fn patch_settings(&self, patch: AppSettingsPatch) -> Result<AppSettings, QueryError> {
         let _serialized = self.settings_lock.lock().await;
-        if let Some(storage) = &self.deps.storage {
-            storage.save_settings(settings.clone()).await?;
+        let current = self.snapshot().await.map_err(QueryError::from)?.settings;
+        if patch.is_empty() {
+            return Ok(current);
         }
-        self.apply_settings(settings).await
+        let next = patch.apply(current);
+        if let Some(storage) = &self.deps.storage {
+            storage.save_settings(next.clone()).await?;
+        }
+        self.apply_settings(next).await
     }
 
     pub(crate) async fn patch_control_settings(
@@ -1206,6 +1213,7 @@ struct CoreActor {
     /// The saved last track with the account scope it was recorded under.
     restore_candidate: Option<(AccountScope, crate::ports::LastPlayed)>,
     restore_attempted: bool,
+    launch_autoplay_handled: bool,
     /// The active bridge epoch has reported playback from a healthy page at least once, so an
     /// empty page is a fact.
     bridge_playback_seen: bool,
@@ -1320,6 +1328,7 @@ impl CoreActor {
             bridge_caps: CapabilitySet::default(),
             restore_candidate: None,
             restore_attempted: false,
+            launch_autoplay_handled: false,
             bridge_playback_seen: false,
             bridge_unhealthy: false,
             restore_followup: None,
@@ -1813,6 +1822,7 @@ impl CoreActor {
     ) {
         let now_ms = self.deps.clock.now_ms();
         let wall_ms = self.deps.clock.wall_now_ms();
+        let is_internal = matches!(origin, CommandOrigin::Internal);
         let (manual, playback_fence) = match origin {
             CommandOrigin::Manual => (true, None),
             CommandOrigin::Internal => (false, None),
@@ -1826,6 +1836,9 @@ impl CoreActor {
         };
         if manual {
             self.last_manual_command_ms = Some(now_ms);
+        }
+        if !is_internal {
+            self.launch_autoplay_handled = true;
         }
 
         // 1. Bind the ID to the original request (even when a Toggle is later resolved).
@@ -3637,16 +3650,18 @@ impl CoreActor {
     /// one, play the last track behind the output gate so it settles at the saved position
     /// before pausing; `autoplayOnLaunch` adds a final explicit play.
     fn maybe_start_restore(&mut self) {
-        if self.restore_attempted
-            || self.active_bridge_epoch.is_none()
-            || !self.bridge_playback_seen
-        {
+        if self.active_bridge_epoch.is_none() || !self.bridge_playback_seen {
+            return;
+        }
+        if self.restore_attempted {
+            self.maybe_start_launch_autoplay();
             return;
         }
         if self.player.current_track.is_some() {
             // The page loaded a track itself: keep it, and never restore over a later empty page.
             self.restore_attempted = true;
             self.restore_candidate = None;
+            self.maybe_start_launch_autoplay();
             return;
         }
         if self.auth_state.state != AuthState::Authenticated
@@ -3696,6 +3711,44 @@ impl CoreActor {
         );
     }
 
+    /// Honors `autoplayOnLaunch` once when the official page restored a track on its own,
+    /// keeping the page's track and queue intact and deferring to any user control.
+    fn maybe_start_launch_autoplay(&mut self) {
+        if self.launch_autoplay_handled
+            || self.restore_followup.is_some()
+            || self.player.current_track.is_none()
+        {
+            return;
+        }
+        if !self.settings.autoplay_on_launch
+            || matches!(
+                self.player.playback,
+                PlaybackStatus::Playing | PlaybackStatus::Buffering
+            )
+        {
+            self.launch_autoplay_handled = true;
+            return;
+        }
+        if self.player.connection != PlayerConnectionState::Ready
+            || self.active_command.is_some()
+            || !self.pending_queue.is_empty()
+            || self.capabilities.play_pause != CapabilitySupport::Supported
+        {
+            return;
+        }
+        self.launch_autoplay_handled = true;
+        let mut args = empty_args();
+        args.track_instance_id = self.player.track_instance_id.clone();
+        self.submit_internal(
+            PlayerCommandPayload {
+                command_id: internal_command_id("launch-autoplay"),
+                op: PlayerOp::Play,
+                args: Some(args),
+            },
+            false,
+        );
+    }
+
     /// Start configured autoplay once silent restoration has settled, unless the user
     /// already queued an action.
     fn continue_restore(&mut self, receipt: &CommandReceipt) {
@@ -3706,13 +3759,17 @@ impl CoreActor {
             return;
         }
         let followup = self.restore_followup.take().expect("checked above");
+        let should_autoplay = followup.autoplay && !self.launch_autoplay_handled;
+        // This restore was the launch's one chance to autoplay; a failed one must not be
+        // followed by the self-restore autoplay path playing whatever the page shows later.
+        self.launch_autoplay_handled = true;
         if receipt.status != CommandLifecycleStatus::Observed
             || self.player.current_track.as_ref().map(|t| &t.video_id) != Some(&followup.video_id)
         {
             warn!(status = ?receipt.status, "paused restore did not settle; leaving player as is");
             return;
         }
-        if followup.autoplay && self.pending_queue.is_empty() {
+        if should_autoplay && self.pending_queue.is_empty() {
             let mut args = empty_args();
             args.track_instance_id = self.player.track_instance_id.clone();
             self.submit_internal(

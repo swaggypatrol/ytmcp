@@ -80,6 +80,8 @@ Prompts are kept compact so an hour or two of DJing does not fill the agent's co
 
 Speech recognition, speech output and the conversation itself belong to the agent. The player has no voice input, hotkeys or recording, and does not pin "this song" to the moment someone spoke; the agent decides what "this one" means from the context. The time, weather, holidays and location are the agent's to find out, or to ask about. The listener is often away from the screen, so the player never relies on pop-ups.
 
+**Planned for the next version.** Prompts gain a small `moment` field so the agent can shape a set around the day without being told: local time, weekday, part of the day and time zone from the machine clock; public holidays and their eves for a region the listener picks; and a city the listener types once in Settings (no GPS or IP lookup; empty means the agent is never told). Weather stays with the agent: it can look the forecast up for that city with its own tools, and the player makes no extra outside requests for it. This is not in 1.0.
+
 ## Setup example
 
 ```sh

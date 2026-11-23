@@ -43,9 +43,10 @@ types-check:
 
 # Run offline and mock tests across Rust and TypeScript
 test:
-    cargo test --workspace
+    cargo test --workspace --locked
+    cargo build --locked -p ytm-daemon
     pnpm -r test
-    pnpm run test:process
+    YTM_GLASS_DAEMON_BIN="{{CARGO_TARGET_DIR}}/debug/ytm-daemon" pnpm run test:process
     pnpm run test:desktop
     pnpm run test:e2e
 

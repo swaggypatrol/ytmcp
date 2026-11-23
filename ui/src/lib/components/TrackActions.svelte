@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EnqueuePosition, PlaylistSummary, Track } from "@ytm-glass/protocol";
+  import type { EnqueuePosition, PlaylistSummary, QueryError, Track } from "@ytm-glass/protocol";
   import type { Gate } from "../capabilities.js";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";
@@ -21,10 +21,15 @@
     pending: boolean;
     playlistsView: PageView;
     playlists: readonly PlaylistSummary[];
+    playlistsHasMore?: boolean;
+    playlistsLoadingMore?: boolean;
+    playlistsMoreError?: QueryError | null;
     onPlay: () => void;
     onEnqueue: (position: EnqueuePosition) => void;
     onSetLike: (liked: boolean) => void;
     onRequestPlaylists: () => void;
+    onLoadMorePlaylists?: () => void;
+    onRetryPlaylists?: () => void;
     onAddToPlaylist: (playlist: PlaylistSummary) => void;
     onOpenAlbum: (albumId: string) => void;
     onOpenArtist: (artistId: string) => void;
@@ -42,10 +47,15 @@
     pending,
     playlistsView,
     playlists,
+    playlistsHasMore = false,
+    playlistsLoadingMore = false,
+    playlistsMoreError = null,
     onPlay,
     onEnqueue,
     onSetLike,
     onRequestPlaylists,
+    onLoadMorePlaylists,
+    onRetryPlaylists,
     onAddToPlaylist,
     onOpenAlbum,
     onOpenArtist,
@@ -152,7 +162,7 @@
         <span>{t.track.back}</span>
       </button>
     </div>
-    {#if playlists.length > 6}
+    {#if playlists.length > 6 || playlistsHasMore}
       <input
         type="search"
         value={playlistFilter}
@@ -162,8 +172,13 @@
         style="background-color: var(--bg-subtle); border-color: var(--border-strong); color: var(--text-primary);"
         oninput={(e) => (playlistFilter = e.currentTarget.value)}
       />
+      {#if playlistsHasMore}
+        <p class="type-xs m-0" style="color: var(--text-muted);" data-testid="playlist-picker-loaded-hint">
+          {t.track.filterLoadedOnly}
+        </p>
+      {/if}
     {/if}
-    <PageState view={playlistsView} name="playlist-picker" emptyText={t.track.noPlaylists}>
+    <PageState view={playlistsView} name="playlist-picker" emptyText={t.track.noPlaylists} onRetry={onRetryPlaylists}>
       {#if filteredPlaylists.length === 0}
         <p class="type-sm m-0 py-3 text-center" style="color: var(--text-secondary);">{t.track.noMatchingPlaylists}</p>
       {:else}
@@ -189,6 +204,38 @@
             </li>
           {/each}
         </ul>
+      {/if}
+      {#if playlistsMoreError}
+        <div
+          class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg type-xs"
+          style="background-color: var(--status-error-bg); color: var(--status-error-fg);"
+          data-testid="playlist-picker-more-error"
+        >
+          <span>[{playlistsMoreError.code}] {playlistsMoreError.safeMessage}</span>
+          {#if playlistsHasMore && onLoadMorePlaylists}
+            <button
+              type="button"
+              class="btn-secondary shrink-0"
+              data-testid="playlist-picker-load-more"
+              disabled={playlistsLoadingMore}
+              onclick={onLoadMorePlaylists}
+            >
+              {playlistsLoadingMore ? t.common.loadingMore : t.states.retry}
+            </button>
+          {/if}
+        </div>
+      {:else if playlistsHasMore && onLoadMorePlaylists}
+        <div class="pt-1">
+          <button
+            type="button"
+            class="btn-secondary w-full"
+            data-testid="playlist-picker-load-more"
+            disabled={playlistsLoadingMore}
+            onclick={onLoadMorePlaylists}
+          >
+            {playlistsLoadingMore ? t.common.loadingMore : t.common.loadMore}
+          </button>
+        </div>
       {/if}
     </PageState>
   {:else if chosen}

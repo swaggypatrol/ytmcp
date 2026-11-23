@@ -13,20 +13,23 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
+/** Finds the daemon under test: YTM_GLASS_DAEMON_BIN, else the debug build `just test` makes, else a release build. */
 function findDaemonBinary(): string {
-  const candidates = [
-    process.env.YTM_GLASS_DAEMON_BIN,
-    resolve(repoRoot, "target/release/ytm-daemon"),
-    resolve(repoRoot, "target/debug/ytm-daemon"),
-  ];
+  const explicit = process.env.YTM_GLASS_DAEMON_BIN;
+  if (explicit) {
+    if (!existsSync(explicit)) {
+      throw new Error(`YTM_GLASS_DAEMON_BIN does not exist: ${explicit}`);
+    }
+    return explicit;
+  }
+  const targetDir = resolve(repoRoot, process.env.CARGO_TARGET_DIR ?? "target");
+  const candidates = [resolve(targetDir, "debug/ytm-daemon"), resolve(targetDir, "release/ytm-daemon")];
   for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) {
+    if (existsSync(candidate)) {
       return candidate;
     }
   }
-  throw new Error(
-    "ytm-daemon binary not found in target/release or target/debug; run cargo build -p ytm-daemon first"
-  );
+  throw new Error(`ytm-daemon binary not found in ${targetDir}/debug or release; run cargo build -p ytm-daemon first`);
 }
 
 interface DaemonHarness {

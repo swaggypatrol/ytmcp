@@ -13,6 +13,9 @@
     "appSettings": {
       "$ref": "#/definitions/AppSettings"
     },
+    "appSettingsPatch": {
+      "$ref": "#/definitions/AppSettingsPatch"
+    },
     "appSnapshot": {
       "$ref": "#/definitions/AppSnapshot"
     },
@@ -110,6 +113,7 @@
     "agentActivityRequest",
     "agentActivitySnapshot",
     "appSettings",
+    "appSettingsPatch",
     "hostHello",
     "coreReady",
     "hostWindowVisibility",
@@ -483,6 +487,84 @@
         "trackNotifications",
         "nativeWindowDecorations"
       ]
+    },
+    "AppSettingsPatch": {
+      "description": "Partial settings update sent by the UI so concurrent edits to other fields are preserved.",
+      "type": "object",
+      "properties": {
+        "autoplayOnLaunch": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "closeToTray": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "lrclibEnabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nativeWindowDecorations": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reduceMotion": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reduceTransparency": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "theme": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trackNotifications": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "uiLanguage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UiLanguage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uiScalePercent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 150,
+          "minimum": 75
+        }
+      },
+      "additionalProperties": false
     },
     "AppSnapshot": {
       "type": "object",
@@ -1850,6 +1932,7 @@
         "core.lyricsResponse",
         "core.mutationResponse",
         "core.agentActivity",
+        "core.settingsUpdated",
         "core.error",
         "core.pong",
         "host.hello",

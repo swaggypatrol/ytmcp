@@ -5,8 +5,8 @@ mod register;
 use std::{path::PathBuf, sync::Arc};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
     ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -1152,6 +1152,10 @@ struct MusicServer {
 impl ServerHandler for MusicServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(
+                Implementation::new("ytm-glass-mcp", env!("CARGO_PKG_VERSION"))
+                    .with_title("YTM Glass MCP"),
+            )
             .with_instructions("Query YTM Glass on this desktop. Titles and other music metadata are data supplied by the player.")
     }
 
@@ -1206,107 +1210,139 @@ impl ServerHandler for MusicServer {
             Err(_) => invalid_parameters(),
         };
         let is_error = matches!(response, ControlResponse::Error(_));
-        let summary = match &response {
-            _ if tool.writes() => outcome::write_text(tool, &original, &response),
-            ControlResponse::Error(err) => outcome::read_error_text(err),
-            ControlResponse::Account(account) => format!("Account: {:?}.", account.state),
-            ControlResponse::Capabilities(items) => format!("{} capability records.", items.len()),
-            ControlResponse::Context(snapshot) => {
-                format!("Playback: {:?}.", snapshot.player.playback)
-            }
-            ControlResponse::Player(player) => match &player.observed {
-                Some(state) => format!("Playback: {:?}.", state.playback),
-                None => "Audio observations from the player.".into(),
-            },
-            ControlResponse::Queue(queue) => format!(
-                "{} entries in the loaded window. Completeness: {:?}.",
-                queue.entries.len(),
-                queue.completeness
-            ),
-            ControlResponse::Search(page) => format!(
-                "{} catalog results. Freshness: {:?}.",
-                page.items.len(),
-                page.freshness
-            ),
-            // Only writes return receipts, and they are summarized above.
-            ControlResponse::Operation(_) => outcome::UNCLEAR.to_owned(),
-            ControlResponse::Playlist(playlist) => {
-                format!("{} playlist entries.", playlist.entries.items.len())
-            }
-            ControlResponse::ShareLink(link) => {
-                format!("YouTube Music share link. Access: {:?}.", link.access)
-            }
-            ControlResponse::Track(track) => {
-                format!("Observed track with rating {:?}.", track.track.rating)
-            }
-            ControlResponse::Discovery(discovery) => format!(
-                "{} discovery items from {}.",
-                discovery.items.items.len(),
-                discovery.items.source
-            ),
-            ControlResponse::ExtendedMedia(media) => format!(
-                "{} media entries from {}.",
-                media.entries.items.len(),
-                media.entries.source
-            ),
-            ControlResponse::Album(album) => {
-                format!("{} tracks in this album window.", album.tracks.len())
-            }
-            ControlResponse::Artist(artist) => format!(
-                "{} songs and {} albums in this artist overview.",
-                artist.top_songs.len(),
-                artist.albums.len()
-            ),
-            ControlResponse::History(page) => format!("{} recent music entries.", page.items.len()),
-            ControlResponse::HistoryEntries(page) => {
-                format!("{} recent entries from {}.", page.items.len(), page.source)
-            }
-            ControlResponse::SearchSuggestions(page) => {
-                format!("{} public search suggestions.", page.items.len())
-            }
-            ControlResponse::SearchEntities(page) => {
-                format!(
-                    "{} matching entities from {}.",
-                    page.items.len(),
-                    page.source
-                )
-            }
-            ControlResponse::LocalHistory(history) => {
-                format!("{} local history entries.", history.entries.items.len())
-            }
-            ControlResponse::CombinedHistory(history) => format!(
-                "{} local entries and {} YouTube entries.",
-                history.local.entries.items.len(),
-                history.youtube.as_ref().map_or(0, |page| page.items.len())
-            ),
-            ControlResponse::Home(home) => format!("Discovery source {}.", home.source),
-            ControlResponse::Library(_) => "Music library window.".to_owned(),
-            ControlResponse::Settings(settings) => {
-                format!("Device settings revision {}.", settings.settings_revision)
-            }
-            ControlResponse::Lyrics(page) => {
-                format!("Lyrics: {:?}, source {}.", page.kind, page.source)
-            }
-            ControlResponse::DjPreferences(page) => {
-                format!("{} DJ preferences in this page.", page.items.len())
-            }
-            ControlResponse::DjCue(reply) => match &reply.cue {
-                Some(cue) => outcome::cue_text(cue),
-                None => "No DJ prompt yet. Call ytm_wait_dj_prompt again.".to_owned(),
-            },
-            ControlResponse::Recommendations(page) => {
-                format!("{} YouTube Music candidates.", page.candidates.items.len())
-            }
-        };
-        let payload = serde_json::to_value(response)
+        let payload = serde_json::to_value(&response)
             .map_err(|_| ErrorData::internal_error("invalid music control response", None))?;
+        let text = render_tool_content(tool, &original, &response, &payload);
         let mut result = if is_error {
             CallToolResult::structured_error(payload)
         } else {
             CallToolResult::structured(payload)
         };
-        result.content = vec![ContentBlock::text(summary)];
+        result.content = vec![ContentBlock::text(text)];
         Ok(result.into())
+    }
+}
+
+/// Largest read result, in bytes of JSON, that the text content repeats after its summary line.
+const TEXT_JSON_LIMIT: usize = 48 * 1024;
+
+/// Renders a tool result's text content for clients that ignore structuredContent: one sentence
+/// for writes and errors, the whole prompt for a DJ cue, and for reads a summary line followed by
+/// the reply as one line of JSON, unless that JSON exceeds [`TEXT_JSON_LIMIT`].
+fn render_tool_content(
+    tool: MusicTool,
+    original: &JsonObject,
+    response: &ControlResponse,
+    payload: &serde_json::Value,
+) -> String {
+    if tool.writes() {
+        return outcome::write_text(tool, original, response);
+    }
+    match response {
+        ControlResponse::Error(err) => outcome::read_error_text(err),
+        ControlResponse::DjCue(reply) => match &reply.cue {
+            Some(cue) => outcome::cue_text(cue),
+            None => "No DJ prompt yet. Call ytm_wait_dj_prompt again.".to_owned(),
+        },
+        _ => {
+            let summary = match response {
+                ControlResponse::Account(account) => format!("Account: {:?}.", account.state),
+                ControlResponse::Capabilities(items) => {
+                    format!("{} capability records.", items.len())
+                }
+                ControlResponse::Context(snapshot) => {
+                    format!("Playback: {:?}.", snapshot.player.playback)
+                }
+                ControlResponse::Player(player) => match &player.observed {
+                    Some(state) => format!("Playback: {:?}.", state.playback),
+                    None => "Audio observations from the player.".into(),
+                },
+                ControlResponse::Queue(queue) => format!(
+                    "{} entries in the loaded window. Completeness: {:?}.",
+                    queue.entries.len(),
+                    queue.completeness
+                ),
+                ControlResponse::Search(page) => format!(
+                    "{} catalog results. Freshness: {:?}.",
+                    page.items.len(),
+                    page.freshness
+                ),
+                // Only writes return receipts, and they are summarized above.
+                ControlResponse::Operation(_) => outcome::UNCLEAR.to_owned(),
+                ControlResponse::Playlist(playlist) => {
+                    format!("{} playlist entries.", playlist.entries.items.len())
+                }
+                ControlResponse::ShareLink(link) => {
+                    format!("YouTube Music share link ({:?}): {}", link.access, link.url)
+                }
+                ControlResponse::Track(track) => {
+                    format!("Observed track with rating {:?}.", track.track.rating)
+                }
+                ControlResponse::Discovery(discovery) => format!(
+                    "{} discovery items from {}.",
+                    discovery.items.items.len(),
+                    discovery.items.source
+                ),
+                ControlResponse::ExtendedMedia(media) => format!(
+                    "{} media entries from {}.",
+                    media.entries.items.len(),
+                    media.entries.source
+                ),
+                ControlResponse::Album(album) => {
+                    format!("{} tracks in this album window.", album.tracks.len())
+                }
+                ControlResponse::Artist(artist) => format!(
+                    "{} songs and {} albums in this artist overview.",
+                    artist.top_songs.len(),
+                    artist.albums.len()
+                ),
+                ControlResponse::History(page) => {
+                    format!("{} recent music entries.", page.items.len())
+                }
+                ControlResponse::HistoryEntries(page) => {
+                    format!("{} recent entries from {}.", page.items.len(), page.source)
+                }
+                ControlResponse::SearchSuggestions(page) => {
+                    format!("{} public search suggestions.", page.items.len())
+                }
+                ControlResponse::SearchEntities(page) => format!(
+                    "{} matching entities from {}.",
+                    page.items.len(),
+                    page.source
+                ),
+                ControlResponse::LocalHistory(history) => {
+                    format!("{} local history entries.", history.entries.items.len())
+                }
+                ControlResponse::CombinedHistory(history) => format!(
+                    "{} local entries and {} YouTube entries.",
+                    history.local.entries.items.len(),
+                    history.youtube.as_ref().map_or(0, |page| page.items.len())
+                ),
+                ControlResponse::Home(home) => format!("Discovery source {}.", home.source),
+                ControlResponse::Library(_) => "Music library window.".to_owned(),
+                ControlResponse::Settings(settings) => {
+                    format!("Device settings revision {}.", settings.settings_revision)
+                }
+                ControlResponse::Lyrics(page) => {
+                    format!("Lyrics: {:?}, source {}.", page.kind, page.source)
+                }
+                ControlResponse::DjPreferences(page) => {
+                    format!("{} DJ preferences in this page.", page.items.len())
+                }
+                ControlResponse::Recommendations(page) => {
+                    format!("{} YouTube Music candidates.", page.candidates.items.len())
+                }
+                ControlResponse::Error(_) | ControlResponse::DjCue(_) => unreachable!(),
+            };
+            match serde_json::to_string(payload) {
+                Ok(json) if json.len() <= TEXT_JSON_LIMIT => format!("{summary}\n{json}"),
+                Ok(_) => format!(
+                    "{summary} The full result is in structuredContent; it is too large to repeat \
+                     here, so ask for a smaller page with limit to read it as text."
+                ),
+                Err(_) => summary,
+            }
+        }
     }
 }
 
@@ -1764,5 +1800,125 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn server_info_identifies_ytm_glass_mcp_and_crate_version() {
+        let server = MusicServer {
+            client: ControlClient::new(PathBuf::from("/nonexistent"), false),
+            last_spoke: std::sync::Mutex::new(None),
+        };
+        let info = server.get_info();
+        assert_eq!(info.server_info.name, "ytm-glass-mcp");
+        assert_eq!(info.server_info.title.as_deref(), Some("YTM Glass MCP"));
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn read_tool_content_includes_parseable_data_without_structured_content() {
+        use ytm_control_api::{ShareAccess, ShareLink};
+
+        let search_resp: ControlResponse = serde_json::from_value(serde_json::json!({
+            "result": "search",
+            "value": {
+                "items": [{
+                    "videoId": "dQw4w9WgXcQ",
+                    "title": "Fixture Track",
+                    "artists": [{ "id": null, "name": "Fixture Artist" }],
+                    "album": null,
+                    "durationMs": 180000,
+                    "availability": "available",
+                    "versionTag": null,
+                    "rating": "neutral"
+                }],
+                "nextCursor": "cursor-page-2",
+                "complete": false,
+                "source": "fixture",
+                "freshness": "fresh",
+                "capturedAtMs": 1000
+            }
+        }))
+        .unwrap();
+        let search_payload = serde_json::to_value(&search_resp).unwrap();
+        let search_text = render_tool_content(
+            MusicTool::Search,
+            &JsonObject::new(),
+            &search_resp,
+            &search_payload,
+        );
+        // Simulate a content-only harness discarding structuredContent.
+        let json_line = search_text.split_once('\n').expect("summary + json").1;
+        let parsed: serde_json::Value = serde_json::from_str(json_line).unwrap();
+        assert_eq!(
+            parsed["value"]["items"][0]["videoId"],
+            serde_json::json!("dQw4w9WgXcQ")
+        );
+        assert_eq!(
+            parsed["value"]["items"][0]["title"],
+            serde_json::json!("Fixture Track")
+        );
+        assert_eq!(
+            parsed["value"]["nextCursor"],
+            serde_json::json!("cursor-page-2")
+        );
+
+        let share_resp = ControlResponse::ShareLink(ShareLink {
+            url: "https://music.youtube.com/watch?v=dQw4w9WgXcQ".to_owned(),
+            visibility: None,
+            access: ShareAccess::Unlisted,
+        });
+        let share_payload = serde_json::to_value(&share_resp).unwrap();
+        let share_text = render_tool_content(
+            MusicTool::ShareLink,
+            &JsonObject::new(),
+            &share_resp,
+            &share_payload,
+        );
+        assert!(share_text.contains("https://music.youtube.com/watch?v=dQw4w9WgXcQ"));
+
+        let cue_resp = ControlResponse::DjCue(Box::new(ytm_control_api::DjCueReply {
+            cue: None,
+            chattiness: ytm_control_api::DjChattiness::Normal,
+        }));
+        let cue_payload = serde_json::to_value(&cue_resp).unwrap();
+        let cue_text = render_tool_content(
+            MusicTool::WaitPrompt,
+            &JsonObject::new(),
+            &cue_resp,
+            &cue_payload,
+        );
+        assert!(!cue_text.contains('\n'));
+    }
+
+    #[test]
+    fn oversized_read_text_keeps_only_the_summary() {
+        let item = serde_json::json!({
+            "videoId": "dQw4w9WgXcQ",
+            "title": "t".repeat(1024),
+            "artists": [],
+            "album": null,
+            "durationMs": 180000,
+            "availability": "available",
+            "versionTag": null,
+            "rating": "neutral"
+        });
+        let response: ControlResponse = serde_json::from_value(serde_json::json!({
+            "result": "search",
+            "value": {
+                "items": vec![item; 60],
+                "nextCursor": null,
+                "complete": true,
+                "source": "fixture",
+                "freshness": "fresh",
+                "capturedAtMs": 1000
+            }
+        }))
+        .unwrap();
+        let payload = serde_json::to_value(&response).unwrap();
+        assert!(payload.to_string().len() > TEXT_JSON_LIMIT);
+        let text = render_tool_content(MusicTool::Search, &JsonObject::new(), &response, &payload);
+        assert!(!text.contains('\n'), "{text}");
+        assert!(text.starts_with("60 catalog results."), "{text}");
+        assert!(text.contains("structuredContent"), "{text}");
     }
 }

@@ -28,7 +28,7 @@ use ytm_data::{
 use ytm_lyrics::{LrclibConfig, LyricsService};
 use ytm_mpris::{MprisConfig, MprisHostAction, MprisService};
 use ytm_protocol::{
-    AgentActivityRequest, AppSettings, AssetResolvedPayload, BridgeCommandAckPayload,
+    AgentActivityRequest, AppSettingsPatch, AssetResolvedPayload, BridgeCommandAckPayload,
     BridgeHealthPayload, BridgeLifecyclePayload, BridgePlaybackObservedPayload, BridgeReadyPayload,
     CatalogQueryRequest, CoreReadyPayload, Envelope, HostHelloPayload, HostWindowVisibilityPayload,
     LyricsQueryRequest, MAX_COMMAND_QUEUE, MAX_FRAME_BYTES, MAX_PENDING_REQUESTS, MessageKind,
@@ -124,6 +124,45 @@ async fn send_typed_response(
             send_error(outbound, request_id, err.code, err.safe_message, false).await;
         }
     }
+}
+
+/// A UI settings patch waiting for the settings worker, holding its pending-request slot.
+type SettingsPatchJob = (Option<RequestId>, AppSettingsPatch, PendingSlot);
+
+/// Applies UI settings patches one at a time in arrival order, so two quick edits to the same
+/// field end with the later one; other request kinds keep running beside it.
+fn spawn_settings_worker(
+    core: Arc<CoreEngine>,
+    outbound: OutboundSender,
+) -> mpsc::Sender<SettingsPatchJob> {
+    // Every queued job holds a pending slot, so the slot limit also bounds this queue.
+    let (tx, mut rx) = mpsc::channel::<SettingsPatchJob>(MAX_PENDING_REQUESTS);
+    tokio::spawn(async move {
+        while let Some((request_id, patch, _slot)) = rx.recv().await {
+            match core.patch_settings(patch).await {
+                Ok(settings) => {
+                    send_typed_response(
+                        &outbound,
+                        MessageKind::CoreSettingsUpdated,
+                        request_id,
+                        settings,
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    send_error(
+                        &outbound,
+                        request_id,
+                        err.code,
+                        err.safe_message,
+                        err.retriable,
+                    )
+                    .await;
+                }
+            }
+        }
+    });
+    tx
 }
 
 /// Defense in depth: the host multiplexes UI, bridge and host frames onto one stdin, so the
@@ -338,6 +377,7 @@ async fn main() {
     let pending_commands = Arc::new(AtomicUsize::new(0));
     let dropped_frames = AtomicU64::new(0);
     let mut delta_task: Option<JoinHandle<()>> = None;
+    let settings_jobs = spawn_settings_worker(Arc::clone(&core), outbound.clone());
     let mut stdin_reader = BufReader::new(tokio::io::stdin());
 
     info!(core_epoch = %core.core_epoch(), "ytm-daemon ready");
@@ -886,24 +926,21 @@ async fn main() {
                             .await;
                             continue;
                         };
-                        match env.decode_payload::<AppSettings>() {
-                            Ok(settings) => {
-                                let core_c = Arc::clone(&core);
-                                let out_c = outbound.clone();
-                                let req_id = env.request_id.clone();
-                                tokio::spawn(async move {
-                                    let _slot = slot;
-                                    if let Err(err) = core_c.update_settings(settings).await {
-                                        send_error(
-                                            &out_c,
-                                            req_id,
-                                            err.code,
-                                            err.safe_message,
-                                            err.retriable,
-                                        )
-                                        .await;
-                                    }
-                                });
+                        match env.decode_payload::<AppSettingsPatch>() {
+                            Ok(patch) => {
+                                if settings_jobs
+                                    .try_send((env.request_id.clone(), patch, slot))
+                                    .is_err()
+                                {
+                                    send_error(
+                                        &outbound,
+                                        env.request_id.clone(),
+                                        QueryErrorCode::Busy,
+                                        "the settings worker is not accepting updates",
+                                        true,
+                                    )
+                                    .await;
+                                }
                             }
                             Err(err) => {
                                 drop(slot);
@@ -1220,6 +1257,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
     use ytm_core::StoragePort;
+    use ytm_protocol::AppSettings;
 
     #[tokio::test]
     async fn lyrics_setting_follows_restored_and_successfully_persisted_updates_only() {
@@ -1261,16 +1299,17 @@ mod tests {
 
         fs::remove_file(paths.settings_file()).unwrap();
         fs::create_dir(paths.settings_file()).unwrap();
-        let err = core
-            .update_settings(AppSettings::default())
-            .await
-            .unwrap_err();
+        let enable = || AppSettingsPatch {
+            lrclib_enabled: Some(true),
+            ..AppSettingsPatch::default()
+        };
+        let err = core.patch_settings(enable()).await.unwrap_err();
         assert_eq!(err.code, QueryErrorCode::StorageError);
         assert!(!lyrics.is_enabled());
         assert!(!core.snapshot().await.unwrap().settings.lrclib_enabled);
 
         fs::remove_dir(paths.settings_file()).unwrap();
-        core.update_settings(AppSettings::default()).await.unwrap();
+        core.patch_settings(enable()).await.unwrap();
         assert!(lyrics.is_enabled());
         assert!(
             storage

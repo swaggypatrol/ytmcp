@@ -120,6 +120,16 @@
 
   const virtualItems = $derived($virtualizer.getVirtualItems());
   const totalSize = $derived($virtualizer.getTotalSize());
+  const activeTabIndex = $derived.by(() => {
+    if (tracks.length === 0) return -1;
+    if (virtualItems.some((item) => item.index === focusedIndex)) return focusedIndex;
+    const top = scrollEl?.scrollTop ?? 0;
+    return (
+      virtualItems.find((item) => item.start + item.size > top)?.index ??
+      virtualItems[0]?.index ??
+      0
+    );
+  });
 </script>
 
 <div
@@ -169,7 +179,7 @@
             <button
               type="button"
               class="flex-1 min-w-0 h-full flex items-center gap-3 pl-3.5 text-left cursor-pointer"
-              tabindex={focusedIndex === row.index ? 0 : -1}
+              tabindex={activeTabIndex === row.index ? 0 : -1}
               aria-current={isCurrent ? "true" : undefined}
               aria-disabled={playable ? undefined : "true"}
               data-row-index={row.index}
@@ -217,12 +227,12 @@
                 {formatDurationMs(track.durationMs)}
               </span>
             </button>
-            {@render rowActions?.(row.index, focusedIndex === row.index ? 0 : -1)}
+            {@render rowActions?.(row.index, activeTabIndex === row.index ? 0 : -1)}
             {#if onTrackActions}
               <button
                 type="button"
                 class="btn-icon shrink-0"
-                tabindex={focusedIndex === row.index ? 0 : -1}
+                tabindex={activeTabIndex === row.index ? 0 : -1}
                 aria-label={t.track.actionsFor.replace("{title}", track.title)}
                 title={t.track.actions}
                 onclick={() => onTrackActions(track, row.index, entryId)}

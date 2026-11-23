@@ -33,7 +33,7 @@ These are the known limits of the current code. Each describes what happens and,
 | Many MCP clients, Claude Code included, hold a message the user sends during a tool call until the call returns. Conversation-hot waits cap this at about a minute for five minutes after either side speaks; otherwise a wait can last until the next prompt. A shorter `maxWaitSeconds` or interrupting the call (Esc in Claude Code) also helps. |
 | Actions taken directly on the hidden official page are not seen as listener interaction, so they neither reset the check-in heartbeat nor count as the listener's skip. |
 | `ytm_delete_playlist` and an audio quality tool are not implemented, so the edit tier cannot delete playlists yet. The `delete-playlist` grant exists for when it can. |
-| Playback and queue writes interrupted by a restart cannot be confirmed afterwards and stay unclear. |
+| Confirmed-unsent `Accepted` operations settle on restart to `Cancelled` (`NewPlanRequired`); playback and queue writes that may already have been dispatched cannot be confirmed afterwards and stay unclear (`Unknown`). |
 
 ## Untested
 

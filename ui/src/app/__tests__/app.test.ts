@@ -974,7 +974,7 @@ describe("Keyboard, dialogs and settings", () => {
     expect(select.value).toBe("zh-CN");
 
     await fireEvent.change(select, { target: { value: "en" } });
-    expect(bridge.updateSettings).toHaveBeenLastCalledWith({ ...snapshot.settings, uiLanguage: "en" });
+    expect(bridge.updateSettings).toHaveBeenLastCalledWith({ uiLanguage: "en" });
     expect(screen.getByRole("heading", { name: "设置" })).toBeTruthy();
 
     emit({
@@ -1012,7 +1012,7 @@ describe("Keyboard, dialogs and settings", () => {
     const notifications = screen.getByTestId("setting-track-notifications") as HTMLInputElement;
     expect(notifications.checked).toBe(false);
     await fireEvent.click(notifications);
-    expect(bridge.updateSettings).toHaveBeenLastCalledWith(expect.objectContaining({ trackNotifications: true }));
+    expect(bridge.updateSettings).toHaveBeenLastCalledWith({ trackNotifications: true });
 
     await fireEvent.click(screen.getByTestId("settings-logout"));
     await screen.findByTestId("accessible-dialog");
@@ -1031,39 +1031,30 @@ describe("Keyboard, dialogs and settings", () => {
     expect(scale.value).toBe("150");
   });
 
-  it("keeps a settings change that core has not confirmed yet when another setting changes", async () => {
-    const { bridge, snapshot, emit } = createPreloadBridge();
+  it("sends only the changed field patch and shows feedback + reverts pending toggle on save failure", async () => {
+    const { bridge, snapshot } = createPreloadBridge();
     const base = snapshot.settings;
     renderApp(bridge, "settings");
     const motion = (await screen.findByTestId("setting-reduce-motion")) as HTMLInputElement;
     await fireEvent.click(motion);
+    expect(bridge.updateSettings).toHaveBeenLastCalledWith({ reduceMotion: !base.reduceMotion });
     await fireEvent.click(screen.getByTestId("setting-lrclib"));
-    expect(bridge.updateSettings).toHaveBeenLastCalledWith({
-      ...base,
-      reduceMotion: !base.reduceMotion,
-      lrclibEnabled: !base.lrclibEnabled,
-    });
+    expect(bridge.updateSettings).toHaveBeenLastCalledWith({ lrclibEnabled: !base.lrclibEnabled });
 
-    // Core confirms both, then another client changes reduce-motion back: the next change
-    // must not reassert the confirmed value over it.
-    emit({
-      deltaType: "settingsChanged",
-      revision: snapshot.revision + 1,
-      settings: { ...base, reduceMotion: !base.reduceMotion, lrclibEnabled: !base.lrclibEnabled },
-    });
-    await tick(); // each delta arrives as its own IPC message
-    emit({
-      deltaType: "settingsChanged",
-      revision: snapshot.revision + 2,
-      settings: { ...base, lrclibEnabled: !base.lrclibEnabled },
-    });
-    await tick();
-    await fireEvent.click(screen.getByTestId("setting-autoplay"));
-    expect(bridge.updateSettings).toHaveBeenLastCalledWith({
-      ...base,
-      lrclibEnabled: !base.lrclibEnabled,
-      autoplayOnLaunch: !base.autoplayOnLaunch,
-    });
+    bridge.updateSettings.mockRejectedValueOnce(
+      new CoreRequestError({
+        code: "STORAGE_ERROR",
+        retriable: false,
+        retryAfterMs: null,
+        safeMessage: "settings disk read-only",
+        requestId: null,
+      })
+    );
+    const autoplay = screen.getByTestId("setting-autoplay") as HTMLInputElement;
+    expect(autoplay.checked).toBe(base.autoplayOnLaunch);
+    await fireEvent.click(autoplay);
+    expect((await screen.findByTestId("settings-save-error")).textContent).toContain("settings disk read-only");
+    await waitFor(() => expect(autoplay.checked).toBe(base.autoplayOnLaunch));
   });
 
   it("wires official player open, account match status, cache clear feedback, search clear, now-playing seek, banner dismiss and localized diagnostics", async () => {
@@ -1412,5 +1403,259 @@ describe("Queue editing, play gating, cache clear and album context", () => {
       expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(expect.objectContaining({ op: "playTarget", args: { target: expected } }));
       cleanup();
     }
+  });
+
+  it("shows connection error banner on initial preload failure and recovers via bounded auto-retry or manual reconnect", async () => {
+    const fake = new FakeCoreClient("normal");
+    const snap = { ...fake.subscribeSnapshot(() => {}).snapshot, mockMode: false };
+    let attempts = 0;
+    const autoRetryBridge: YtmGlassUiBridge = {
+      subscribeSnapshot: () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return Promise.reject(new Error("daemon handshake not ready"));
+        }
+        return { snapshot: structuredClone(snap), unsubscribe: () => {} };
+      },
+      sendPlayerCommand: vi.fn(),
+      queryCatalog: (req) => fake.queryCatalog(req),
+      queryLyrics: () => DISABLED_LYRICS,
+      updateSettings: vi.fn(async () => snap.settings),
+      openPlayerWindow: vi.fn(),
+    };
+
+    render(App, {
+      props: {
+        client: createUiClient({ preloadBridge: autoRetryBridge, connectRetryDelaysMs: [15] }),
+      },
+    });
+    expect(await screen.findByTestId("banner-connection-error")).toBeTruthy();
+    expect(screen.getByTestId("banner-connection-error").textContent).toContain("daemon handshake not ready");
+    await waitFor(() => expect(screen.queryByTestId("banner-connection-error")).toBeNull());
+    expect(screen.queryByTestId("home-state-loading")).toBeNull();
+    expect(attempts).toBe(2);
+    cleanup();
+
+    const retryDelaysMs = [10, 20];
+    let manualAttempts = 0;
+    let allowManual = false;
+    const manualBridge: YtmGlassUiBridge = {
+      ...autoRetryBridge,
+      subscribeSnapshot: () => {
+        manualAttempts += 1;
+        if (!allowManual) {
+          return Promise.reject(new Error("sidecar crashed during boot"));
+        }
+        return { snapshot: structuredClone(snap), unsubscribe: () => {} };
+      },
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      render(App, {
+        props: {
+          client: createUiClient({ preloadBridge: manualBridge, connectRetryDelaysMs: retryDelaysMs }),
+        },
+      });
+      // Run far past every scheduled retry: the auto-retry stops after its bounded schedule.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(manualAttempts).toBe(1 + retryDelaysMs.length);
+      expect(screen.getByTestId("banner-connection-error").textContent).toContain("sidecar crashed during boot");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    allowManual = true;
+    await fireEvent.click(screen.getByTestId("btn-reconnect-core"));
+    await waitFor(() => expect(screen.queryByTestId("banner-connection-error")).toBeNull());
+    expect(screen.queryByTestId("home-state-loading")).toBeNull();
+  });
+
+  it("loads additional playlist pages and recovers from page-load errors inside Add to playlist", async () => {
+    let page2Attempts = 0;
+    const fakeFallback = new FakeCoreClient("normal");
+    const sendMutation = vi.fn(async (): Promise<MutationResult> => ({
+      kind: "addToPlaylist",
+      outcome: "confirmed",
+      error: null,
+    }));
+    const { bridge } = createPreloadBridge({
+      snapshot: writeReady,
+      sendMutation,
+      queryCatalog: (req) => {
+        if (req.kind !== "libraryPlaylists") {
+          return fakeFallback.queryCatalog(req);
+        }
+        if (!req.cursor) {
+          return Promise.resolve({
+            resultType: "libraryPlaylists",
+            ...paged(
+              [
+                {
+                  playlistId: "pl-p1",
+                  browseId: null,
+                  title: "First Page Mix",
+                  subtitle: "Page 1",
+                  trackCount: 5,
+                  cover: null,
+                },
+              ],
+              "cursor-p2"
+            ),
+          });
+        }
+        page2Attempts += 1;
+        if (page2Attempts === 1) {
+          return Promise.reject(new IpcTimeoutError("ui.catalogQuery"));
+        }
+        return Promise.resolve({
+          resultType: "libraryPlaylists",
+          ...paged(
+            [
+              {
+                playlistId: "pl-p2",
+                browseId: null,
+                title: "Late Page Mix",
+                subtitle: "Page 2",
+                trackCount: 8,
+                cover: null,
+              },
+            ],
+            null
+          ),
+        });
+      },
+    });
+
+    renderApp(bridge, "now-playing");
+    await fireEvent.click(await screen.findByTestId("np-actions"));
+    await fireEvent.click(await screen.findByTestId("action-add-to-playlist"));
+
+    expect(await screen.findByTestId("pick-playlist-pl-p1")).toBeTruthy();
+    expect(screen.getByTestId("playlist-picker-loaded-hint").textContent).toContain("loaded playlists");
+    const filter = screen.getByLabelText(en.track.filterPlaylists) as HTMLInputElement;
+    await fireEvent.input(filter, { target: { value: "Late Page" } });
+    expect(screen.getByText(en.track.noMatchingPlaylists)).toBeTruthy();
+    // Load more stays reachable even when filtering loaded playlists yields zero matches.
+    expect(screen.getByTestId("playlist-picker-load-more")).toBeTruthy();
+
+    await fireEvent.input(filter, { target: { value: "" } });
+    await fireEvent.click(screen.getByTestId("playlist-picker-load-more"));
+    const errBanner = await screen.findByTestId("playlist-picker-more-error");
+    expect(errBanner.textContent).toContain("TIMEOUT");
+
+    await fireEvent.click(screen.getByTestId("playlist-picker-load-more"));
+    await fireEvent.click(await screen.findByTestId("pick-playlist-pl-p2"));
+    await fireEvent.click(await screen.findByTestId("confirm-add-to-playlist"));
+    await waitFor(() => expect(screen.getByTestId("banner-mutation").getAttribute("data-tone")).toBe("success"));
+    expect(sendMutation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: "addToPlaylist", playlistId: "pl-p2", confirmedByUser: true }),
+      "mock-account-epoch-1"
+    );
+  });
+
+  it("focuses the search input after async view transitions, without transitions, and under reduced motion", async () => {
+    const origDescriptor = Object.getOwnPropertyDescriptor(document, "startViewTransition");
+    const setStartViewTransition = (fn: ((cb: () => void | Promise<void>) => unknown) | undefined) => {
+      if (fn === undefined) {
+        Object.defineProperty(document, "startViewTransition", {
+          value: undefined,
+          configurable: true,
+          writable: true,
+        });
+        return;
+      }
+      Object.defineProperty(document, "startViewTransition", {
+        value: fn,
+        configurable: true,
+        writable: true,
+      });
+    };
+    try {
+      setStartViewTransition(
+        vi.fn((cb: () => void | Promise<void>) => {
+          const updateCallbackDone = new Promise<void>((resolve) => {
+            setTimeout(() => {
+              void Promise.resolve(cb()).then(resolve);
+            }, 20);
+          });
+          return { updateCallbackDone };
+        })
+      );
+      renderApp(createPreloadBridge().bridge, "home");
+      await screen.findByTestId("view-home");
+      await fireEvent.keyDown(document.body, { key: "f", ctrlKey: true });
+      await waitFor(() => expect(document.activeElement?.id).toBe("ytm-search-input"));
+      cleanup();
+
+      setStartViewTransition(undefined);
+      renderApp(createPreloadBridge().bridge, "home");
+      await screen.findByTestId("view-home");
+      await fireEvent.keyDown(document.body, { key: "f", ctrlKey: true });
+      await waitFor(() => expect(document.activeElement?.id).toBe("ytm-search-input"));
+      cleanup();
+
+      const skippedSpy = vi.fn(() => {
+        throw new Error("should not call startViewTransition under reduceMotion");
+      });
+      setStartViewTransition(skippedSpy);
+      renderApp(
+        createPreloadBridge({
+          snapshot: (s) => ({ ...s, settings: { ...s.settings, reduceMotion: true } }),
+        }).bridge,
+        "home"
+      );
+      await screen.findByTestId("view-home");
+      await fireEvent.keyDown(document.body, { key: "f", ctrlKey: true });
+      await waitFor(() => expect(document.activeElement?.id).toBe("ytm-search-input"));
+      expect(skippedSpy).not.toHaveBeenCalled();
+    } finally {
+      if (origDescriptor) {
+        Object.defineProperty(document, "startViewTransition", origDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "startViewTransition");
+      }
+    }
+  });
+
+  it("preserves a visible tabindex=0 row after scrolling 1,000 tracks without stealing focus", async () => {
+    const tracks = createSyntheticTracks(1000, "kb");
+    const entryIds = tracks.map((_, idx) => `qe-kb-${idx}`);
+    const onPlayTrack = vi.fn();
+    render(VirtualizedTrackList, {
+      props: {
+        tracks,
+        entryIds,
+        mockMode: true,
+        heightPx: 480,
+        onPlayTrack,
+      },
+    });
+
+    const list = screen.getByTestId("virtual-track-list");
+    Object.defineProperty(list, "clientHeight", { value: 480, configurable: true });
+    list.scrollTop = 5800;
+    await fireEvent.scroll(list);
+
+    let visibleIdx = -1;
+    await waitFor(() => {
+      const tabZeroButtons = list.querySelectorAll<HTMLElement>('[data-row-index][tabindex="0"]');
+      expect(tabZeroButtons).toHaveLength(1);
+      visibleIdx = Number(tabZeroButtons[0]!.getAttribute("data-row-index"));
+      expect(visibleIdx).toBeGreaterThan(50);
+    });
+    expect(list.contains(document.activeElement)).toBe(false);
+
+    const entryButton = list.querySelector<HTMLElement>(`[data-row-index="${visibleIdx}"][tabindex="0"]`)!;
+    entryButton.focus();
+    await tick();
+    expect(document.activeElement).toBe(entryButton);
+
+    await fireEvent.keyDown(list, { key: "ArrowDown" });
+    const nextIdx = visibleIdx + 1;
+    await waitFor(() => {
+      expect(document.activeElement?.getAttribute("data-row-index")).toBe(String(nextIdx));
+    });
+    await fireEvent.click(document.activeElement!);
+    expect(onPlayTrack).toHaveBeenCalledWith(tracks[nextIdx], nextIdx, `qe-kb-${nextIdx}`);
   });
 });

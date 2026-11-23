@@ -20,7 +20,7 @@ patterns="$repo/internal/release/sensitive-patterns.txt"
 
 # Tracked paths that make up the public tree.
 ALLOW=(
-  .gitignore Cargo.toml Cargo.lock package.json pnpm-lock.yaml pnpm-workspace.yaml
+  .github .gitignore Cargo.toml Cargo.lock package.json pnpm-lock.yaml pnpm-workspace.yaml
   rust-toolchain.toml tsconfig.base.json justfile README.md CHANGELOG.md LICENSE
   apps bridge config crates docs fixtures packages packaging tests tools ui
 )

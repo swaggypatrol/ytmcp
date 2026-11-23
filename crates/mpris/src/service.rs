@@ -336,11 +336,7 @@ impl PlayerInterface for MprisService {
         if !self.can_pause().await? {
             return Ok(());
         }
-        let tid = self.read_state(|s| s.player.track_instance_id.clone())?;
-        let mut args = Self::empty_args();
-        args.track_instance_id = tid;
-        self.dispatch_op("mpris-pause", PlayerOp::Pause, Some(args))
-            .await
+        self.dispatch_op("mpris-pause", PlayerOp::Pause, None).await
     }
 
     async fn play_pause(&self) -> fdo::Result<()> {
@@ -359,22 +355,14 @@ impl PlayerInterface for MprisService {
                 "stop is currently unavailable".to_string(),
             ));
         }
-        let tid = self.read_state(|s| s.player.track_instance_id.clone())?;
-        let mut args = Self::empty_args();
-        args.track_instance_id = tid;
-        self.dispatch_op("mpris-stop", PlayerOp::Stop, Some(args))
-            .await
+        self.dispatch_op("mpris-stop", PlayerOp::Stop, None).await
     }
 
     async fn play(&self) -> fdo::Result<()> {
         if !self.can_play().await? {
             return Ok(());
         }
-        let tid = self.read_state(|s| s.player.track_instance_id.clone())?;
-        let mut args = Self::empty_args();
-        args.track_instance_id = tid;
-        self.dispatch_op("mpris-play", PlayerOp::Play, Some(args))
-            .await
+        self.dispatch_op("mpris-play", PlayerOp::Play, None).await
     }
 
     async fn seek(&self, offset: Time) -> fdo::Result<()> {
@@ -919,6 +907,147 @@ mod tests {
         assert_eq!(rx.recv().await, Some(MprisHostAction::Raise));
         assert_eq!(rx.recv().await, Some(MprisHostAction::Quit));
 
+        core.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn global_play_pause_and_stop_ignore_stale_cached_track_instance() {
+        let clock = Arc::new(MockClock::new(1_000));
+        let bridge = Arc::new(RecordingBridgePort::default());
+        let core = Arc::new(CoreEngine::start(
+            CoreDeps {
+                clock: clock.clone(),
+                bridge: bridge.clone(),
+                output_gate: Arc::new(NoopOutputGatePort),
+                ..CoreDeps::default()
+            },
+            EngineConfig::default(),
+        ));
+
+        let b_epoch = BridgeEpoch::new("bridge-stale-1").unwrap();
+        assert!(
+            core.on_bridge_ready(
+                1,
+                BridgeReadyPayload {
+                    bridge_epoch: b_epoch.clone(),
+                    bridge_version: "1.0.0".to_string(),
+                    capabilities: supported_caps(),
+                    account_hint: None,
+                    logged_in_observed: false,
+                }
+            )
+            .await
+            .unwrap()
+        );
+
+        let obs = |playback, tid: &str, vid: &str| BridgePlaybackObservedPayload {
+            bridge_epoch: b_epoch.clone(),
+            playback,
+            track_instance_id: Some(TrackInstanceId::new(tid).unwrap()),
+            current_track: Some(make_track(vid, vid, 180_000)),
+            current_queue_entry_id: None,
+            playback_context: None,
+            position_ms: 5_000,
+            duration_ms: Some(180_000),
+            playback_rate: 1.0,
+            sample_age_ms: 0,
+            volume: 0.75,
+            muted: false,
+            shuffle: Some(false),
+            repeat: Some(RepeatMode::Off),
+            autoplay: None,
+            codec: None,
+            audio_mode: None,
+            quality_label: None,
+            drm_protected: None,
+        };
+
+        // Adapter caches track A while core subsequently switches to track B.
+        assert!(
+            core.on_bridge_playback_observed(
+                2,
+                obs(CorePlaybackStatus::Playing, "ti-A", "vidA0000001")
+            )
+            .await
+            .unwrap()
+        );
+        let snap_a = core.snapshot().await.unwrap();
+        let (tx, _rx) = mpsc::channel(4);
+        let svc = MprisService {
+            core: Arc::clone(&core),
+            config: MprisConfig::default(),
+            state: Arc::new(RwLock::new(MprisCachedState::from_snapshot(&snap_a))),
+            host_action_tx: tx,
+            cmd_seq: AtomicU64::new(1),
+        };
+
+        assert!(
+            core.on_bridge_playback_observed(
+                3,
+                obs(CorePlaybackStatus::Playing, "ti-B", "vidB0000002")
+            )
+            .await
+            .unwrap()
+        );
+
+        svc.pause().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(
+            core.on_bridge_playback_observed(
+                4,
+                obs(CorePlaybackStatus::Paused, "ti-B", "vidB0000002")
+            )
+            .await
+            .unwrap()
+        );
+        {
+            let mut guard = svc.state.write().unwrap();
+            guard.player.playback = CorePlaybackStatus::Paused;
+        }
+        svc.play().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(
+            core.on_bridge_playback_observed(
+                5,
+                obs(CorePlaybackStatus::Playing, "ti-B", "vidB0000002")
+            )
+            .await
+            .unwrap()
+        );
+        {
+            let mut guard = svc.state.write().unwrap();
+            guard.player.playback = CorePlaybackStatus::Playing;
+        }
+        svc.stop().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        // Stop begins by pausing the live track B; once paused, core seeks B to 0.
+        assert!(
+            core.on_bridge_playback_observed(
+                6,
+                obs(CorePlaybackStatus::Paused, "ti-B", "vidB0000002")
+            )
+            .await
+            .unwrap()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        let cmds = bridge.commands.lock().unwrap().clone();
+        let ops: Vec<PlayerOp> = cmds.iter().map(|c| c.op).collect();
+        assert_eq!(
+            ops,
+            vec![
+                PlayerOp::Pause,
+                PlayerOp::Play,
+                PlayerOp::Pause,
+                PlayerOp::Seek,
+            ]
+        );
+        let stop_seek = cmds.last().unwrap().args.as_ref().unwrap();
+        assert_eq!(stop_seek.position_ms, Some(0));
+        assert_eq!(
+            stop_seek.track_instance_id.as_ref().map(|id| id.as_str()),
+            Some("ti-B")
+        );
         core.shutdown().await.unwrap();
     }
 }

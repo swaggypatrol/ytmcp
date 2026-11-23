@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use ytm_protocol::{
-    AccountEpoch, BridgeEpoch, CodecError, CommandId, CoreEpoch, CredentialRevision, Envelope,
-    MAX_FRAME_BYTES, MAX_SAFE_JS_INT, MessageKind, PROTOCOL_VERSION, PlayerCommandArgs,
-    PlayerCommandPayload, PlayerOp, QueryErrorCode, RequestId, SenderRole, SessionMaterialPayload,
-    TrackInstanceId, decode_ndjson_bytes, decode_ndjson_str, encode_ndjson_line,
+    AccountEpoch, AppSettings, AppSettingsPatch, BridgeEpoch, CodecError, CommandId, CoreEpoch,
+    CredentialRevision, Envelope, MAX_FRAME_BYTES, MAX_SAFE_JS_INT, MessageKind, PROTOCOL_VERSION,
+    PlayerCommandArgs, PlayerCommandPayload, PlayerOp, QueryErrorCode, RequestId, SenderRole,
+    SessionMaterialPayload, TrackInstanceId, UiLanguage, decode_ndjson_bytes, decode_ndjson_str,
+    encode_ndjson_line,
 };
 
 #[test]
@@ -146,4 +147,42 @@ fn command_envelope_builds_and_decodes_cleanly() {
     let err_env = Envelope::error_response(11, None, QueryErrorCode::Busy, "queue full", true);
     let err_line = encode_ndjson_line(&err_env).unwrap();
     assert!(decode_ndjson_str(&err_line).is_ok());
+}
+
+#[test]
+fn settings_patch_and_updated_reply_round_trip_with_role_and_scale_checks() {
+    assert!(MessageKind::UiSettingsUpdate.is_allowed_from(SenderRole::MainUi));
+    assert!(MessageKind::CoreSettingsUpdated.is_allowed_from(SenderRole::Core));
+    assert!(!MessageKind::CoreSettingsUpdated.is_allowed_from(SenderRole::MainUi));
+
+    let patch_env = Envelope::new(
+        MessageKind::UiSettingsUpdate,
+        12,
+        AppSettingsPatch {
+            ui_language: Some(UiLanguage::SimplifiedChinese),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let patch_line = encode_ndjson_line(&patch_env).unwrap();
+    assert!(!patch_line.contains("reduceTransparency"));
+    let decoded_patch: AppSettingsPatch = decode_ndjson_str(&patch_line)
+        .unwrap()
+        .decode_payload()
+        .unwrap();
+    assert_eq!(
+        decoded_patch.ui_language,
+        Some(UiLanguage::SimplifiedChinese)
+    );
+
+    let updated_env =
+        Envelope::new(MessageKind::CoreSettingsUpdated, 13, AppSettings::default()).unwrap();
+    let updated_line = encode_ndjson_line(&updated_env).unwrap();
+    assert!(decode_ndjson_str(&updated_line).is_ok());
+
+    let bad_scale = r#"{"protocolVersion":1,"kind":"ui.settingsUpdate","seq":14,"payload":{"uiScalePercent":50}}"#;
+    assert!(matches!(
+        decode_ndjson_str(bad_scale),
+        Err(CodecError::InvalidPayload { .. })
+    ));
 }

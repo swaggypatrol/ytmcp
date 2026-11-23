@@ -105,6 +105,24 @@ export function resolveMainWindowClose(
   return settings?.closeToTray === true && trayAvailable ? "hide" : "quit";
 }
 
+/**
+ * Tray "playing" state implied by one core envelope, or `null` when the envelope says nothing
+ * about playback. A `core.ready` (core restarted) clears it until the new snapshot arrives.
+ */
+export function trayPlayingFromCoreEnvelope(envelope: Envelope): boolean | null {
+  const isPlaying = (player: PlayerObservedState): boolean =>
+    player.playback === "playing" || player.playback === "buffering";
+  if (envelope.kind === "core.ready") return false;
+  if (envelope.kind === "core.snapshot") {
+    return isPlaying((envelope.payload as { player: PlayerObservedState }).player);
+  }
+  if (envelope.kind === "core.delta") {
+    const delta = envelope.payload as StateDelta;
+    return delta.deltaType === "playerChanged" ? isPlaying(delta.player) : null;
+  }
+  return null;
+}
+
 function resolveDesktopDistDir(): string {
   const dir = import.meta.dirname;
   if (dir.endsWith(`${sep}dist`) || dir === "dist") {
@@ -527,13 +545,12 @@ export async function startDesktopShell(
     trackNotifier.setEnabled(settings.trackNotifications === true);
   };
 
-  const observePlayer = (player: PlayerObservedState): void => {
-    trayPlaying = player.playback === "playing" || player.playback === "buffering";
-    tray?.setPlaying(trayPlaying);
-    trackNotifier.observePlayer(player);
-  };
-
   const deliverCoreEnvelope = (envelope: Envelope): void => {
+    const playing = trayPlayingFromCoreEnvelope(envelope);
+    if (playing !== null) {
+      trayPlaying = playing;
+      tray?.setPlaying(playing);
+    }
     if (envelope.kind === "core.snapshot") {
       const snapshot = envelope.payload as {
         settings: AppSettings;
@@ -542,13 +559,13 @@ export async function startDesktopShell(
       };
       observeSettings(snapshot.settings);
       trackNotifier.setAuthState(snapshot.authState?.state);
-      observePlayer(snapshot.player);
+      trackNotifier.observePlayer(snapshot.player);
     } else if (envelope.kind === "core.delta") {
       const delta = envelope.payload as StateDelta;
       if (delta.deltaType === "settingsChanged") {
         observeSettings(delta.settings);
       } else if (delta.deltaType === "playerChanged") {
-        observePlayer(delta.player);
+        trackNotifier.observePlayer(delta.player);
       } else if (delta.deltaType === "authChanged") {
         trackNotifier.setAuthState(delta.auth_state?.state);
       }

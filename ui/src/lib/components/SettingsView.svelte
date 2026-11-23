@@ -1,14 +1,14 @@
 <script lang="ts">
-  import type { AppSettings, AppSnapshot, ThemeMode } from "@ytm-glass/protocol";
+  import type { AppSettings, AppSettingsPatch, AppSnapshot, ThemeMode } from "@ytm-glass/protocol";
   import { LOCALE_NAMES, LOCALES, t, type Locale } from "../i18n/index.svelte.js";
-  import type { CacheClearOutcome } from "../ipc/client.js";
+  import type { CacheClearOutcome, SettingsUpdateOutcome } from "../ipc/client.js";
   import AccessibleDialog from "./AccessibleDialog.svelte";
   import Icon from "./Icon.svelte";
 
   interface Props {
     snapshot: AppSnapshot | null;
     resnapshotCount: number;
-    onUpdateSettings: (next: AppSettings) => void;
+    onUpdateSettings: (patch: AppSettingsPatch) => Promise<SettingsUpdateOutcome>;
     onOpenDiagnostics: () => void;
     onOpenOfficialPlayer?: () => void;
     /** Resolves once core confirms, rejects or fails to confirm the clear. */
@@ -33,28 +33,64 @@
   const trayAvailable = $derived(snapshot?.hostHealth.trayAvailable === true);
   const auth = $derived(snapshot?.authState ?? null);
 
+  let pendingValues = $state<Partial<AppSettings>>({});
+  const pendingSeq: Partial<Record<keyof AppSettings, number>> = {};
+  let saveSeq = 0;
+  let saveError = $state<string | null>(null);
+  let saveErrorSeq = 0;
+
+  function settingValue<K extends keyof AppSettings>(key: K): AppSettings[K] {
+    if (key in pendingValues) {
+      return pendingValues[key] as AppSettings[K];
+    }
+    return snapshot!.settings[key];
+  }
+
   /** UI scales the host applies; a larger stored value is shown as the largest. */
   const uiScales = [100, 125, 150] as const;
-  const shownUiScale = $derived(Math.min(150, snapshot?.settings.uiScalePercent ?? 100));
+  const shownUiScale = $derived(
+    snapshot ? Math.min(150, pendingValues.uiScalePercent ?? snapshot.settings.uiScalePercent ?? 100) : 100
+  );
 
-  /**
-   * Changes sent but not yet seen in the snapshot. Core replaces the whole settings object, so
-   * each submission carries them until the snapshot shows each value; a later snapshot then
-   * wins for that field again.
-   */
-  let unconfirmed: Partial<AppSettings> = {};
-  $effect(() => {
-    const current = snapshot?.settings;
-    if (!current) return;
-    unconfirmed = Object.fromEntries(
-      Object.entries(unconfirmed).filter(([key, value]) => current[key as keyof AppSettings] !== value)
-    );
-  });
-
-  function patchSettings(partial: Partial<AppSettings>) {
+  async function patchSettings(partial: AppSettingsPatch) {
     if (!snapshot) return;
-    unconfirmed = { ...unconfirmed, ...partial };
-    onUpdateSettings({ ...snapshot.settings, ...unconfirmed });
+    const seq = ++saveSeq;
+    saveError = null;
+    const nextPending: Partial<AppSettings> = { ...pendingValues };
+    const entries = Object.entries(partial) as [keyof AppSettings, AppSettings[keyof AppSettings] | undefined][];
+    for (const [key, value] of entries) {
+      if (value !== undefined) {
+        pendingSeq[key] = seq;
+        (nextPending as Record<string, unknown>)[key] = value;
+      }
+    }
+    pendingValues = nextPending;
+
+    const outcome = await onUpdateSettings(partial);
+    const cleared: Partial<AppSettings> = { ...pendingValues };
+    let changed = false;
+    for (const [key] of entries) {
+      if (pendingSeq[key] === seq) {
+        delete pendingSeq[key];
+        if (key in cleared) {
+          delete cleared[key];
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      pendingValues = cleared;
+    }
+
+    if (outcome.outcome === "failed") {
+      if (seq >= saveErrorSeq) {
+        saveErrorSeq = seq;
+        saveError = outcome.error.safeMessage;
+      }
+    } else if (seq >= saveErrorSeq) {
+      saveErrorSeq = seq;
+      saveError = null;
+    }
   }
 
   async function handleClearCache() {
@@ -70,6 +106,17 @@
   {#if !snapshot}
     <div class="state-block" role="status">{t.states.loading}</div>
   {:else}
+    {#if saveError}
+      <div
+        role="alert"
+        class="px-4 py-2.5 surface-rounded-md border type-sm"
+        style="background-color: var(--bg-elevated); border-color: var(--status-danger); color: var(--status-danger);"
+        data-testid="settings-save-error"
+      >
+        {t.settings.saveFailed.replace("{message}", saveError)}
+      </div>
+    {/if}
+
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
       <div class="card p-5 flex flex-col gap-4">
         <h2 class="type-lg font-semibold m-0">{t.settings.appearanceSection}</h2>
@@ -77,8 +124,8 @@
           <span>{t.settings.languageLabel}</span>
           <select
             class="select"
-            value={snapshot.settings.uiLanguage ?? "en"}
-            onchange={(e) => patchSettings({ uiLanguage: e.currentTarget.value as Locale })}
+            value={settingValue("uiLanguage") ?? "en"}
+            onchange={(e) => void patchSettings({ uiLanguage: e.currentTarget.value as Locale })}
             data-testid="setting-language-select"
           >
             {#each LOCALES as locale (locale)}
@@ -90,8 +137,8 @@
           <span>{t.settings.themeLabel}</span>
           <select
             class="select"
-            value={snapshot.settings.theme}
-            onchange={(e) => patchSettings({ theme: e.currentTarget.value as ThemeMode })}
+            value={settingValue("theme")}
+            onchange={(e) => void patchSettings({ theme: e.currentTarget.value as ThemeMode })}
             data-testid="setting-theme-select"
           >
             <option value="dark">{t.settings.themes.dark}</option>
@@ -105,8 +152,8 @@
             type="checkbox"
             role="switch"
             class="toggle"
-            checked={snapshot.settings.reduceMotion}
-            onchange={(e) => patchSettings({ reduceMotion: e.currentTarget.checked })}
+            checked={settingValue("reduceMotion")}
+            onchange={(e) => void patchSettings({ reduceMotion: e.currentTarget.checked })}
             data-testid="setting-reduce-motion"
           />
         </label>
@@ -116,8 +163,8 @@
             type="checkbox"
             role="switch"
             class="toggle"
-            checked={snapshot.settings.reduceTransparency}
-            onchange={(e) => patchSettings({ reduceTransparency: e.currentTarget.checked })}
+            checked={settingValue("reduceTransparency")}
+            onchange={(e) => void patchSettings({ reduceTransparency: e.currentTarget.checked })}
             data-testid="setting-reduce-transparency"
           />
         </label>
@@ -126,7 +173,7 @@
           <select
             class="select tabular-nums"
             value={String(shownUiScale)}
-            onchange={(e) => patchSettings({ uiScalePercent: Number(e.currentTarget.value) })}
+            onchange={(e) => void patchSettings({ uiScalePercent: Number(e.currentTarget.value) })}
             data-testid="setting-ui-scale"
           >
             {#each uiScales as scale (scale)}
@@ -144,8 +191,8 @@
             type="checkbox"
             role="switch"
             class="toggle"
-            checked={snapshot.settings.lrclibEnabled}
-            onchange={(e) => patchSettings({ lrclibEnabled: e.currentTarget.checked })}
+            checked={settingValue("lrclibEnabled")}
+            onchange={(e) => void patchSettings({ lrclibEnabled: e.currentTarget.checked })}
             data-testid="setting-lrclib"
           />
         </label>
@@ -155,8 +202,8 @@
             type="checkbox"
             role="switch"
             class="toggle"
-            checked={snapshot.settings.autoplayOnLaunch}
-            onchange={(e) => patchSettings({ autoplayOnLaunch: e.currentTarget.checked })}
+            checked={settingValue("autoplayOnLaunch")}
+            onchange={(e) => void patchSettings({ autoplayOnLaunch: e.currentTarget.checked })}
             data-testid="setting-autoplay"
           />
         </label>
@@ -166,8 +213,8 @@
             type="checkbox"
             role="switch"
             class="toggle"
-            checked={snapshot.settings.trackNotifications}
-            onchange={(e) => patchSettings({ trackNotifications: e.currentTarget.checked })}
+            checked={settingValue("trackNotifications")}
+            onchange={(e) => void patchSettings({ trackNotifications: e.currentTarget.checked })}
             data-testid="setting-track-notifications"
           />
         </label>
@@ -178,10 +225,10 @@
               type="checkbox"
               role="switch"
               class="toggle"
-              checked={trayAvailable && snapshot.settings.closeToTray}
+              checked={trayAvailable && settingValue("closeToTray")}
               disabled={!trayAvailable}
               aria-describedby={trayAvailable ? undefined : "tray-unavailable-note"}
-              onchange={(e) => patchSettings({ closeToTray: e.currentTarget.checked })}
+              onchange={(e) => void patchSettings({ closeToTray: e.currentTarget.checked })}
               data-testid="setting-close-to-tray"
             />
           </label>

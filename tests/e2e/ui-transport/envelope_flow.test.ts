@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FakeCoreClient,
   PROTOCOL_VERSION,
+  type AppSettingsPatch,
   type Envelope,
   type MutationRequest,
   type StateDelta,
@@ -52,6 +53,15 @@ function createHost(options: { coreEpoch?: string; answerMutation?: boolean; ref
             emit("core.mutationResponse", { kind: (env.payload as MutationRequest).kind, outcome: "confirmed", error: null }, id);
           }
           break;
+        case "ui.settingsUpdate": {
+          if (options.refuseKinds?.includes("core.error.settings")) {
+            emit("core.error", { code: "STORAGE_ERROR", retriable: false, retryAfterMs: null, safeMessage: "disk full", requestId: id }, id);
+          } else {
+            const updated = fake.updateSettings(env.payload as AppSettingsPatch);
+            emit("core.settingsUpdated", updated, id);
+          }
+          break;
+        }
         default:
           break;
       }
@@ -127,5 +137,26 @@ describe("UI envelope transport", () => {
     expect(before.coreEpoch).toBe("core-A");
     expect(host.sent.filter((e) => e.kind === "ui.subscribeSnapshot")).toHaveLength(2);
     client.disconnect();
+  });
+
+  it("sends partial ui.settingsUpdate patches and reports core.settingsUpdated or core.error", async () => {
+    const okHost = createHost();
+    const okClient = createUiClient({ preloadBridge: wrapPreloadEnvelopeBridge(okHost.raw) });
+    await okClient.connect();
+    const res = await okClient.updateSettings({ uiLanguage: "zh-CN" });
+    expect(res.outcome).toBe("saved");
+    if (res.outcome === "saved") {
+      expect(res.settings.uiLanguage).toBe("zh-CN");
+    }
+    const wire = okHost.sent.find((e) => e.kind === "ui.settingsUpdate")!;
+    expect(wire.payload).toEqual({ uiLanguage: "zh-CN" });
+    okClient.disconnect();
+
+    const failHost = createHost({ refuseKinds: ["core.error.settings"] });
+    const failClient = createUiClient({ preloadBridge: wrapPreloadEnvelopeBridge(failHost.raw) });
+    await failClient.connect();
+    const failRes = await failClient.updateSettings({ reduceMotion: true });
+    expect(failRes).toMatchObject({ outcome: "failed", error: { code: "STORAGE_ERROR", safeMessage: "disk full" } });
+    failClient.disconnect();
   });
 });

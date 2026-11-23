@@ -5,11 +5,11 @@
 # YTM_GLASS_COMMIT (the commit must be clean and committed) and runs makepkg.
 
 pkgname=ytm-glass
-pkgver=0.1.0
-pkgrel=20
+pkgver=1.0.0
+pkgrel=1
 pkgdesc="Native Wayland music player shell for the official YouTube Music web player (Electron + Rust)"
 arch=('x86_64')
-url="https://music.youtube.com"
+url="https://github.com/swaggypatrol/ytm-glass"
 license=('MIT')
 _electron=45.4.1
 _repo="${YTM_GLASS_REPO:?set YTM_GLASS_REPO to the git repository path}"

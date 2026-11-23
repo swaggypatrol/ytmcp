@@ -114,6 +114,8 @@ export const zhCN: Messages = {
     bridgeDisconnectedBanner: "播放页已断开或未就绪，请检查官方播放页。",
     bridgeNotDetectedBanner:
       "未检测到桌面主进程连接（window.ytmGlassUi）。如需预览界面，请显式启用模拟模式（?mock=1）。",
+    connectionFailedBanner: "无法连接到播放器核心进程。",
+    reconnect: "重新连接",
     errorTitle: "加载失败",
     retry: "重试",
     openOfficialPlayer: "打开官方播放页",
@@ -198,6 +200,7 @@ export const zhCN: Messages = {
     goToArtist: "前往艺人：{name}",
     choosePlaylist: "选择歌单",
     filterPlaylists: "筛选歌单…",
+    filterLoadedOnly: "筛选仅作用于已加载的歌单。",
     noPlaylists: "没有可添加的歌单。",
     noMatchingPlaylists: "没有匹配的歌单。",
     confirmAddTitle: "确认添加",
@@ -351,6 +354,7 @@ export const zhCN: Messages = {
     cacheCleared: "缓存已清理，列表内容将自动刷新。",
     cacheClearFailed: "缓存清理失败：{message}",
     cacheClearUnconfirmed: "缓存清理未确认：10 秒内没有收到完成信号。",
+    saveFailed: "保存设置失败：{message}",
   },
   dialog: {
     diagnosticsTitle: "诊断与状态",

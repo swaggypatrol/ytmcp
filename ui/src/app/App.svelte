@@ -1,7 +1,6 @@
 <script lang="ts">
   import {
     createSyntheticTracks,
-    type AppSettings,
     type CapabilitySet,
     type CapabilitySupport,
     type CommandReceipt,
@@ -275,27 +274,32 @@
     return a.view === b.view && ("id" in a ? a.id : null) === ("id" in b ? b.id : null);
   }
 
-  function setRoute(next: Route) {
+  function setRoute(next: Route): Promise<void> {
     if (typeof document !== "undefined" && typeof document.startViewTransition === "function" && !motionReduced) {
-      document.startViewTransition(() => {
+      const transition = document.startViewTransition(async () => {
         route = next;
+        await tick();
       });
-    } else {
-      route = next;
+      return Promise.resolve(transition?.updateCallbackDone).then(
+        () => undefined,
+        () => undefined
+      );
     }
+    route = next;
+    return tick();
   }
 
-  function navigate(next: Route) {
-    if (sameRoute(next, route)) return;
+  function navigate(next: Route): Promise<void> {
+    if (sameRoute(next, route)) return Promise.resolve();
     history = [...history.slice(-(MAX_HISTORY - 1)), route];
-    setRoute(next);
+    return setRoute(next);
   }
 
-  function back() {
+  function back(): Promise<void> {
     const prev = history.at(-1);
-    if (!prev) return;
+    if (!prev) return Promise.resolve();
     history = history.slice(0, -1);
-    setRoute(prev);
+    return setRoute(prev);
   }
 
   const openPlaylist = (id: string) => navigate({ view: "playlist", id });
@@ -479,8 +483,9 @@
     switch (action) {
       case "focusSearch":
         e.preventDefault();
-        navigate({ view: "search" });
-        void tick().then(() => document.getElementById("ytm-search-input")?.focus());
+        void navigate({ view: "search" })
+          .then(() => tick())
+          .then(() => document.getElementById("ytm-search-input")?.focus());
         break;
       case "openLyrics":
         e.preventDefault();
@@ -620,6 +625,9 @@
         onOpenOfficialPlayer={openOfficialPlayer}
         onActivateMock={() => {
           void client.activateMockMode("normal");
+        }}
+        onRetryConnect={() => {
+          void client.retryConnect();
         }}
       />
 
@@ -849,7 +857,7 @@
           <SettingsView
             {snapshot}
             resnapshotCount={clientState.resnapshotCount}
-            onUpdateSettings={(next: AppSettings) => void client.updateSettings(next)}
+            onUpdateSettings={(patch) => client.updateSettings(patch)}
             onOpenDiagnostics={() => {
               diagnosticsOpen = true;
             }}
@@ -889,6 +897,9 @@
           pendingWrites.has(`addToPlaylist:${actionsFor.track.videoId}`)}
         playlistsView={libraryView}
         playlists={store.library.items}
+        playlistsHasMore={store.library.nextCursor !== null}
+        playlistsLoadingMore={store.library.loadingMore}
+        playlistsMoreError={store.library.moreError}
         onPlay={() => runTrackAction((t) => playTrack(t))}
         onEnqueue={(position) => runTrackAction((t) => enqueue(t, position))}
         onSetLike={(liked) => runTrackAction((t) => setLike(t, liked))}
@@ -896,6 +907,8 @@
           pickerRequested = true;
           loadRoute({ view: "library" });
         }}
+        onLoadMorePlaylists={() => void store.loadMoreLibrary()}
+        onRetryPlaylists={() => loadRoute({ view: "library" }, true)}
         onAddToPlaylist={(playlist) => runTrackAction((t) => addToPlaylist(t, playlist))}
         onOpenAlbum={(id) => runTrackAction(() => openAlbum(id))}
         onOpenArtist={(id) => runTrackAction(() => openArtist(id))}

@@ -118,7 +118,7 @@ fn receipt_text(tool: MusicTool, arguments: &JsonObject, receipt: &OperationRece
                     "it was stopped before it started",
                 )
             });
-            not_done(tool, arguments, &error)
+            ended_needs_new_operation(&error).unwrap_or_else(|| not_done(tool, arguments, &error))
         }
         Unknown | Accepted | Submitted | Acknowledged => UNCLEAR.to_owned(),
     }
@@ -212,6 +212,21 @@ fn change_action(arguments: &JsonObject) -> Option<&str> {
         .or_else(|| arguments.get("edit"))
         .and_then(|change| change.get("action"))
         .and_then(serde_json::Value::as_str)
+}
+
+/// An operation the player ended without sending anything and that needs a new operation to
+/// try again: a restart before it was sent, or a handoff the listener never completed. Its own
+/// message says which; its operation ID only replays that ending.
+fn ended_needs_new_operation(error: &ControlError) -> Option<String> {
+    (error.code == ErrorCode::Unavailable
+        && error.retry_disposition == RetryDisposition::NewPlanRequired)
+        .then(|| {
+            joined(
+                "Not done; nothing changed",
+                Some(&sentence(&error.message)),
+                Some("Call again without operationId to start it as a new operation."),
+            )
+        })
 }
 
 /// Clearing or replacing what comes next that was refused outright (a radio queue, autoplay
@@ -594,6 +609,77 @@ mod tests {
             ControlResponse::Error(storage),
         );
         assert_eq!(summary, "Not done; nothing changed: Disk full.");
+    }
+
+    #[test]
+    fn a_write_ended_by_a_restart_asks_for_a_new_operation() {
+        let ended = |phase, items: &[ItemPhase], message: &str| {
+            ControlResponse::Operation(OperationReceipt {
+                error: Some(ControlError::new(
+                    ErrorCode::Unavailable,
+                    RetryDisposition::NewPlanRequired,
+                    message,
+                )),
+                ..receipt(phase, items, None)
+            })
+        };
+        let unsent = ended(
+            OperationPhase::Cancelled,
+            &[ItemPhase::Cancelled, ItemPhase::Cancelled],
+            "the player restarted before this operation was sent; start a new operation if \
+             still needed",
+        );
+        let summary = text(
+            MusicTool::Enqueue,
+            json!({"mode": "next", "videoIds": ["A", "B"], "operationId": "auto-1"}),
+            unsent,
+        );
+        assert_eq!(
+            summary,
+            "Not done; nothing changed: The player restarted before this operation was sent; start \
+             a new operation if still needed. Call again without operationId to start it as a new \
+             operation."
+        );
+        let mut handoff = ended(
+            OperationPhase::Rejected,
+            &[],
+            "the player restarted while the account handoff waited for the user; nothing was sent",
+        );
+        // Recovery keeps the waiting handoff resource; the ended wait is not still running.
+        if let ControlResponse::Operation(receipt) = &mut handoff {
+            receipt.resource = Some(OperationResource::AccountHandoff {
+                goal: ytm_control_api::AccountHandoffGoal::SwitchAccount,
+                state: AccountHandoffState::AwaitingUser,
+            });
+        }
+        assert_eq!(
+            text(MusicTool::AccountHandoff, json!({}), handoff),
+            "Not done; nothing changed: The player restarted while the account handoff waited for \
+             the user; nothing was sent. Call again without operationId to start it as a new \
+             operation."
+        );
+        // A handoff that simply timed out in a running player says so, not that it restarted.
+        let timed_out = ended(
+            OperationPhase::Rejected,
+            &[],
+            "the account change was not completed in the player within 30 minutes",
+        );
+        assert_eq!(
+            text(MusicTool::AccountHandoff, json!({}), timed_out),
+            "Not done; nothing changed: The account change was not completed in the player within \
+             30 minutes. Call again without operationId to start it as a new operation."
+        );
+        // A live outage keeps its plain advice.
+        let down = ControlError::new(
+            ErrorCode::Unavailable,
+            RetryDisposition::SafeReadRetry,
+            "the music catalog is unavailable",
+        );
+        assert_eq!(
+            text(MusicTool::Enqueue, json!({}), ControlResponse::Error(down)),
+            "Not done; nothing changed. The player may be closed or starting up; try again in a \
+             moment."
+        );
     }
 
     #[test]

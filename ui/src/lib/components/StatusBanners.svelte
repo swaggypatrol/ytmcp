@@ -25,6 +25,7 @@
     onSelectScenario: (scenario: FakeScenario) => void;
     onOpenOfficialPlayer: () => void;
     onActivateMock: () => void;
+    onRetryConnect?: () => void;
   }
 
   let {
@@ -39,6 +40,7 @@
     onSelectScenario,
     onOpenOfficialPlayer,
     onActivateMock,
+    onRetryConnect,
   }: Props = $props();
 
   let dismissedCommandKey = $state<string | null>(null);
@@ -73,8 +75,10 @@
       (snapshot.capabilities.playPause === "unsupported" ||
         snapshot.capabilities.seek === "unsupported")
   );
+  const hasConnectionError = $derived(mode === "preload" && connectionError !== null);
   const hasAnyBanner = $derived(
     mode === "unconnected" ||
+      hasConnectionError ||
       isMock ||
       isAuthExpired ||
       isBridgeDisconnected ||
@@ -107,6 +111,32 @@
         >
           {t.states.enableMockPreview}
         </button>
+      </div>
+    {:else if hasConnectionError}
+      <div
+        role="alert"
+        class="flex flex-wrap items-center justify-between gap-3 px-4 py-3 surface-rounded-md border"
+        style="background-color: var(--bg-elevated); border-color: var(--status-danger);"
+        data-testid="banner-connection-error"
+      >
+        <div class="min-w-0 flex-1 type-sm" style="color: var(--text-primary);">
+          <span class="font-semibold" style="color: var(--status-danger);">
+            {t.states.connectionFailedBanner}
+          </span>
+          {#if connectionError}
+            <span class="ml-2 type-xs" style="color: var(--text-secondary);">({connectionError})</span>
+          {/if}
+        </div>
+        {#if onRetryConnect}
+          <button
+            type="button"
+            class="btn-primary shrink-0"
+            onclick={onRetryConnect}
+            data-testid="btn-reconnect-core"
+          >
+            {t.states.reconnect}
+          </button>
+        {/if}
       </div>
     {/if}
 

@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use std::sync::{Arc, Mutex};
 use ytm_control_api::{
     AccountHandoffState, ControlError, ErrorCode, InterruptResumeState, ItemPhase, OperationPhase,
-    OperationReceipt, OperationResource, RetryDisposition, WriteInput,
+    OperationReceipt, OperationResource, RetryDisposition, WriteAction, WriteInput,
 };
 use ytm_core::BoxFuture;
 use ytm_core::control::journal::{
@@ -317,11 +317,11 @@ impl OperationStore for SqliteStorage {
                 .map_err(|_| error_storage())?;
             let mut through = 0;
             loop {
-                let page: Vec<(i64, String)> = {
+                let page: Vec<(i64, String, String)> = {
                     let mut stmt = tx.prepare(
-                        "SELECT rowid, receipt_json FROM control_operations WHERE settled = 0 AND rowid > ?1 ORDER BY rowid LIMIT 128",
+                        "SELECT rowid, request_json, receipt_json FROM control_operations WHERE settled = 0 AND rowid > ?1 ORDER BY rowid LIMIT 128",
                     ).map_err(|_| error_storage())?;
-                    stmt.query_map([through], |row| Ok((row.get(0)?, row.get(1)?)))
+                    stmt.query_map([through], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                         .map_err(|_| error_storage())?
                         .collect::<Result<_, _>>()
                         .map_err(|_| error_storage())?
@@ -329,13 +329,14 @@ impl OperationStore for SqliteStorage {
                 if page.is_empty() {
                     break;
                 }
-                for (rowid, encoded) in page {
+                for (rowid, encoded_request, encoded) in page {
                     through = rowid;
                     let Some(mut receipt) = decode_receipt(&encoded)? else {
                         continue;
                     };
+                    let request = serde_json::from_str::<WriteInput>(&encoded_request).ok();
                     let old = receipt.clone();
-                    recover_receipt(&mut receipt);
+                    recover_receipt(&mut receipt, request.as_ref());
                     if receipt == old {
                         continue;
                     }
@@ -352,7 +353,22 @@ impl OperationStore for SqliteStorage {
     }
 }
 
-fn recover_receipt(receipt: &mut OperationReceipt) {
+/// Ends an operation the restart stopped before it ran, the way a live cancellation ends it:
+/// items that never started are cancelled and nothing is left to restore.
+fn settle_cancelled(receipt: &mut OperationReceipt, retry: RetryDisposition, message: &str) {
+    receipt.phase = OperationPhase::Cancelled;
+    receipt.settled = true;
+    receipt.retry_disposition = retry;
+    receipt.removed.clear();
+    for item in &mut receipt.item_results {
+        if item.phase == ItemPhase::NotStarted {
+            item.phase = ItemPhase::Cancelled;
+        }
+    }
+    receipt.error = Some(ControlError::new(ErrorCode::Unavailable, retry, message));
+}
+
+fn recover_receipt(receipt: &mut OperationReceipt, request: Option<&WriteInput>) {
     receipt.scheduling_stopped = true;
     // A pending resume plan lives only in the running worker. Once the switch was observed
     // (acknowledged), restart ends the plan as a settled partial result instead of an unknown.
@@ -398,6 +414,43 @@ fn recover_receipt(receipt: &mut OperationReceipt) {
             RetryDisposition::NewPlanRequired,
             "the player restarted while the account handoff waited for the user; nothing was sent",
         ));
+        return;
+    }
+    // Control management actions keep their work in the worker that died with the process. A
+    // cancellation only signalled an in-memory token, and that worker stopped anyway; a
+    // resumption sends nothing and may only have recorded evidence in the target's own receipt.
+    // Either way the target's receipt is the one that says what happened.
+    if receipt.phase == OperationPhase::Accepted
+        && let Some((retry, message)) = request.and_then(|request| match request.action {
+            WriteAction::Cancel { .. } => Some((
+                RetryDisposition::NotRetryable,
+                "the player restarted before this cancellation finished; the restart stopped the \
+                 target operation, whose receipt records its outcome",
+            )),
+            WriteAction::ResumeOperation { .. } => Some((
+                RetryDisposition::NewPlanRequired,
+                "the player restarted before this recovery finished; read the target operation's \
+                 receipt to see whether it settled",
+            )),
+            _ => None,
+        })
+    {
+        settle_cancelled(receipt, retry, message);
+        return;
+    }
+    // An Accepted business operation whose items never started was never dispatched.
+    if receipt.phase == OperationPhase::Accepted
+        && request.is_some()
+        && receipt
+            .item_results
+            .iter()
+            .all(|item| item.phase == ItemPhase::NotStarted)
+    {
+        settle_cancelled(
+            receipt,
+            RetryDisposition::NewPlanRequired,
+            "the player restarted before this operation was sent; start a new operation if still needed",
+        );
         return;
     }
     for item in &mut receipt.item_results {

@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  AppSettingsPatch,
   AppSnapshot,
   CatalogQueryRequest,
   CatalogResponsePayload,
@@ -378,14 +379,28 @@ export class FakeCoreClient {
     return observedReceipt;
   }
 
-  public updateSettings(settings: AppSettings): void {
+  public updateSettings(patch: AppSettingsPatch): AppSettings {
+    const base = this.snapshot.settings;
+    const next: AppSettings = {
+      theme: patch.theme ?? base.theme,
+      reduceMotion: patch.reduceMotion ?? base.reduceMotion,
+      reduceTransparency: patch.reduceTransparency ?? base.reduceTransparency,
+      uiScalePercent: patch.uiScalePercent ?? base.uiScalePercent,
+      autoplayOnLaunch: patch.autoplayOnLaunch ?? base.autoplayOnLaunch,
+      closeToTray: patch.closeToTray ?? base.closeToTray,
+      lrclibEnabled: patch.lrclibEnabled ?? base.lrclibEnabled,
+      trackNotifications: patch.trackNotifications ?? base.trackNotifications,
+      nativeWindowDecorations: patch.nativeWindowDecorations ?? base.nativeWindowDecorations,
+      uiLanguage: patch.uiLanguage ?? base.uiLanguage,
+    };
     this.snapshot.revision += 1;
-    this.snapshot.settings = structuredClone(settings);
+    this.snapshot.settings = structuredClone(next);
     this.emit({
       deltaType: "settingsChanged",
       revision: this.snapshot.revision,
-      settings: structuredClone(settings),
+      settings: structuredClone(next),
     });
+    return structuredClone(next);
   }
 
   public queryCatalog(req: CatalogQueryRequest): CatalogResponsePayload {

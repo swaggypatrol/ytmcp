@@ -310,6 +310,7 @@ export type MessageKind =
   | "core.lyricsResponse"
   | "core.mutationResponse"
   | "core.agentActivity"
+  | "core.settingsUpdated"
   | "core.error"
   | "core.pong"
   | "host.hello"
@@ -424,6 +425,7 @@ export interface ProtocolSchemaRoot {
   agentActivityRequest: AgentActivityRequest;
   agentActivitySnapshot: AgentActivitySnapshot;
   appSettings: AppSettings;
+  appSettingsPatch: AppSettingsPatch;
   appSnapshot: AppSnapshot;
   assetResolved: AssetResolvedPayload;
   bridgeCommandAck: BridgeCommandAckPayload;
@@ -515,6 +517,24 @@ export interface AppSettings {
    */
   uiLanguage?: UiLanguage & string;
   uiScalePercent: number;
+}
+/**
+ * Partial settings update sent by the UI so concurrent edits to other fields are preserved.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "AppSettingsPatch".
+ */
+export interface AppSettingsPatch {
+  autoplayOnLaunch?: boolean | null;
+  closeToTray?: boolean | null;
+  lrclibEnabled?: boolean | null;
+  nativeWindowDecorations?: boolean | null;
+  reduceMotion?: boolean | null;
+  reduceTransparency?: boolean | null;
+  theme?: ThemeMode | null;
+  trackNotifications?: boolean | null;
+  uiLanguage?: UiLanguage | null;
+  uiScalePercent?: number | null;
 }
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema

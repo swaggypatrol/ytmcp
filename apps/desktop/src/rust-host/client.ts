@@ -534,6 +534,8 @@ export class RustHostClient {
     const canRestart = this.restartCount < this.maxRestarts && this.lastHelloPayload !== null;
     this.status = "crashed";
     this.coreEpoch = null;
+    // Drop any pre-crash startup frames so stale playback/write requests are never replayed.
+    this.pendingStartupFrames = [];
 
     this.log("error", "daemon_unexpected_exit", {
       code,
@@ -573,6 +575,16 @@ export class RustHostClient {
 
     void this.spawnAndHandshake(restartHello)
       .then(async (ready) => {
+        this.options.onUiEnvelope?.({
+          protocolVersion: PROTOCOL_VERSION,
+          kind: "core.ready",
+          coreEpoch: ready.coreEpoch,
+          accountEpoch: null,
+          bridgeEpoch: null,
+          requestId: null,
+          seq: this.nextSeq(),
+          payload: ready,
+        });
         await this.options.onControlledRestarted?.(ready);
       })
       .catch((err) => {

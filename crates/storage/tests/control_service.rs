@@ -23,6 +23,7 @@ use ytm_core::control::journal::OperationStore;
 use ytm_core::control::lyrics::ControlLyrics;
 use ytm_core::control::{ControlService, DispatchAuthority, DispatchGrant, ReadGrant};
 use ytm_core::ports::Clock;
+use ytm_core::ports::StoragePort;
 use ytm_core::{
     BoxFuture, BridgePort, CancellationToken, CatalogIdentity, CatalogPort, CoreDeps, CoreEngine,
     EngineConfig, MockClock, OfficialLyrics,
@@ -34,7 +35,7 @@ use ytm_protocol::{
     Freshness, HomeFeed, LyricsMatchMetadata, LyricsResult, MutationRequest, MutationResult,
     PlaybackStatus, PlayerCommandPayload, PlayerOp, PlaylistId, QueryError, QueueCompleteness,
     QueueEntry, QueueEntryId, QueueRange, QueueSnapshot, SessionMaterialPayload, StateDelta, Track,
-    TrackAvailability, TrackInstanceId, VideoId,
+    TrackAvailability, TrackInstanceId, UiLanguage, VideoId,
 };
 use ytm_storage::{
     AccountCacheContext, CoverCacheConfig, RecentPlaybackRecord, SqliteStorage, StoragePaths,
@@ -2512,4 +2513,147 @@ async fn the_play_tier_alone_refuses_every_account_write() {
         assert!(matches!(journaled, ControlResponse::Error(_)), "{action:?}");
     }
     fixture.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn ui_settings_patch_preserves_concurrent_mcp_edit_and_persists_both() {
+    let root = tempfile::tempdir().unwrap();
+    let clock = Arc::new(MockClock::new(1_000));
+    let storage = open_storage(&root, clock.clone());
+    let (sender, _commands) = mpsc::channel(8);
+    let engine = CoreEngine::start(
+        CoreDeps {
+            clock: clock.clone(),
+            bridge: Arc::new(Bridge(sender)),
+            catalog: Some(Arc::new(Catalog)),
+            storage: Some(storage.clone()),
+            ..Default::default()
+        },
+        EngineConfig::default(),
+    );
+    assert!(
+        engine
+            .on_bridge_ready(
+                1,
+                BridgeReadyPayload {
+                    bridge_epoch: BridgeEpoch::new(BRIDGE).unwrap(),
+                    bridge_version: "1.0.0".into(),
+                    capabilities: CapabilitySet::default(),
+                    account_hint: Some(HINT.into()),
+                    logged_in_observed: true,
+                }
+            )
+            .await
+            .unwrap()
+    );
+    engine
+        .on_session_material(SessionMaterialPayload {
+            account_epoch: AccountEpoch::new(EPOCH).unwrap(),
+            credential_revision: CredentialRevision::new("fixture-settings-cred").unwrap(),
+            cookie_pairs: Default::default(),
+            auth_user_index: None,
+            channel_label: None,
+        })
+        .await
+        .unwrap();
+    let service = Arc::new(ControlService::new(engine.clone()).with_operations(storage.clone()));
+    let read = ReadGrant::new(
+        "fixture-agent".to_string(),
+        Some(AccountScope::new(ACCOUNT).unwrap()),
+    );
+
+    // UI reads S0 before MCP writes A1.
+    let s0 = engine.snapshot().await.unwrap().settings;
+    assert!(!s0.reduce_transparency);
+    assert_eq!(s0.ui_language, UiLanguage::English);
+
+    let ControlResponse::Settings(before) =
+        service.execute(&read, ControlRequest::GetSettings).await
+    else {
+        panic!("expected settings snapshot");
+    };
+
+    // MCP changes field A (reduceTransparency = true).
+    let receipt = service
+        .submit(
+            read.clone(),
+            Arc::new(PreferencesGrant),
+            WriteInput {
+                operation_id: "mcp-set-transparency".into(),
+                preconditions: Preconditions {
+                    expected_account_epoch: Some(AccountEpoch::new(EPOCH).unwrap()),
+                    expected_bridge_epoch: None,
+                    expected_queue_revision: None,
+                    expected_entity_revision: None,
+                },
+                action: WriteAction::UpdateSettings {
+                    expected_settings_revision: before.settings_revision,
+                    patch: ytm_control_api::SettingsPatch {
+                        theme: None,
+                        reduce_motion: None,
+                        reduce_transparency: Some(true),
+                        ui_scale_percent: None,
+                        autoplay_on_launch: None,
+                        close_to_tray: None,
+                        lrclib_enabled: None,
+                        track_notifications: None,
+                        ui_language: None,
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.operation_id, "mcp-set-transparency");
+    timeout(WAIT, async {
+        loop {
+            if let ControlResponse::Operation(op) = service
+                .execute(
+                    &read,
+                    ControlRequest::GetOperation(OperationInput {
+                        operation_id: "mcp-set-transparency".into(),
+                    }),
+                )
+                .await
+                && op.settled
+            {
+                assert_eq!(op.phase, OperationPhase::Verified);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // UI still held S0 and only changes field B (uiLanguage = zh-CN).
+    let after_ui = engine
+        .patch_settings(ytm_protocol::AppSettingsPatch {
+            ui_language: Some(UiLanguage::SimplifiedChinese),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(after_ui.reduce_transparency);
+    assert_eq!(after_ui.ui_language, UiLanguage::SimplifiedChinese);
+
+    let snap = engine.snapshot().await.unwrap().settings;
+    assert!(snap.reduce_transparency);
+    assert_eq!(snap.ui_language, UiLanguage::SimplifiedChinese);
+
+    let persisted = storage.load_settings().await.unwrap().unwrap();
+    assert!(persisted.reduce_transparency);
+    assert_eq!(persisted.ui_language, UiLanguage::SimplifiedChinese);
+
+    // Same-field conflict: UI intent wins after MCP edit.
+    let override_ui = engine
+        .patch_settings(ytm_protocol::AppSettingsPatch {
+            reduce_transparency: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!override_ui.reduce_transparency);
+    assert_eq!(override_ui.ui_language, UiLanguage::SimplifiedChinese);
+    engine.shutdown().await.unwrap();
 }

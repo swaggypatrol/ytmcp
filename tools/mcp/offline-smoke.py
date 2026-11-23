@@ -190,7 +190,10 @@ def init_mcp(binary, config, env, profile="development"):
         "protocolVersion": "2025-06-18", "capabilities": {},
         "clientInfo": {"name": "ytm-offline-smoke", "version": "1"},
     }, 1))
-    assert mcp.receive(lambda frame: frame.get("id") == 1)["result"]["capabilities"]["tools"] is not None
+    init_result = mcp.receive(lambda frame: frame.get("id") == 1)["result"]
+    assert init_result["capabilities"]["tools"] is not None
+    assert init_result["serverInfo"]["name"] == "ytm-glass-mcp", init_result["serverInfo"]
+    assert init_result["serverInfo"]["version"] == "1.0.0", init_result["serverInfo"]
     mcp.send(rpc("notifications/initialized"))
     return mcp
 
@@ -221,7 +224,7 @@ def run(daemon_bin, mcp_bin, root):
     daemon = Process([daemon_bin], env)
     try:
         daemon.send(host("host.hello", 1, {
-            "appVersion": "0.1.0", "electronVersion": "fixture", "chromiumVersion": "fixture",
+            "appVersion": "1.0.0", "electronVersion": "fixture", "chromiumVersion": "fixture",
             "networkState": "offline", "mockMode": True, "hostHealth": {
                 "waylandNative": None, "gpuAccelerated": None, "sandboxEnabled": True,
                 "secretStoreBackend": "unknown", "safeStorageAvailable": False, "trayAvailable": False,
@@ -503,6 +506,41 @@ def run(daemon_bin, mcp_bin, root):
                     playing_video = "C"
                     print("a queue occurrence played without bookkeeping was accepted and verified")
 
+                    # Content-only harness check: discard structuredContent and use only content[0].text.
+                    def text_value(result):
+                        return json.loads(result["content"][0]["text"].split("\n", 1)[1])["value"]
+                    ctx_data = text_value(mcp.call("ytm_get_context", {}, 53))
+                    # ytm_search needs a signed-in catalog the synthetic daemon lacks, so the paged read is the queue:
+                    # the second page is reached only through the nextCursor in the first page's text.
+                    first_page = text_value(mcp.call("ytm_get_queue", {"limit": 1}, 54))
+                    assert len(first_page["entries"]) == 1 and first_page["nextCursor"], first_page
+                    second_page = text_value(mcp.call("ytm_get_queue", {
+                        "limit": 1, "cursor": first_page["nextCursor"]}, 55))
+                    assert second_page["entries"][0]["entryId"] != first_page["entries"][0]["entryId"], second_page
+                    picked_video = second_page["entries"][0]["track"]["videoId"]
+                    mcp.start("ytm_enqueue", {
+                        "operationId": "content-only-enqueue",
+                        "contextToken": ctx_data["contextToken"],
+                        "mode": "next",
+                        "videoIds": [picked_video],
+                    }, 56)
+                    frame = daemon.receive(lambda f: f["kind"] == "player.command" and f["payload"]["op"] == "enqueue")
+                    assert frame["payload"]["args"]["target"]["videoId"] == picked_video
+                    daemon.send(host("bridge.commandAck", 17, {
+                        "commandId": frame["payload"]["commandId"],
+                        "bridgeEpoch": bridge,
+                        "dispatched": True,
+                    }, core=epoch, bridge=bridge))
+                    current_index = next(
+                        idx for idx, item in enumerate(items) if item["entryId"] == "entry-now"
+                    )
+                    items.insert(current_index + 1, {"entryId": "entry-content-only", "videoId": picked_video,
+                                     "track": {"videoId": picked_video, "title": picked_video, "availability": "available"},
+                                     "availability": "available"})
+                    send_queue(18, 9)
+                    assert mcp.result(56)["structuredContent"]["value"]["phase"] == "verified"
+                    print("content-only reads followed nextCursor and enqueued a videoId taken from the text alone")
+
                     lossy_runtime = root / "lossy-runtime"
                     lossy_runtime.mkdir(mode=0o700)
                     relay = LossyRelay(lossy_runtime, path)
@@ -514,7 +552,7 @@ def run(daemon_bin, mcp_bin, root):
                         daemon.receive(lambda frame: frame["kind"] == "player.command"
                                        and frame["payload"]["op"] == "pause")
                         player = {**player, "playback": "paused"}
-                        daemon.send(host("bridge.playbackObserved", 17, player, core=epoch, bridge=bridge))
+                        daemon.send(host("bridge.playbackObserved", 19, player, core=epoch, bridge=bridge))
                         found = lossy.result(61)["structuredContent"]["value"]
                         assert found.get("operationId", "").startswith("auto-") and found["phase"] == "verified", found
                         # A submit that never arrived reports the generated ID it can be looked up by.

@@ -58,6 +58,30 @@ describe("protocol validator", () => {
     expect(isKindAllowedForRole("bridge.ready", "mainUi")).toBe(false);
     expect(isKindAllowedForRole("bridge.playbackObserved", "playerBridge")).toBe(true);
     expect(isKindAllowedForRole("ui.settingsUpdate", "playerBridge")).toBe(false);
+    expect(isKindAllowedForRole("core.settingsUpdated", "core")).toBe(true);
+    expect(isKindAllowedForRole("core.settingsUpdated", "mainUi")).toBe(false);
+  });
+
+  it("validates partial settings patches and rejects out-of-range UI scale", () => {
+    const valid = parseAndValidateEnvelope(
+      JSON.stringify({
+        protocolVersion: 1,
+        kind: "ui.settingsUpdate",
+        seq: 1,
+        payload: { uiLanguage: "zh-CN" },
+      })
+    );
+    expect(valid.ok).toBe(true);
+
+    const invalid = parseAndValidateEnvelope(
+      JSON.stringify({
+        protocolVersion: 1,
+        kind: "ui.settingsUpdate",
+        seq: 2,
+        payload: { uiScalePercent: 50 },
+      })
+    );
+    expect(invalid.ok).toBe(false);
   });
 });
 
@@ -118,5 +142,13 @@ describe("FakeCoreClient", () => {
     if (artist.resultType !== "artistDetail") throw new Error("missing mock artist");
     expect(artist.topSongs?.[0]?.videoId).toBe(track.videoId);
     expect(artist.albums?.[0]?.id).toBe(album.albumId);
+  });
+
+  it("merges partial settings updates onto current fake settings", () => {
+    const client = new FakeCoreClient("normal");
+    client.updateSettings({ reduceTransparency: true });
+    const updated = client.updateSettings({ uiLanguage: "zh-CN" });
+    expect(updated.reduceTransparency).toBe(true);
+    expect(updated.uiLanguage).toBe("zh-CN");
   });
 });

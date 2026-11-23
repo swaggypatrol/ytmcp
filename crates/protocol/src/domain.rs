@@ -472,6 +472,65 @@ impl Default for AppSettings {
     }
 }
 
+/// Partial settings update sent by the UI so concurrent edits to other fields are preserved.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppSettingsPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemeMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduce_motion: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduce_transparency: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 75, max = 150))]
+    pub ui_scale_percent: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autoplay_on_launch: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_to_tray: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lrclib_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_notifications: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_window_decorations: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_language: Option<UiLanguage>,
+}
+
+impl AppSettingsPatch {
+    /// Applies only the fields set in this patch onto `base`.
+    pub fn apply(self, mut base: AppSettings) -> AppSettings {
+        base.theme = self.theme.unwrap_or(base.theme);
+        base.reduce_motion = self.reduce_motion.unwrap_or(base.reduce_motion);
+        base.reduce_transparency = self.reduce_transparency.unwrap_or(base.reduce_transparency);
+        base.ui_scale_percent = self.ui_scale_percent.unwrap_or(base.ui_scale_percent);
+        base.autoplay_on_launch = self.autoplay_on_launch.unwrap_or(base.autoplay_on_launch);
+        base.close_to_tray = self.close_to_tray.unwrap_or(base.close_to_tray);
+        base.lrclib_enabled = self.lrclib_enabled.unwrap_or(base.lrclib_enabled);
+        base.track_notifications = self.track_notifications.unwrap_or(base.track_notifications);
+        base.native_window_decorations = self
+            .native_window_decorations
+            .unwrap_or(base.native_window_decorations);
+        base.ui_language = self.ui_language.unwrap_or(base.ui_language);
+        base
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.theme.is_none()
+            && self.reduce_motion.is_none()
+            && self.reduce_transparency.is_none()
+            && self.ui_scale_percent.is_none()
+            && self.autoplay_on_launch.is_none()
+            && self.close_to_tray.is_none()
+            && self.lrclib_enabled.is_none()
+            && self.track_notifications.is_none()
+            && self.native_window_decorations.is_none()
+            && self.ui_language.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthStatusInfo {

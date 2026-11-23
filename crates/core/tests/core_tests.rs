@@ -3500,6 +3500,8 @@ struct RecordingStorage {
     pending_session: Option<Arc<Notify>>,
     pending_logout: Option<Arc<Notify>>,
     fail_logout_cleanup: bool,
+    fail_save_settings: bool,
+    saved_settings: Mutex<Option<ytm_protocol::AppSettings>>,
     last_session: Mutex<Option<LastSession>>,
     cleared_scopes: Mutex<Vec<AccountScope>>,
     recorded: Mutex<Vec<(AccountScope, LastPlayed)>>,
@@ -3517,8 +3519,20 @@ impl StoragePort for RecordingStorage {
     }
     fn save_settings(
         &self,
-        _settings: ytm_protocol::AppSettings,
+        settings: ytm_protocol::AppSettings,
     ) -> BoxFuture<'_, Result<(), QueryError>> {
+        if self.fail_save_settings {
+            return Box::pin(async {
+                Err(QueryError {
+                    code: QueryErrorCode::StorageError,
+                    retriable: false,
+                    retry_after_ms: None,
+                    safe_message: "settings disk write failed".to_string(),
+                    request_id: None,
+                })
+            });
+        }
+        *self.saved_settings.lock().unwrap() = Some(settings);
         Box::pin(async { Ok(()) })
     }
     fn clear_cache(&self, _scope: Option<AccountScope>) -> BoxFuture<'_, Result<(), QueryError>> {
@@ -3631,9 +3645,9 @@ async fn engine_with_storage(storage: RecordingStorage, settings_autoplay: bool)
     );
     if settings_autoplay {
         engine
-            .update_settings(ytm_protocol::AppSettings {
-                autoplay_on_launch: true,
-                ..ytm_protocol::AppSettings::default()
+            .patch_settings(ytm_protocol::AppSettingsPatch {
+                autoplay_on_launch: Some(true),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -4339,4 +4353,247 @@ async fn play_before_the_page_loaded_any_track_fails_at_once_instead_of_going_in
         .unwrap();
     assert_eq!(bridge.sent_ops(), vec![PlayerOp::Play]);
     engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn patch_settings_merges_fields_and_leaves_memory_unchanged_when_save_fails() {
+    let storage = RecordingStorage::default();
+    let h = engine_with_storage(storage, false).await;
+
+    let first = h
+        .engine
+        .patch_settings(ytm_protocol::AppSettingsPatch {
+            reduce_transparency: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(first.reduce_transparency);
+    assert_eq!(first.ui_language, ytm_protocol::UiLanguage::English);
+
+    let second = h
+        .engine
+        .patch_settings(ytm_protocol::AppSettingsPatch {
+            ui_language: Some(ytm_protocol::UiLanguage::SimplifiedChinese),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(second.reduce_transparency);
+    assert_eq!(
+        second.ui_language,
+        ytm_protocol::UiLanguage::SimplifiedChinese
+    );
+    assert_eq!(
+        h.storage.saved_settings.lock().unwrap().as_ref(),
+        Some(&second)
+    );
+    h.engine.shutdown().await.unwrap();
+
+    let failing = RecordingStorage {
+        fail_save_settings: true,
+        ..RecordingStorage::default()
+    };
+    let h_fail = engine_with_storage(failing, false).await;
+    let err_fail = h_fail
+        .engine
+        .patch_settings(ytm_protocol::AppSettingsPatch {
+            reduce_motion: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err_fail.code, QueryErrorCode::StorageError);
+    // An empty patch changes nothing, so it never reaches the disk.
+    let unchanged = h_fail
+        .engine
+        .patch_settings(ytm_protocol::AppSettingsPatch::default())
+        .await
+        .unwrap();
+    assert!(!unchanged.reduce_motion);
+    assert!(
+        !h_fail
+            .engine
+            .snapshot()
+            .await
+            .unwrap()
+            .settings
+            .reduce_motion
+    );
+    h_fail.engine.shutdown().await.unwrap();
+}
+
+/// The page restores its own track paused while the bridge has not yet verified play/pause, so
+/// launch autoplay waits; the control then turns supported. Returns the ops sent to the page,
+/// with an optional manual Pause arriving during the wait.
+async fn self_restore_while_play_pause_unverified(manual_pause: bool) -> Vec<PlayerOp> {
+    let h = engine_with_storage(RecordingStorage::default(), true).await;
+    sign_in(&h.engine).await;
+    let ready = |seq, play_pause| {
+        h.engine.on_bridge_ready(
+            seq,
+            BridgeReadyPayload {
+                bridge_epoch: BridgeEpoch::new("bridge-1").unwrap(),
+                bridge_version: "0.1.0".to_string(),
+                capabilities: CapabilitySet {
+                    play_pause,
+                    ..supported_caps()
+                },
+                account_hint: Some("TestChannel".to_string()),
+                logged_in_observed: true,
+            },
+        )
+    };
+    assert!(ready(1, CapabilitySupport::Unverified).await.unwrap());
+    observe_restore(&h.engine, 2, PlaybackStatus::Paused, 12_000).await;
+    assert!(h.bridge.sent_ops().is_empty(), "autoplay waits");
+    let mut seq = 3;
+    if manual_pause {
+        h.engine
+            .submit_player_command(make_cmd("user-pause", PlayerOp::Pause, None))
+            .await
+            .unwrap();
+        settle(&h.engine).await;
+        observe_restore(&h.engine, seq, PlaybackStatus::Paused, 12_000).await;
+        seq += 1;
+    }
+    assert!(ready(seq, CapabilitySupport::Supported).await.unwrap());
+    settle(&h.engine).await;
+    observe_restore(&h.engine, seq + 1, PlaybackStatus::Paused, 12_000).await;
+    let ops = h.bridge.sent_ops();
+    h.engine.shutdown().await.unwrap();
+    ops
+}
+
+#[tokio::test]
+async fn a_failed_paused_restore_leaves_the_player_as_is_instead_of_autoplaying_later() {
+    let storage = RecordingStorage::default();
+    *storage.last_session.lock().unwrap() = Some(LastSession {
+        account_scope: AccountScope::new("scope-acct-1").unwrap(),
+        last_played: Some(LastPlayed {
+            track: make_track("vid-last", "Last", Some(200_000)),
+            playback_ref: None,
+            position_ms: 42_000,
+        }),
+    });
+    let h = engine_with_storage(storage, true).await;
+    sign_in(&h.engine).await;
+    init_ready_bridge(&h.engine, "bridge-1", 1).await;
+    *h.bridge.fail_next_dispatch.lock().unwrap() = Some(QueryError {
+        code: QueryErrorCode::Timeout,
+        retriable: true,
+        retry_after_ms: None,
+        safe_message: "page did not take the command".to_string(),
+        request_id: None,
+    });
+    observe_empty_page(&h.engine, 2).await;
+    // The restore's PlayTarget was refused, so nothing reached the page.
+    assert!(h.bridge.sent_ops().is_empty());
+    assert!(h.bridge.fail_next_dispatch.lock().unwrap().is_none());
+    // The page later shows the saved track paused on its own; it stays paused.
+    observe_restore(&h.engine, 3, PlaybackStatus::Paused, 0).await;
+    observe_restore(&h.engine, 4, PlaybackStatus::Paused, 0).await;
+    assert!(
+        !h.bridge.sent_ops().contains(&PlayerOp::Play),
+        "{:?}",
+        h.bridge.sent_ops()
+    );
+    h.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn launch_autoplay_honors_setting_when_page_self_restores_and_manual_pause_wins() {
+    // 1. Page self-restores paused with autoplay_on_launch = false -> stays paused, no PlayTarget/Play.
+    {
+        let h = engine_with_storage(RecordingStorage::default(), false).await;
+        sign_in(&h.engine).await;
+        init_ready_bridge(&h.engine, "bridge-1", 1).await;
+        observe_restore(&h.engine, 2, PlaybackStatus::Paused, 12_000).await;
+        assert!(h.bridge.sent_ops().is_empty());
+        h.engine.shutdown().await.unwrap();
+    }
+
+    // 2. Page self-restores paused with autoplay_on_launch = true -> keeps page track/queue, sends Play.
+    {
+        let h = engine_with_storage(RecordingStorage::default(), true).await;
+        sign_in(&h.engine).await;
+        init_ready_bridge(&h.engine, "bridge-1", 1).await;
+        assert!(
+            h.engine
+                .on_bridge_queue_observed(
+                    2,
+                    QueueSnapshot {
+                        bridge_epoch: Some(BridgeEpoch::new("bridge-1").unwrap()),
+                        queue_revision: 3,
+                        current_entry_id: Some(QueueEntryId::new("qe-r").unwrap()),
+                        loaded_range: None,
+                        completeness: ytm_protocol::QueueCompleteness::Complete,
+                        has_more: Some(false),
+                        explicit_complete: Some(true),
+                        may_load_more: Some(false),
+                        entries: vec![QueueEntry {
+                            entry_id: QueueEntryId::new("qe-r").unwrap(),
+                            video_id: VideoId::new("vid-last").unwrap(),
+                            track: make_track("vid-last", "Last", Some(200_000)),
+                            availability: TrackAvailability::Available,
+                        }],
+                    },
+                )
+                .await
+                .unwrap()
+        );
+        observe_restore(&h.engine, 3, PlaybackStatus::Paused, 12_000).await;
+        assert_eq!(h.bridge.sent_ops(), vec![PlayerOp::Play]);
+        assert_eq!(
+            h.engine
+                .snapshot()
+                .await
+                .unwrap()
+                .queue_summary
+                .queue_revision,
+            3
+        );
+        h.engine.shutdown().await.unwrap();
+    }
+
+    // 3. Manual Pause while launch autoplay still waits preempts it on a self-restored track.
+    // Without the Pause the same start-up plays, so the wait really was pending.
+    assert_eq!(
+        self_restore_while_play_pause_unverified(false).await,
+        vec![PlayerOp::Play]
+    );
+    let ops = self_restore_while_play_pause_unverified(true).await;
+    assert!(ops.contains(&PlayerOp::Pause), "{ops:?}");
+    assert!(!ops.contains(&PlayerOp::Play), "{ops:?}");
+
+    // 4. Page empty at launch with saved track and autoplay_on_launch = true -> PlayTarget -> Seek -> Pause -> Play.
+    {
+        let storage = RecordingStorage::default();
+        *storage.last_session.lock().unwrap() = Some(LastSession {
+            account_scope: AccountScope::new("scope-acct-1").unwrap(),
+            last_played: Some(LastPlayed {
+                track: make_track("vid-last", "Last", Some(200_000)),
+                playback_ref: None,
+                position_ms: 42_000,
+            }),
+        });
+        let h = engine_with_storage(storage, true).await;
+        sign_in(&h.engine).await;
+        init_ready_bridge(&h.engine, "bridge-1", 1).await;
+        observe_empty_page(&h.engine, 2).await;
+        assert_eq!(h.bridge.sent_ops(), vec![PlayerOp::PlayTarget]);
+        observe_restore(&h.engine, 3, PlaybackStatus::Playing, 0).await;
+        observe_restore(&h.engine, 4, PlaybackStatus::Playing, 42_000).await;
+        observe_restore(&h.engine, 5, PlaybackStatus::Paused, 42_000).await;
+        assert_eq!(
+            h.bridge.sent_ops(),
+            vec![
+                PlayerOp::PlayTarget,
+                PlayerOp::Seek,
+                PlayerOp::Pause,
+                PlayerOp::Play
+            ]
+        );
+        h.engine.shutdown().await.unwrap();
+    }
 }

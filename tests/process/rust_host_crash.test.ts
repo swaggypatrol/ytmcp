@@ -164,11 +164,17 @@ rl.on("line", (line) => {
     let playerOutputMutedCount = 0;
     const exitEvents: Array<{ willRestart: boolean; restartCount: number }> = [];
     const restartedEpochs: string[] = [];
+    const uiReadyEpochs: string[] = [];
     const fatalErrors: string[] = [];
 
     const client = new RustHostClient({
       daemonBin: scriptPath,
       maxRestarts: 1,
+      onUiEnvelope: (env) => {
+        if (env.kind === "core.ready") {
+          uiReadyEpochs.push((env.payload as { coreEpoch: string }).coreEpoch);
+        }
+      },
       onUnexpectedExit: (detail) => {
         playerOutputMutedCount += 1;
         exitEvents.push({
@@ -196,6 +202,7 @@ rl.on("line", (line) => {
       { willRestart: false, restartCount: 1 },
     ]);
     expect(restartedEpochs).toEqual(["core-run-1"]);
+    expect(uiReadyEpochs).toEqual(["core-run-1"]);
     expect(client.getRestartCount()).toBe(1);
     expect(client.getStatus()).toBe("crashed");
     expect(fatalErrors).toContain("BRIDGE_INCOMPATIBLE");

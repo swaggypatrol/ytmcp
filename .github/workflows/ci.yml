@@ -1,0 +1,56 @@
+name: Offline Gates
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline-gates:
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26.13.1"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "11.21.0"
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+        with:
+          just-version: "1.59.0"
+
+      # Later cargo steps without --locked would otherwise rewrite a stale lockfile silently.
+      - name: Fetch crates against the committed Cargo.lock
+        run: cargo fetch --locked
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check generated protocol artifacts
+        run: |
+          just gen-protocol
+          just gen-control
+          git diff --exit-code packages/protocol/
+
+      - name: Lint and typecheck
+        run: just lint
+
+      - name: Run offline unit and integration tests
+        run: just test
+
+      - name: Run offline control and MCP smoke tests
+        run: just test-control

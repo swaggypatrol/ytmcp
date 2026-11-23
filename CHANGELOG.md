@@ -2,6 +2,15 @@
 
 Versions are `<app version>-<package revision>`; see [docs/building.md](docs/building.md#versioning).
 
+## 1.0.0-1
+
+- Sidecar restart and startup recovery: after an unexpected `ytm-daemon` restart, the host notifies the renderer, discards stale epochs/in-flight requests, re-subscribes snapshot/delta state without replaying old writes, and rebuilds tray state; initial preload connection failures show a banner with bounded retries and manual reconnect.
+- Concurrent UI and MCP settings: UI settings updates send field patches (`AppSettingsPatch`) merged under the same core lock as MCP updates and revert with explicit feedback on save failures.
+- MCP compatibility and identity: `ytm-glass-mcp` reports product identity `"ytm-glass-mcp"` at `1.0.0` in `serverInfo` and includes bounded JSON payloads in `content[0].text` (and share URLs in share-link text) alongside `structuredContent` for content-only harnesses.
+- UI pagination and keyboard navigation: the Add to playlist picker supports continuation loading and page-load retry; `Ctrl+F` awaits view-transition DOM readiness before focusing search; `VirtualizedTrackList` preserves a single visible `tabindex="0"` row after scrolling without stealing focus.
+- MPRIS, autoplay, and recovery polish: global MPRIS `Play`/`Pause`/`Stop` act without binding a stale cached track instance; `autoplay_on_launch` applies once when the official page self-restores a paused track while manual control still wins; confirmed-unsent `Accepted` operations settle to terminal `Cancelled` (`NewPlanRequired`) on restart.
+- Testing and release engineering: replaced blind bridge test `settle()` races with event-driven transport synchronization, unified workspace manifests and `packaging/PKGBUILD` to `1.0.0-1`, and added an offline GitHub Actions gate workflow.
+
 ## 0.1.0-20
 
 - New icon set: 24 px stroke glyphs with filled active states; the play/pause button is a solid accent disc, and icon buttons follow the glass icon rules. The interface is English by default, with Simplified Chinese selectable in Settings.

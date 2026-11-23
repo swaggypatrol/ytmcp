@@ -25,7 +25,7 @@ Run `just --list` for the full list.
 | `just doctor` | Prints toolchain, session (Wayland, KDE), GPU, audio and secret-service details and lockfile hashes. |
 | `just types-check` | `cargo check` for all crates and type checks for the protocol, bridge, desktop and UI packages. |
 | `just lint` | `cargo fmt --check`, `cargo clippy -D warnings` and the TypeScript type checks. |
-| `just test` | Rust workspace tests, pnpm workspace tests, process tests, desktop shell tests and UI transport end-to-end tests. All offline. |
+| `just test` | Rust workspace tests, pnpm workspace tests, process tests against a freshly built debug daemon, desktop shell tests and UI transport end-to-end tests. All offline, with the committed `Cargo.lock`. |
 | `just test-control` | Builds the daemon and the MCP adapter and runs the MCP stdio smoke test against one synthetic daemon. |
 | `just bridge-check` | The bridge's offline DOM and fixture tests. |
 | `just gen-protocol`, `just gen-control` | Regenerate the JSON Schemas and TypeScript types from `crates/protocol` and `crates/control-api`. Generated files are committed; never edit them by hand. |
@@ -87,7 +87,7 @@ Evidence files are redacted before they are written: titles, account identifiers
 
 ## Versioning
 
-The application version (`0.1.0`) is kept in `config/app-identity.json`, `package.json` and the Cargo manifests; the Arch package revision (`pkgrel`) in `packaging/PKGBUILD` counts builds of that version, so releases are named `0.1.0-N`. [CHANGELOG.md](../CHANGELOG.md) has one section per release. When updating Electron, Rust or pnpm, update the pinned version and checksum, regenerate the license notices, run the offline gates, then rerun the affected live checks with a new package. When the official page changes, add a minimal scrubbed fixture under `bridge/` and cover ready, lifecycle, control observation, queue and failure behavior; catalog shape changes are covered in `crates/ytm-data/`.
+The application version (`1.0.0`) is kept in `config/app-identity.json`, `package.json` and the Cargo manifests; the Arch package revision (`pkgrel`) in `packaging/PKGBUILD` counts builds of that version, so releases are named `1.0.0-N`. [CHANGELOG.md](../CHANGELOG.md) has one section per release. When updating Electron, Rust or pnpm, update the pinned version and checksum, regenerate the license notices, run the offline gates, then rerun the affected live checks with a new package. When the official page changes, add a minimal scrubbed fixture under `bridge/` and cover ready, lifecycle, control observation, queue and failure behavior; catalog shape changes are covered in `crates/ytm-data/`.
 
 ## Data, logs and troubleshooting
 

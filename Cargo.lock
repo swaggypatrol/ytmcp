@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-control-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "futures-util",
  "rustix",
@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "hex",
  "serde",
@@ -2864,7 +2864,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-daemon"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "directories",
  "hex",
@@ -2890,7 +2890,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-data"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "hex",
  "rand",
@@ -2913,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-glass-mcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "directories",
  "hex",
@@ -2932,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-lyrics"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -2949,7 +2949,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-mpris"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "mpris-server",
  "thiserror",
@@ -2963,7 +2963,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-protocol"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "schemars",
  "serde",
@@ -2973,7 +2973,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-storage"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "directories",
  "hex",

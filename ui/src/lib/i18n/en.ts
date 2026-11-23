@@ -130,6 +130,8 @@ export const en = {
     bridgeDisconnectedBanner: "The player page is disconnected or not ready. Check the official player page.",
     bridgeNotDetectedBanner:
       "No connection to the desktop main process (window.ytmGlassUi). To preview the interface, enable mock mode explicitly (?mock=1).",
+    connectionFailedBanner: "Could not connect to the player core.",
+    reconnect: "Reconnect",
     errorTitle: "Could not load",
     retry: "Retry",
     openOfficialPlayer: "Open the official player",
@@ -214,6 +216,7 @@ export const en = {
     goToArtist: "Go to artist: {name}",
     choosePlaylist: "Choose a playlist",
     filterPlaylists: "Filter playlists…",
+    filterLoadedOnly: "Filter applies to loaded playlists.",
     noPlaylists: "No playlists to add to.",
     noMatchingPlaylists: "No matching playlists.",
     confirmAddTitle: "Confirm",
@@ -367,6 +370,7 @@ export const en = {
     cacheCleared: "Cache cleared. Lists will refresh automatically.",
     cacheClearFailed: "Could not clear the cache: {message}",
     cacheClearUnconfirmed: "Cache clearing not confirmed: no completion signal within 10 seconds.",
+    saveFailed: "Could not save setting: {message}",
   },
   dialog: {
     diagnosticsTitle: "Diagnostics and status",
