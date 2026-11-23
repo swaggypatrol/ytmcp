@@ -53,7 +53,7 @@ def main(args):
         fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
         for code in set(list(KEYS.values()) + list(NAMED.values())):
             fcntl.ioctl(fd, UI_SET_KEYBIT, code)
-        setup = struct.pack("HHHH80sI", 0x06, 0x1234, 0x5678, 1, b"ytm-glass-qa-keyboard", 0)
+        setup = struct.pack("HHHH80sI", 0x06, 0x1234, 0x5678, 1, b"ytmcp-qa-keyboard", 0)
         fcntl.ioctl(fd, UI_DEV_SETUP, setup)
         fcntl.ioctl(fd, UI_DEV_CREATE)
         time.sleep(1.0)  # let libinput/KWin pick up the device

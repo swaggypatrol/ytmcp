@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { BridgeLifecyclePayload } from "@ytm-glass/protocol";
+import type { BridgeLifecyclePayload } from "@ytmcp/protocol";
 import type { BrowserWindow } from "electron";
 import { BRIDGE_WORLD_ID, MUSIC_ORIGIN } from "../../preload/channels.js";
 import { isBridgeOrigin } from "../windows/window-manager.js";
@@ -13,7 +13,7 @@ export interface BridgeBundleAssets {
 
 export function resolveBridgeDistDir(): string | null {
   const candidates = [
-    process.env.YTM_GLASS_BRIDGE_DIST_DIR,
+    process.env.YTMCP_BRIDGE_DIST_DIR,
     ...(typeof process.resourcesPath === "string"
       ? [resolve(process.resourcesPath, "bridge-dist")]
       : []),
@@ -51,9 +51,9 @@ export function loadBridgeBundleAssets(bridgeDistDir?: string | null): BridgeBun
 
 /**
  * Wraps the self-contained ESM `bridge-probe.mjs` bundle into a top-frame IIFE
- * that calls `installBridge(window.ytmGlassBridge, bridgeEpoch)` strictly when
+ * that calls `installBridge(window.ytmcpBridge, bridgeEpoch)` strictly when
  * `window.location.origin === "https://music.youtube.com"` and `window === window.top`.
- * The script runs in the bridge isolated world, where the preload exposed `ytmGlassBridge`.
+ * The script runs in the bridge isolated world, where the preload exposed `ytmcpBridge`.
  */
 export function buildBridgeInjectionScript(
   bridgeProbeSource: string,
@@ -64,12 +64,12 @@ export function buildBridgeInjectionScript(
   if (typeof window === "undefined" || window !== window.top || window.location.origin !== ${JSON.stringify(MUSIC_ORIGIN)}) {
     return { installed: false, reason: "UNTRUSTED_ORIGIN_OR_SUBFRAME" };
   }
-  if (!window.ytmGlassBridge) {
+  if (!window.ytmcpBridge) {
     return { installed: false, reason: "PRELOAD_BRIDGE_UNAVAILABLE" };
   }
 ${stripped}
   // Only plain data crosses back to the host; the handle's functions cannot be cloned.
-  const handle = installBridge(window.ytmGlassBridge, ${JSON.stringify(bridgeEpoch)});
+  const handle = installBridge(window.ytmcpBridge, ${JSON.stringify(bridgeEpoch)});
   return { installed: handle.installed === true, reason: handle.reason ?? null };
 })();`;
 }

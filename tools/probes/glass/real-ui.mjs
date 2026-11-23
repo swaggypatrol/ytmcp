@@ -1,4 +1,4 @@
-// Drives the real application (apps/desktop/dist + ui/dist, YTM_GLASS_MODE=mock) for the
+// Drives the real application (apps/desktop/dist + ui/dist, YTMCP_MODE=mock) for the
 // liquid-glass evidence: screenshots, contrast measured on those screenshots, frame pacing.
 // Loaded by electron-entry.mjs; see run-probe.mjs for usage.
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -180,7 +180,7 @@ const PAGE_HELPERS = `(() => {
 
 /** Starts the desktop shell exactly as `just dev-mock` does and returns its main window. */
 export async function launchApp() {
-  if (process.env.YTM_GLASS_MODE !== "mock") throw new Error("real-ui probe only runs with YTM_GLASS_MODE=mock");
+  if (process.env.YTMCP_MODE !== "mock") throw new Error("real-ui probe only runs with YTMCP_MODE=mock");
   const created = new Promise((r) => app.once("browser-window-created", (_event, win) => r(win)));
   await import(pathToFileURL(join(repoRoot, "apps/desktop/dist/main.mjs")).href);
   const win = await created;
@@ -621,10 +621,18 @@ export async function runShots(outDir, { quick = false } = {}) {
   return report;
 }
 
+const LENS_GRID =
+  "repeating-linear-gradient(0deg, rgb(255 255 255 / 0.9) 0 2px, transparent 2px 22px), " +
+  "repeating-linear-gradient(90deg, rgb(255 255 255 / 0.9) 0 2px, transparent 2px 22px), " +
+  "linear-gradient(120deg, #c2185b, #6a3fd0 50%, #1e88e5)";
+
 /** Fast visual iteration: one theme, the main scenes, 2x crops; no contrast sweep. */
-export async function runLook(outDir, theme = "dark") {
+export async function runLook(outDir, theme = "dark", { clean = false } = {}) {
   mkdirSync(outDir, { recursive: true });
   const win = await launchApp();
+  // "clean" hides the mock-mode banner (a developer scenario picker) for presentation shots;
+  // the sidebar's "Mock data" chip stays, and captions must still say the data is synthetic.
+  if (clean) await js(win, `document.head.append(Object.assign(document.createElement("style"), { textContent: '[data-testid="banner-mock-mode"] { display: none !important; }' }))`);
   const save = async (name, crop) => savePng(outDir, (await grab(win, crop)).image, `look-${theme}-${name}.png`, crop ? undefined : win.getContentSize()[0]);
   await setAppearance(win, { theme, reduceTransparency: false });
   await navigate(win, "home");
@@ -634,9 +642,16 @@ export async function runLook(outDir, theme = "dark") {
   await sleep(400);
   await save("home");
   await save("home-sidebar@2x", SIDEBAR_CROP);
+  await save("home-bar@2x", BAR_CROP);
   await openLongList(win);
   await save("list");
   await save("list-bar@2x", BAR_CROP);
+  // The seek bar while pressed: grown around the pointer.
+  await js(win, `(() => { const i = document.querySelector('[data-testid="player-seek-slider"]'); const r = i.getBoundingClientRect(); i.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + r.width * 0.3, clientY: r.top + r.height / 2 })); })()`);
+  await sleep(450);
+  await save("list-bar-pressed@2x", BAR_CROP);
+  await js(win, `document.querySelector('[data-testid="player-seek-slider"]').dispatchEvent(new PointerEvent("pointerup", { bubbles: true }))`);
+  await sleep(300);
   await save("list-sidebar@2x", SIDEBAR_CROP);
   await js(win, `__glassProbe.clickFirst('[data-testid="track-actions-btn"]')`);
   await until(win, '__glassProbe.has("track-actions")');
@@ -656,10 +671,20 @@ export async function runLook(outDir, theme = "dark") {
     await navigate(win, view);
     await save(`view-${view}`);
   }
+  // A grid on a colour ramp behind the glass: straight lines show how the rim bends them.
+  await openLongList(win);
+  await js(win, `__glassProbe.stress(${JSON.stringify(LENS_GRID)})`);
+  await sleep(300);
+  await save("lens-grid");
+  await save("lens-grid-bar@2x", BAR_CROP);
+  await save("lens-grid-sidebar@2x", SIDEBAR_CROP);
+  await js(win, "__glassProbe.stress(null)");
   win.setContentSize(900, 600);
   await openLongList(win);
   await save("list-900x600");
   await navigate(win, "home");
+  await js(win, 'document.querySelector(\'[data-testid="main-scroll-region"]\').scrollTop = 0');
+  await sleep(200);
   await save("home-900x600");
   win.setContentSize(WINDOW.width, WINDOW.height);
   await openLongList(win);

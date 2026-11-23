@@ -282,6 +282,7 @@ fn make_obs(
         playback_context: None,
         position_ms,
         duration_ms,
+        buffered_ms: None,
         playback_rate: 1.0,
         sample_age_ms: 5,
         volume: 0.8,
@@ -470,6 +471,41 @@ async fn fixture_stale_epoch_and_seq_guards() {
     assert!(diag.seq_gaps_detected >= 1);
     assert!(diag.snapshot_rebuilds_requested >= 1);
     assert!(!bridge.snapshot_requests().is_empty());
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn how_far_the_track_has_loaded_reaches_the_player_state() {
+    let (engine, _clock, _bridge, _gate) = setup_engine().await;
+    init_ready_bridge(&engine, "bridge-1", 1).await;
+    let mut obs = make_obs(
+        "bridge-1",
+        PlaybackStatus::Playing,
+        "ti-1",
+        "vid-1",
+        "qe-1",
+        3_000,
+        Some(240_000),
+    );
+    obs.buffered_ms = Some(68_000);
+    engine.on_bridge_playback_observed(2, obs).await.unwrap();
+    assert_eq!(
+        engine.snapshot().await.unwrap().player.buffered_ms,
+        Some(68_000)
+    );
+
+    // A page that stops reporting it clears it, rather than leaving a stale bar behind.
+    let obs = make_obs(
+        "bridge-1",
+        PlaybackStatus::Playing,
+        "ti-1",
+        "vid-1",
+        "qe-1",
+        4_000,
+        Some(240_000),
+    );
+    engine.on_bridge_playback_observed(3, obs).await.unwrap();
+    assert_eq!(engine.snapshot().await.unwrap().player.buffered_ms, None);
     engine.shutdown().await.unwrap();
 }
 

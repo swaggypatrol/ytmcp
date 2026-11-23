@@ -1,4 +1,4 @@
-import type { RepeatMode } from "@ytm-glass/protocol";
+import type { RepeatMode } from "@ytmcp/protocol";
 import {
   isPlaylistEntryId,
   MUSIC_ORIGIN,
@@ -21,7 +21,7 @@ import {
  * isolated world and reaches the page only through this shim and the shared DOM.
  */
 
-const SHIM_CLEANUP_SYMBOL = Symbol.for("ytmGlassPageShimCleanup");
+const SHIM_CLEANUP_SYMBOL = Symbol.for("ytmcpPageShimCleanup");
 const ACCOUNT_HINT_DOMAIN = "ytm-glass-account-v1\n";
 const MAX_QUEUE_WINDOW = 200;
 const MAX_CLEAR_UPCOMING = 50;
@@ -76,6 +76,7 @@ interface PlayerApi {
   isMuted?: () => boolean;
   getPlayerState?: () => number;
   getCurrentTime?: () => number;
+  getVideoLoadedFraction?: () => number;
   getPlaybackRate?: () => number;
   getCpn?: () => string;
   getVideoData?: () => { video_id?: string; title?: string; author?: string };
@@ -635,6 +636,7 @@ class PageShim {
       playbackContext: playbackContextOf(selectedRenderer, videoId, store),
       positionMs: currentSec !== null && currentSec >= 0 ? Math.round(currentSec * 1000) : null,
       durationMs,
+      loadedFraction: api ? finiteOrNull(call(api.getVideoLoadedFraction, api)) : null,
       playerState,
       volume0To100: api ? finiteOrNull(call(api.getVolume, api)) : null,
       muted: api && typeof api.isMuted === "function" ? Boolean(call(api.isMuted, api)) : null,

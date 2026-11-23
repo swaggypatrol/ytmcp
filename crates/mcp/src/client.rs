@@ -66,7 +66,7 @@ impl ControlClient {
             Err(err) if self.allow_start && is_unavailable(&err) => {}
             Err(_) => {
                 return Err(unavailable(
-                    "YTM Glass is not available on the local control socket",
+                    "YTMcp is not available on the local control socket",
                 ));
             }
         }
@@ -76,23 +76,23 @@ impl ControlClient {
             Err(err) if is_unavailable(&err) => {}
             Err(_) => {
                 return Err(unavailable(
-                    "YTM Glass is not available on the local control socket",
+                    "YTMcp is not available on the local control socket",
                 ));
             }
         }
-        if !Path::new("/opt/ytm-glass/resources/config/mcp-background-v1").is_file() {
+        if !Path::new("/opt/ytmcp/resources/config/mcp-background-v1").is_file() {
             return Err(unavailable(
-                "the installed YTM Glass launcher does not declare background start support",
+                "the installed YTMcp launcher does not declare background start support",
             ));
         }
-        let mut child = tokio::process::Command::new("/usr/bin/ytm-glass")
+        let mut child = tokio::process::Command::new("/usr/bin/ytmcp-player")
             .args(["--background", "--no-activate"])
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|_| unavailable("the installed YTM Glass launcher could not be started"))?;
+            .map_err(|_| unavailable("the installed YTMcp launcher could not be started"))?;
         // Closing the adapter does not stop the player.
         tokio::spawn(async move {
             let _ = child.wait().await;
@@ -111,7 +111,7 @@ impl ControlClient {
             }
         })
         .await
-        .map_err(|_| unavailable("YTM Glass did not provide a local control socket after launch"))?
+        .map_err(|_| unavailable("YTMcp did not provide a local control socket after launch"))?
     }
 }
 

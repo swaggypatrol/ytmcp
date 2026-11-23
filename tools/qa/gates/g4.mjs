@@ -194,7 +194,7 @@ export function offlineBrowseCheck(netCut) {
 export async function failureIsolationChecks(app, { query }) {
   const daemon = describeProcesses(app.pids()).find((p) => p.role === "core:ytm-daemon");
   const daemonCg = daemon ? cgroupOf(daemon.pid) : null;
-  const separated = Boolean(daemonCg && daemonCg.includes("ytm-glass-qa-daemon") && describeProcesses(app.pids()).filter((p) => p.cgroup === daemonCg).length === 1);
+  const separated = Boolean(daemonCg && daemonCg.includes("ytmcp-qa-daemon") && describeProcesses(app.pids()).filter((p) => p.cgroup === daemonCg).length === 1);
   const out = { daemonOwnScope: separated };
   out.ensurePlaying = await ensurePlaying(app);
   const library = await browseLibraryAfterUiReload(app);

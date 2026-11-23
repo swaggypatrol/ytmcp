@@ -224,6 +224,7 @@ pub fn open_and_migrate(
     }
 
     ensure_dir_0700(&paths.data_dir)?;
+    paths.adopt_legacy_database()?;
     let db_path = paths.database_file();
     let existed = db_path.exists();
     let pre_len = if existed {
@@ -366,7 +367,7 @@ fn unique_backup_path(
     }
     for suffix in 1u64..10_000 {
         let alt = paths.data_dir.join(format!(
-            "ytm-glass.db.v{from_version}-to-v{to_version}.{base_ts}.{suffix}.bak"
+            "ytmcp.db.v{from_version}-to-v{to_version}.{base_ts}.{suffix}.bak"
         ));
         if !alt.exists() {
             return alt;

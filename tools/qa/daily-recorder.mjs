@@ -2,13 +2,13 @@
 // Optional daily-use recorder for the installed app.
 // Samples every 30 s: process-tree CPU (from /proc deltas) and PSS, MPRIS status/track/
 // position, the app's PipeWire stream, and app restarts/crashes from the journal.
-// Writes JSONL under ~/.local/state/ytm-glass/qa/. Records no titles, URLs or cookies.
+// Writes JSONL under ~/.local/state/ytmcp/qa/. Records no titles, URLs or cookies.
 //
 //   node tools/qa/daily-recorder.mjs record [--interval 30] [--out FILE]
 //   node tools/qa/daily-recorder.mjs summarize [--in FILE]      (prints the recording summary)
 //
 // As a transient user unit (stops by itself after 9 h):
-//   systemd-run --user --unit=ytm-glass-daily-recorder -p RuntimeMaxSec=9h \
+//   systemd-run --user --unit=ytmcp-daily-recorder -p RuntimeMaxSec=9h \
 //     node "$PWD/tools/qa/daily-recorder.mjs" record
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -30,7 +30,7 @@ import {
   sleep,
 } from "./lib/sys.mjs";
 
-const STATE_DIR = join(process.env.XDG_STATE_HOME || join(homedir(), ".local/state"), "ytm-glass/qa");
+const STATE_DIR = join(process.env.XDG_STATE_HOME || join(homedir(), ".local/state"), "ytmcp/qa");
 const { positionals, values: opt } = parseArgs({
   allowPositionals: true,
   options: { interval: { type: "string", default: "30" }, out: { type: "string" }, in: { type: "string" } },
@@ -62,13 +62,13 @@ async function journalSince(sinceSec) {
     const unit = String(e._SYSTEMD_USER_UNIT ?? e._SYSTEMD_UNIT ?? "");
     const ident = String(e.SYSLOG_IDENTIFIER ?? "");
     const msg = typeof e.MESSAGE === "string" ? e.MESSAGE : "";
-    if (!/ytmglass|ytm-glass|ytm-daemon/i.test(`${unit} ${ident}`) && !/ytm-daemon|ytm-glass/.test(msg)) continue;
+    if (!/ytmcp|ytmcp|ytm-daemon/i.test(`${unit} ${ident}`) && !/ytm-daemon|ytmcp/.test(msg)) continue;
     appLines += 1;
     const m = /render-process-gone:([a-z-]+)|"event":"(daemon_unexpected_exit|daemon_spawn_error|startup_failed|quit_cleanup_failed)"|Segmentation fault|core dumped/.exec(msg);
     if (m) crashes.push({ at: Number(e.__REALTIME_TIMESTAMP) / 1000, kind: m[1] ?? m[2] ?? "signal" });
   }
   const cd = await run("coredumpctl", ["list", "--no-legend", "--no-pager", `--since=@${sinceSec}`], { timeoutMs: 10_000 });
-  for (const l of cd.stdout.split("\n")) if (/ytm-glass|ytm-daemon|electron/.test(l)) crashes.push({ kind: "coredump", line: l.trim().split(/\s+/).slice(-1)[0] });
+  for (const l of cd.stdout.split("\n")) if (/ytmcp|ytm-daemon|electron/.test(l)) crashes.push({ kind: "coredump", line: l.trim().split(/\s+/).slice(-1)[0] });
   return { appLines, crashes };
 }
 
@@ -88,7 +88,7 @@ async function record() {
     const res = pids.length ? resourceSample(pids) : null;
     const delta = prev && res && prevRoot === root ? resourceDelta(prev, res) : null;
     const names = await mprisNames(pids);
-    const mp = names.ytmGlass.length ? await mprisProps() : null;
+    const mp = names.ytmcp.length ? await mprisProps() : null;
     const audio = pids.length ? await sinkInputsFor(pids) : { entries: [] };
     const j = await journalSince(lastJournal);
     lastJournal = Math.floor(t / 1000);
@@ -103,7 +103,7 @@ async function record() {
       pssMb: res ? round(res.pssKb / 1024, 1) : null,
       perRoleCpu: delta ? Object.fromEntries(Object.entries(delta.perRole).map(([k, v]) => [k, v.cpuPct])) : null,
       mpris: mp ? { status: mp.status, track: sha256Short(mp.trackId), positionSec: mp.positionUs != null ? round(mp.positionUs / 1e6, 1) : null, lengthSec: mp.lengthUs != null ? round(mp.lengthUs / 1e6, 1) : null } : null,
-      mprisServices: names.ytmGlass.length,
+      mprisServices: names.ytmcp.length,
       chromiumMprisFromApp: names.chromiumFromApp.length,
       stream: audio.entries.map((e) => ({ corked: e.corked, mute: e.mute })),
       journal: j,
@@ -216,7 +216,7 @@ if (cmd === "record") {
   const { text, stats } = summarize(lines);
   console.log(text);
   console.log(`\n<!-- source: ${file.replace(homedir(), "~")} -->`);
-  if (process.env.YTM_GLASS_QA_JSON === "1") console.log(JSON.stringify(stats, null, 2));
+  if (process.env.YTMCP_QA_JSON === "1") console.log(JSON.stringify(stats, null, 2));
 } else {
   console.error("usage: daily-recorder.mjs record|summarize");
   process.exit(2);

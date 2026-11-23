@@ -7,7 +7,7 @@ import type {
   QueryErrorCode,
   RepeatMode,
   Track,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import { isPlaylistEntryId, MUSIC_ORIGIN } from "./types.js";
 
 export const PROTOCOL_VERSION = 1;

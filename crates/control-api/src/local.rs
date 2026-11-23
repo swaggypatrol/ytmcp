@@ -59,7 +59,7 @@ pub fn auto_socket_path() -> io::Result<PathBuf> {
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is required for local music control"))?;
     validate_private_dir(&dir)?;
-    Ok(dir.join("ytm-glass").join("control.sock"))
+    Ok(dir.join("ytmcp").join("control.sock"))
 }
 
 pub fn validate_private_dir(path: &Path) -> io::Result<()> {

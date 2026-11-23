@@ -24,7 +24,7 @@ import {
   type PlaybackStatus,
   type QueryError,
   type StateDelta,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import { activeMessages } from "../i18n/active.js";
 
 export type DeltaUnsubscribe = () => void;
@@ -94,9 +94,9 @@ export interface RawPreloadUiBridge {
 
 /**
  * Narrow UI transport interface used by `YtmUiClient`.
- * Routes only generated `@ytm-glass/protocol` types.
+ * Routes only generated `@ytmcp/protocol` types.
  */
-export interface YtmGlassUiBridge {
+export interface YtmcpUiBridge {
   subscribeSnapshot(
     listener: DeltaListener
   ): SubscribeSnapshotResult | Promise<SubscribeSnapshotResult>;
@@ -128,24 +128,24 @@ export interface YtmGlassUiBridge {
 
 declare global {
   interface Window {
-    ytmGlassUi?: YtmGlassUiBridge | RawPreloadUiBridge;
+    ytmcpUi?: YtmcpUiBridge | RawPreloadUiBridge;
   }
 }
 
 function isRawPreloadBridge(
-  bridge: YtmGlassUiBridge | RawPreloadUiBridge
+  bridge: YtmcpUiBridge | RawPreloadUiBridge
 ): bridge is RawPreloadUiBridge {
   return (
     typeof (bridge as RawPreloadUiBridge).sendEnvelope === "function" &&
     typeof (bridge as RawPreloadUiBridge).onEnvelope === "function" &&
-    typeof (bridge as YtmGlassUiBridge).subscribeSnapshot !== "function"
+    typeof (bridge as YtmcpUiBridge).subscribeSnapshot !== "function"
   );
 }
 
 export function wrapPreloadEnvelopeBridge(
   raw: RawPreloadUiBridge,
   requestTimeoutMs = 15_000
-): YtmGlassUiBridge {
+): YtmcpUiBridge {
   let seq = 0;
   let reqCounter = 0;
   let latestCoreEpoch: CoreEpoch | null = null;
@@ -456,7 +456,7 @@ export interface CreateUiClientOptions {
   fakeClient?: FakeCoreClient;
   mockScenario?: FakeScenario;
   enableMock?: boolean;
-  preloadBridge?: YtmGlassUiBridge;
+  preloadBridge?: YtmcpUiBridge;
   connectRetryDelaysMs?: readonly number[];
 }
 
@@ -593,7 +593,7 @@ const terminalReceipt = (receipt: CommandReceipt): boolean =>
 
 export class YtmUiClient {
   private mode: ClientTransportMode;
-  private bridge: YtmGlassUiBridge | null = null;
+  private bridge: YtmcpUiBridge | null = null;
   private fakeCore: FakeCoreClient | null = null;
   private mockScenario: FakeScenario = "normal";
 
@@ -637,11 +637,11 @@ export class YtmUiClient {
     } else if (options.preloadBridge) {
       this.mode = "preload";
       this.bridge = options.preloadBridge;
-    } else if (typeof window !== "undefined" && window.ytmGlassUi && !isExplicitMockEnabled()) {
+    } else if (typeof window !== "undefined" && window.ytmcpUi && !isExplicitMockEnabled()) {
       this.mode = "preload";
-      this.bridge = isRawPreloadBridge(window.ytmGlassUi)
-        ? wrapPreloadEnvelopeBridge(window.ytmGlassUi)
-        : window.ytmGlassUi;
+      this.bridge = isRawPreloadBridge(window.ytmcpUi)
+        ? wrapPreloadEnvelopeBridge(window.ytmcpUi)
+        : window.ytmcpUi;
     } else if (isExplicitMockEnabled()) {
       this.mode = "mock";
       this.fakeCore = new FakeCoreClient("normal");
@@ -653,7 +653,7 @@ export class YtmUiClient {
     }
   }
 
-  private wrapFakeCore(fake: FakeCoreClient): YtmGlassUiBridge {
+  private wrapFakeCore(fake: FakeCoreClient): YtmcpUiBridge {
     return {
       subscribeSnapshot: (listener) => fake.subscribeSnapshot((delta) => listener(delta)),
       sendPlayerCommand: (cmd) => fake.sendPlayerCommand(cmd),

@@ -4,7 +4,7 @@
  *
  * liquid-glass.ts reads the --lg-* optics tokens and builds one SVG filter per surface; this
  * file owns everything that needs no per-element geometry: tint, rim, shadow, the palette for
- * content placed on glass, the scroll-edge effect, press/morph motion and the opaque fallbacks.
+ * content placed on glass, press/morph motion and the opaque fallbacks.
  *
  * After changing a colour, tone or fill token run the tone audit (__tests__/tone.test.ts): it
  * derives the worst-case contrast of everything written on glass from these values.
@@ -15,28 +15,30 @@
 
 :root {
   /* Optics (read by liquid-glass.ts). Lengths are CSS px. */
-  --lg-bezel: 20px;            /* width of the curved rim that bends light */
-  --lg-reach: 17px;            /* how far a ray entering at the outline lands inside */
-  --lg-dispersion: 0.06;       /* relative spread of the R/B displacement around G */
-  --lg-frost-clear: 2.4px;     /* blur of the clear body */
-  --lg-frost-plate: 13px;      /* blur behind label plates; also the "local mean" radius */
-  --lg-body-frost: 0.3;        /* 0 = clear body, 1 = the whole body is a plate */
-  --lg-plate-feather: 24px;
+  --lg-bezel: 22px;            /* width of the curved rim that bends light */
+  --lg-reach: 30px;            /* how far a ray entering at the outline lands inside; about 1.4x
+                                  the bezel makes the rim a thick lens: an upside-down,
+                                  compressed band at the outline, magnified upright inside it */
+  --lg-dispersion: 0.03;       /* relative spread of the R/B displacement around G; a faint fringe */
+  --lg-frost: 5px;             /* one even frost over the whole surface, applied before refraction */
+  --lg-mean-blur: 13px;        /* radius of the local mean brightness the tone stage reads */
   --lg-saturation: 1.45;
   --lg-tone-gain: 0.8;         /* brightness kept where the backdrop is at the scheme's own end */
   --lg-tone-adapt: 0.6;        /* how much is taken away as the local mean moves to the far end */
 
+  --lg-glint: 0.5;             /* peak opacity of the specular line along the outline */
+
   /* Surface colours (dark scheme). */
   --lg-scheme: dark;
-  --lg-tint: oklch(0.3 0.016 265 / 0.3);
-  --lg-tint-plain: oklch(0.2 0.012 265 / 0.86);   /* while only the plain blur is active */
-  --lg-solid: oklch(0.185 0.011 265);              /* reduced transparency */
+  --lg-tint: oklch(0.3 0.016 300 / 0.3);
+  --lg-tint-plain: oklch(0.2 0.012 300 / 0.86);   /* while only the plain blur is active */
+  --lg-solid: oklch(0.205 0.011 300);              /* reduced transparency */
   --lg-fill-hover: oklch(1 0 0 / 0.07);
   --lg-fill-active: oklch(1 0 0 / 0.12);
   --lg-hairline: oklch(1 0 0 / 0.12);
-  --lg-rim-bright: oklch(1 0 0 / 0.62);
-  --lg-rim-mid: oklch(1 0 0 / 0.3);
-  --lg-rim-dim: oklch(1 0 0 / 0.1);
+  --lg-rim-bright: oklch(1 0 0 / 0.24);
+  --lg-rim-mid: oklch(1 0 0 / 0.1);
+  --lg-rim-dim: oklch(1 0 0 / 0.04);
   --lg-sheen: oklch(1 0 0 / 0.1);
   --lg-sheen-strength: 0.25;   /* opacity of the broad sheen; counted by the tone audit */
   --lg-bezel-light: oklch(1 0 0 / 0.16);
@@ -47,24 +49,21 @@
   --lg-fallback-blur: 22px;
 
   /* Palette for content on glass. Body text needs 4.5:1, icons and marks 3:1, on any backdrop. */
-  --lg-text-primary: oklch(0.97 0.004 265);
-  --lg-text-secondary: oklch(0.88 0.01 265);
-  --lg-accent: oklch(0.8 0.13 18);                 /* icons and marks only, never body text */
-  --lg-icon: oklch(0.95 0.004 265);                /* inactive glyphs: about 92% white, never pure */
+  --lg-text-primary: oklch(0.97 0.004 91.4);
+  --lg-text-secondary: oklch(0.88 0.006 286);
+  --lg-accent: oklch(0.84 0.07 359);                 /* icons and marks only, never body text */
+  --lg-agent: oklch(0.84 0.06 319);                  /* the AI DJ's marks */
+  --lg-icon: oklch(0.95 0.004 91.4);                /* inactive glyphs: about 92% white, never pure */
   --lg-icon-lift: drop-shadow(0 1px 1px oklch(0 0 0 / 0.35));
   --lg-icon-lift-on-accent: drop-shadow(0 1px 2px oklch(0 0 0 / 0.25));
-  --lg-accent-fill: oklch(0.56 0.21 18);           /* opaque fill of the prominent button */
-  --lg-on-accent-fill: oklch(0.99 0.003 20);
-  --lg-status-success: oklch(0.88 0.13 150);
-  --lg-status-warning: oklch(0.89 0.12 85);
-  --lg-status-danger: oklch(0.9 0.07 25);
-  --lg-status-info: oklch(0.89 0.07 240);
-  --lg-focus-ring: oklch(0.8 0.12 230);
+  --lg-accent-fill: oklch(0.84 0.07 359);           /* opaque fill of the prominent button */
+  --lg-on-accent-fill: oklch(0.2 0.012 300);
+  --lg-status-success: oklch(0.88 0.065 129);
+  --lg-status-warning: oklch(0.92 0.075 95);
+  --lg-status-danger: oklch(0.9 0.055 48);
+  --lg-status-info: oklch(0.89 0.055 250);
+  --lg-focus-ring: oklch(0.84 0.07 250);
 
-  /* Scroll-edge effect */
-  --lg-edge-blur: 5px;
-  --lg-edge-fade: 64px;
-  --lg-edge-dim: 0.22;
 
   /* Motion */
   --lg-duration-press: 520ms;   /* spring back after release */
@@ -81,32 +80,35 @@
 
 :root[data-theme="light"] {
   --lg-scheme: light;
-  --lg-tint: oklch(0.985 0.004 260 / 0.36);
-  --lg-tint-plain: oklch(0.975 0.004 260 / 0.86);
-  --lg-solid: oklch(0.975 0.004 260);
+  --lg-glint: 0.9;
+  --lg-tint: oklch(0.985 0.004 91.4 / 0.36);
+  --lg-tint-plain: oklch(0.96 0.004 91.4 / 0.86);
+  --lg-solid: oklch(0.975 0.003 91.4);
   --lg-fill-hover: oklch(0 0 0 / 0.05);
   --lg-fill-active: oklch(0 0 0 / 0.08);
   --lg-hairline: oklch(0 0 0 / 0.1);
-  --lg-rim-bright: oklch(1 0 0 / 0.95);
-  --lg-rim-mid: oklch(1 0 0 / 0.55);
-  --lg-rim-dim: oklch(1 0 0 / 0.3);
+  --lg-rim-bright: oklch(1 0 0 / 0.6);
+  --lg-rim-mid: oklch(1 0 0 / 0.25);
+  --lg-rim-dim: oklch(1 0 0 / 0.1);
   --lg-sheen: oklch(1 0 0 / 0.3);
   --lg-bezel-light: oklch(1 0 0 / 0.5);
-  --lg-bezel-shade: oklch(0.3 0.02 265 / 0.14);
-  --lg-shadow: 0 0 0 0.5px oklch(0.2 0.02 265 / 0.14), 0 1px 2px oklch(0.2 0.02 265 / 0.12), 0 10px 28px -6px oklch(0.2 0.02 265 / 0.2);
-  --lg-shadow-raised: 0 0 0 0.5px oklch(0.2 0.02 265 / 0.16), 0 2px 4px oklch(0.2 0.02 265 / 0.14), 0 22px 54px -10px oklch(0.2 0.02 265 / 0.28);
+  --lg-bezel-shade: oklch(0.3 0.01 286 / 0.14);
+  --lg-shadow: 0 0 0 0.5px oklch(0.24 0.01 286 / 0.14), 0 1px 2px oklch(0.24 0.01 286 / 0.12), 0 10px 28px -6px oklch(0.24 0.01 286 / 0.2);
+  --lg-shadow-raised: 0 0 0 0.5px oklch(0.24 0.01 286 / 0.16), 0 2px 4px oklch(0.24 0.01 286 / 0.14), 0 22px 54px -10px oklch(0.24 0.01 286 / 0.28);
 
-  --lg-text-primary: oklch(0.17 0.012 265);
-  --lg-text-secondary: oklch(0.36 0.014 265);
-  --lg-accent: oklch(0.47 0.2 18);
-  --lg-icon: oklch(0.32 0.012 265);                /* about 84% black on light glass */
+  --lg-text-primary: oklch(0.2 0.01 286);
+  --lg-text-secondary: oklch(0.36 0.01 286);
+  --lg-accent: oklch(0.45 0.11 359);
+  --lg-agent: oklch(0.44 0.085 319);
+  --lg-icon: oklch(0.32 0.01 286);                /* about 84% black on light glass */
   --lg-icon-lift: drop-shadow(0 0.5px 0 oklch(1 0 0 / 0.55));
-  --lg-accent-fill: oklch(0.52 0.22 18);
-  --lg-status-success: oklch(0.4 0.12 150);
-  --lg-status-warning: oklch(0.42 0.1 70);
-  --lg-status-danger: oklch(0.42 0.17 25);
-  --lg-status-info: oklch(0.4 0.14 250);
-  --lg-focus-ring: oklch(0.45 0.17 250);
+  --lg-accent-fill: oklch(0.5 0.11 359);
+  --lg-on-accent-fill: oklch(0.99 0.003 91.4);
+  --lg-status-success: oklch(0.4 0.075 129);
+  --lg-status-warning: oklch(0.42 0.085 85);
+  --lg-status-danger: oklch(0.42 0.11 42);
+  --lg-status-info: oklch(0.4 0.1 250);
+  --lg-focus-ring: oklch(0.45 0.11 250);
 }
 
 /* ---- surface ------------------------------------------------------------------------------ */
@@ -135,6 +137,8 @@
   --accent: var(--lg-accent);
   --accent-hover: var(--lg-accent);
   --accent-soft: var(--lg-fill-active);
+  --agent: var(--lg-agent);
+  --agent-soft: var(--lg-fill-active);
   --bg-elevated: transparent;
   --bg-subtle: var(--lg-fill-hover);
   --bg-elevated-hover: var(--lg-fill-active);
@@ -181,19 +185,18 @@
 .lg[data-lg-lens] { background-color: var(--lg-tint); }
 
 .lg--sidebar {
-  --lg-body-frost: 1;
-  --lg-bezel: 18px;
+  --lg-bezel: 24px;
+  --lg-reach: 34px;
 }
 
 .lg--bar {
-  --lg-body-frost: 0.45;
-  --lg-reach: 20px;
+  --lg-bezel: 24px;
+  --lg-reach: 33px;
 }
 
 .lg--popover {
-  --lg-body-frost: 1;
-  --lg-bezel: 16px;
-  --lg-reach: 13px;
+  --lg-bezel: 24px;
+  --lg-reach: 33px;
   --lg-tint: color-mix(in oklch, var(--lg-solid) 46%, transparent);
   box-shadow:
     var(--lg-shadow-raised),
@@ -215,23 +218,6 @@
 /* Glyphs on glass sit in it rather than on it: a hairline light edge below on light glass, a
    soft shade on dark glass. */
 .lg .icon { filter: var(--lg-icon-lift); }
-
-/* ---- scroll-edge effect ------------------------------------------------------------------- */
-
-/* Sits between the scrolling content and a floating bar: content softens and sinks towards the
-   canvas colour before it reaches the glass, so nothing sharp ever sits under a label. */
-.lg-scroll-edge {
-  position: absolute;
-  pointer-events: none;
-  backdrop-filter: blur(var(--lg-edge-blur));
-  background: linear-gradient(
-    to top,
-    color-mix(in oklch, var(--bg-canvas) calc(var(--lg-edge-dim) * 100%), transparent) 0,
-    color-mix(in oklch, var(--bg-canvas) calc(var(--lg-edge-dim) * 100%), transparent) calc(100% - var(--lg-edge-fade)),
-    transparent 100%
-  );
-  mask-image: linear-gradient(to top, #000 0, #000 calc(100% - var(--lg-edge-fade)), transparent 100%);
-}
 
 /* ---- interaction -------------------------------------------------------------------------- */
 
@@ -268,11 +254,9 @@
 @media (prefers-reduced-transparency: reduce) {
   .lg, .lg[data-lg-lens] { backdrop-filter: none; background-color: var(--lg-solid); }
   .lg::after { display: none; }
-  .lg-scroll-edge { backdrop-filter: none; mask-image: none; background: linear-gradient(to top, var(--bg-canvas) calc(100% - var(--lg-edge-fade)), transparent); }
 }
 :root[data-reduce-transparency="true"] .lg { backdrop-filter: none; background-color: var(--lg-solid); }
 :root[data-reduce-transparency="true"] .lg::after { display: none; }
-:root[data-reduce-transparency="true"] .lg-scroll-edge { backdrop-filter: none; mask-image: none; background: linear-gradient(to top, var(--bg-canvas) calc(100% - var(--lg-edge-fade)), transparent); }
 
 /* Reduced motion: no scaling at all; colour and opacity changes stay. */
 @media (prefers-reduced-motion: reduce) {
@@ -286,6 +270,5 @@
   .lg, .lg[data-lg-lens] { backdrop-filter: none; background-color: Canvas; color: CanvasText; box-shadow: none; border: 1px solid CanvasText; }
   .lg::before, .lg::after { display: none; }
   .lg .icon, .lg .btn-play-focal .icon { filter: none; }
-  .lg-scroll-edge { display: none; }
   .lg-press[aria-current="page"], .lg-press[aria-pressed="true"] { outline: 1px solid Highlight; outline-offset: -1px; }
 }

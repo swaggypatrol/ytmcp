@@ -1,13 +1,18 @@
 /**
  * Liquid glass runtime. Every element with class "lg" that carries `{@attach glass}` gets one
- * SVG filter, used as its backdrop-filter. The filter has no bitmap inputs:
- *   shape   a flood rectangle the size of the surface
- *   height  the shape blurred across the rim width (a slab with a rounded shoulder)
- *   field   the height's gradient (Sobel): where a ray entering there lands sideways
- *   lens    the backdrop sampled through the field, once per colour channel (dispersion)
- *   plate   a heavily blurred copy shown where the body and the label regions need quiet
- *   tone    a gain derived from the local mean brightness, bounding what glyphs sit on
- * Resizing a surface only rewrites a few numeric attributes. Tokens live in glass.css.
+ * SVG filter, used as its backdrop-filter:
+ *   field   a displacement map of the surface's rim, assembled from nine pieces: four corner
+ *           tiles and four one-texel edge strips (generated once per size of rim and reused),
+ *           over a neutral flood. Red and green move the sample inward along the outline's
+ *           normal, so the bending follows the rounded corners.
+ *   frost   the backdrop blurred first, evenly over the whole surface: one material, frosted
+ *           and refracting at once, with no clearer or cloudier zones
+ *   lens    the frost sampled through the field, once per colour channel (dispersion)
+ *   mean    a wide blur of the backdrop, refracted the same way, that measures local brightness
+ *   tone    a gain derived from that mean, bounding what glyphs sit on
+ *   glint   a thin specular line along the outline, from the same field's normal: bright on
+ *           the edges facing the light (upper left), faint on the opposite ones
+ * Resizing a surface only moves the pieces. Tokens live in glass.css.
  *
  * Without the APIs it needs (or with reduced transparency / forced colours) nothing is built
  * and the CSS fallbacks in glass.css apply.
@@ -16,12 +21,11 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 /** Rec. 709 luma weights, applied to sRGB-encoded values by the tone stage. */
 export const LUMA = [0.2126, 0.7152, 0.0722] as const;
-// exp(-x²/2) falls to ~9 % at x = 2.2: the rim width is 2.2 standard deviations of the shoulder.
-const BEZEL_SIGMAS = 2.2;
-// Peak slope of a unit step blurred with σ = 1, per pixel.
-const UNIT_EDGE_SLOPE = 0.3989;
-// Height value where the body plate starts to fade in (0.5 is the outline itself).
-const BODY_START = 0.62;
+// Direction the light comes from, in screen coordinates (y down): the upper left.
+const LIGHT = [-0.6, -0.8] as const;
+// Exponent applied to the glint mask: the bend falls as (1 − t)², so this leaves a line about
+// the outer tenth of the rim wide.
+const GLINT_SHARPNESS = 4;
 
 const KEEP = {
   r: "1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 1",
@@ -52,34 +56,114 @@ export function toneMatrix(tone: ToneTokens): number[] {
   return [...row, ...row, ...row, 0, 0, 0, 0, 1];
 }
 
+/**
+ * How far the rim bends light, as a fraction of its peak, at depth `t` (0 on the outline, 1 at
+ * the inner end of the rim, 0 beyond). The rim's cross-section rises as 1 − (1 − t)³: steep at
+ * the outline, flat where it meets the body; for the small angles involved, refraction moves a
+ * ray sideways in proportion to the slope, (1 − t)².
+ *
+ * Depth x then shows what lies at x + reach · (1 − x/rim)². With reach at about 1.4 × the rim
+ * (the surfaces' setting) this is a thick lens: the outer part of the rim shows the content
+ * just inside it upside down and somewhat compressed, the inner part shows it upright and
+ * magnified, and the two meet at a single turning line. That is the rim of real thick glass;
+ * the frost blurred in beforehand keeps the turning line soft.
+ */
+export function refractionProfile(t: number): number {
+  if (t <= 0) return 1;
+  if (t >= 1) return 0;
+  return (1 - t) ** 2;
+}
+
+/**
+ * Exponent of a corner's curve from its computed CSS `corner-shape`: `superellipse(k)` draws
+ * |x|^(2^k) + |y|^(2^k) = 1, so `round` (k = 1) is a circle and `squircle` (k = 2) a quartic.
+ * Chromium reports the computed value in the superellipse() form. Anything else (scoops, notches,
+ * bevels, no support at all) falls back to a circle.
+ */
+export function cornerExponent(shape: string): number {
+  const value = shape.trim();
+  if (value === "squircle") return 4;
+  const match = /^superellipse\(\s*([0-9.]+)\s*\)$/.exec(value);
+  const k = match ? Number(match[1]) : NaN;
+  return k >= 1 && k <= 4 ? 2 ** k : 2;
+}
+
+/** One texel of the rim field: the inward offset as a fraction of the reach. */
+export interface FieldTexel {
+  readonly dx: number;
+  readonly dy: number;
+}
+
+/**
+ * The field at a point (x, y) of the top-left corner region, measured from the surface's
+ * top-left, for an outline whose corner radius is `radius`, with a rim `bezel` wide. Other
+ * corners and edges are mirrors and slices of this one. Outside the outline and deeper than the
+ * rim the texel is neutral.
+ */
+export function cornerTexel(x: number, y: number, radius: number, bezel: number, exponent: number): FieldTexel {
+  const qx = radius - x;
+  const qy = radius - y;
+  let dist: number; // signed distance-like value: negative inside, by how far
+  let nx: number;
+  let ny: number;
+  if (qx > 0 && qy > 0) {
+    const e = exponent;
+    const r = (qx ** e + qy ** e) ** (1 / e);
+    dist = r - radius;
+    const gx = qx ** (e - 1);
+    const gy = qy ** (e - 1);
+    const len = Math.hypot(gx, gy) || 1;
+    nx = -gx / len; // outward normal points left and up
+    ny = -gy / len;
+  } else if (qx > qy) {
+    dist = -x;
+    nx = -1;
+    ny = 0;
+  } else {
+    dist = -y;
+    nx = 0;
+    ny = -1;
+  }
+  if (dist > 0) return { dx: 0, dy: 0 };
+  const p = refractionProfile(-dist / bezel);
+  return { dx: -nx * p + 0, dy: -ny * p + 0 }; // + 0 turns −0 into 0
+}
+
 interface OpticsTokens extends ToneTokens {
+  readonly glint: number;
   readonly bezel: number;
   readonly reach: number;
   readonly dispersion: number;
-  readonly frostClear: number;
-  readonly frostPlate: number;
-  readonly bodyFrost: number;
-  readonly plateFeather: number;
+  readonly frost: number;
+  readonly meanBlur: number;
   readonly saturation: number;
 }
 
 type FilterParts = Record<
-  | "shape" | "shoulder" | "slopeX" | "slopeY" | "soften" | "bendR" | "bendG" | "bendB"
-  | "vivid" | "mean" | "bodyMask" | "labels" | "labelMask" | "gain" | "tone",
+  | "neutral" | "frost" | "bendR" | "bendG" | "bendB" | "vivid" | "wide" | "wideBend" | "mean"
+  | "gain" | "tone" | "litMask" | "litShape" | "litShapeA" | "shadeMask" | "shadeShape" | "shadeShapeA"
+  | "glint",
   SVGElement
 >;
+
+/** The nine pieces of the field, in order: corners TL, TR, BR, BL, then edges T, R, B, L. */
+type FieldPieces = readonly SVGFEImageElement[];
 
 interface Surface {
   readonly filter: SVGFilterElement;
   readonly parts: FilterParts;
-  readonly labelFloods: SVGElement[];
+  readonly pieces: FieldPieces;
   readonly listeners: AbortController;
+  /** Key of the rim the pieces currently show, so only a change of rim regenerates them. */
+  rimKey: string;
 }
 
 const surfaces = new Map<HTMLElement, Surface>();
 let defs: SVGDefsElement | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let nextId = 1;
+/** Generated piece images by rim key; a handful of rims exist in the whole app. */
+const pieceCache = new Map<string, readonly string[]>();
 
 function supported(): boolean {
   return (
@@ -114,13 +198,12 @@ function readTokens(el: HTMLElement): OpticsTokens {
   const cs = getComputedStyle(el);
   const num = (name: string) => parseFloat(cs.getPropertyValue(name)) || 0;
   return {
+    glint: Math.min(1, num("--lg-glint")),
     bezel: Math.max(2, num("--lg-bezel")),
     reach: num("--lg-reach"),
     dispersion: num("--lg-dispersion"),
-    frostClear: num("--lg-frost-clear"),
-    frostPlate: num("--lg-frost-plate"),
-    bodyFrost: Math.min(1, num("--lg-body-frost")),
-    plateFeather: Math.max(1, num("--lg-plate-feather")),
+    frost: num("--lg-frost"),
+    meanBlur: num("--lg-mean-blur"),
     saturation: num("--lg-saturation") || 1,
     gain: num("--lg-tone-gain") || 1,
     adapt: num("--lg-tone-adapt"),
@@ -128,7 +211,58 @@ function readTokens(el: HTMLElement): OpticsTokens {
   };
 }
 
-function createFilter(id: string): Pick<Surface, "filter" | "parts" | "labelFloods"> {
+/** Byte of a signed unit offset: 127.5 ± 127.5 (feDisplacementMap reads C/255 − 0.5). */
+const offsetByte = (v: number) => Math.round(127.5 + 127.5 * Math.max(-1, Math.min(1, v)));
+
+/**
+ * The eight piece images (PNG data URLs) for a rim: corner tiles `size` × `size` texels and
+ * edge strips one texel thick, each texel encoding (dx, dy) as (R, G), blue neutral, alpha opaque.
+ */
+function renderPieces(size: number, radius: number, bezel: number, exponent: number): readonly string[] {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+  const draw = (w: number, h: number, texel: (x: number, y: number) => FieldTexel) => {
+    canvas.width = w;
+    canvas.height = h;
+    const img = ctx.createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const f = texel(x + 0.5, y + 0.5);
+        const i = (y * w + x) * 4;
+        img.data[i] = offsetByte(f.dx);
+        img.data[i + 1] = offsetByte(f.dy);
+        img.data[i + 2] = 128;
+        img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas.toDataURL("image/png");
+  };
+  const corner = (x: number, y: number) => cornerTexel(x, y, radius, bezel, exponent);
+  // Mirror the top-left corner into the others; flipping an axis flips that offset's sign.
+  const flip = (fx: boolean, fy: boolean) => (x: number, y: number) => {
+    const f = corner(fx ? size - x : x, fy ? size - y : y);
+    return { dx: fx ? -f.dx : f.dx, dy: fy ? -f.dy : f.dy };
+  };
+  // Edge strips: the corner's profile along one axis, far from the curve.
+  const edge = (vertical: boolean, far: boolean) => (x: number, y: number) => {
+    const d = vertical ? x : y;
+    const f = corner(vertical ? (far ? size - d : d) : size * 4, vertical ? size * 4 : far ? size - d : d);
+    return vertical ? { dx: far ? -f.dx : f.dx, dy: 0 } : { dx: 0, dy: far ? -f.dy : f.dy };
+  };
+  return [
+    draw(size, size, flip(false, false)),
+    draw(size, size, flip(true, false)),
+    draw(size, size, flip(true, true)),
+    draw(size, size, flip(false, true)),
+    draw(1, size, edge(false, false)),
+    draw(size, 1, edge(true, true)),
+    draw(1, size, edge(false, true)),
+    draw(size, 1, edge(true, false)),
+  ];
+}
+
+function createFilter(id: string): Pick<Surface, "filter" | "parts" | "pieces"> {
   const filter = svg<SVGFilterElement>("filter", {
     id,
     filterUnits: "userSpaceOnUse",
@@ -136,45 +270,47 @@ function createFilter(id: string): Pick<Surface, "filter" | "parts" | "labelFloo
     // The default linearRGB would decode the displacement field and wreck it.
     "color-interpolation-filters": "sRGB",
   });
-  const bend = (result: string) =>
-    svg("feDisplacementMap", { in: "soft", in2: "field", xChannelSelector: "R", yChannelSelector: "G", result });
-  const sobel = (kernelMatrix: string, result: string) =>
-    svg("feConvolveMatrix", { in: "height", order: 3, kernelMatrix, bias: 0.5, preserveAlpha: "true", edgeMode: "duplicate", result });
+  const bend = (input: string, result: string) =>
+    svg("feDisplacementMap", { in: input, in2: "field", xChannelSelector: "R", yChannelSelector: "G", result });
   const matrix = (input: string, values: string, result: string) =>
     svg("feColorMatrix", { in: input, type: "matrix", values, result });
   const blend = (a: string, b: string, result: string) => svg("feBlend", { in: a, in2: b, mode: "screen", result });
 
+  const pieces = Array.from({ length: 8 }, (_, i) =>
+    svg<SVGFEImageElement>("feImage", { preserveAspectRatio: "none", result: `piece${i}` })
+  );
   const parts: FilterParts = {
-    shape: svg("feFlood", { x: 0, y: 0, "flood-color": "#fff", result: "shape" }),
-    shoulder: svg("feGaussianBlur", { in: "shape", result: "shoulder" }),
-    // The kernels are written flipped because feConvolveMatrix is a true convolution.
-    slopeX: sobel("1 0 -1  2 0 -2  1 0 -1", "slopeX"),
-    slopeY: sobel("1 2 1  0 0 0  -1 -2 -1", "slopeY"),
-    soften: svg("feGaussianBlur", { in: "SourceGraphic", result: "soft" }),
-    bendR: bend("bentR"),
-    bendG: bend("bentG"),
-    bendB: bend("bentB"),
+    neutral: svg("feFlood", { "flood-color": "rgb(128,128,255)", result: "neutral" }),
+    frost: svg("feGaussianBlur", { in: "SourceGraphic", result: "frost" }),
+    bendR: bend("frost", "bentR"),
+    bendG: bend("frost", "bentG"),
+    bendB: bend("frost", "bentB"),
     vivid: svg("feColorMatrix", { in: "lens", type: "saturate", result: "vivid" }),
-    mean: svg("feGaussianBlur", { in: "vivid", result: "mean" }),
-    bodyMask: svg("feColorMatrix", { in: "height", type: "matrix", result: "bodyMask" }),
-    labels: svg("feMerge", { result: "labels" }),
-    labelMask: svg("feGaussianBlur", { in: "labels", result: "labelMask" }),
+    wide: svg("feGaussianBlur", { in: "SourceGraphic", result: "wide" }),
+    wideBend: bend("wide", "wideLens"),
+    mean: svg("feColorMatrix", { in: "wideLens", type: "saturate", result: "mean" }),
     gain: svg("feColorMatrix", { in: "mean", type: "matrix", result: "gain" }),
-    tone: svg("feComposite", { in: "body", in2: "gain", operator: "arithmetic", k1: 1, k2: 0 }),
+    tone: svg("feComposite", { in: "vivid", in2: "gain", operator: "arithmetic", k1: 1, k2: 0, result: "toned" }),
+    // Glint: alpha = how much the outline faces the light × how strongly it bends there, then
+    // sharpened into a thin line. The field's offset points inward, so the outward normal is its
+    // negative; the offset's length is already the bending profile.
+    litMask: matrix("field", glintRow(1), "litRaw"),
+    litShape: svg("feComponentTransfer", { in: "litRaw", result: "lit" }),
+    litShapeA: svg("feFuncA", { type: "gamma", offset: 0 }),
+    shadeMask: matrix("field", glintRow(-1), "shadeRaw"),
+    shadeShape: svg("feComponentTransfer", { in: "shadeRaw", result: "shade" }),
+    shadeShapeA: svg("feFuncA", { type: "gamma", offset: 0 }),
+    glint: svg("feFlood", { "flood-color": "#fff", result: "white" }),
   };
+  const field = svg("feMerge", { result: "field" });
+  for (const name of ["neutral", ...pieces.map((_, i) => `piece${i}`)]) field.appendChild(svg("feMergeNode", { in: name }));
   filter.append(
-    // shape → height (opaque grey: 0 outside, 0.5 on the outline, 1 on the flat body)
-    parts.shape,
-    parts.shoulder,
-    matrix("shoulder", "0 0 0 1 0  0 0 0 1 0  0 0 0 1 0  0 0 0 0 1", "height"),
-    // height → field (R, G = 0.5 + inward slope along x, y)
-    parts.slopeX,
-    parts.slopeY,
-    matrix("slopeX", KEEP.r, "fieldX"),
-    matrix("slopeY", KEEP.g, "fieldY"),
-    blend("fieldX", "fieldY", "field"),
-    // backdrop → lens, one refraction per colour channel
-    parts.soften,
+    // field: neutral flood, then the nine pieces over it
+    parts.neutral,
+    ...pieces,
+    field,
+    // frost → lens, one refraction per colour channel
+    parts.frost,
     parts.bendR,
     parts.bendG,
     parts.bendB,
@@ -184,36 +320,42 @@ function createFilter(id: string): Pick<Surface, "filter" | "parts" | "labelFloo
     blend("onlyR", "onlyG", "joinRG"),
     blend("joinRG", "onlyB", "lens"),
     parts.vivid,
+    // the local mean brightness, refracted the same way so it lines up with the lens
+    parts.wide,
+    parts.wideBend,
     parts.mean,
-    // plate mask = body (from the height) ∪ label rectangles
-    parts.bodyMask,
-    parts.labels,
-    parts.labelMask,
-    svg("feComposite", { in: "labelMask", in2: "bodyMask", operator: "over", result: "mask" }),
-    svg("feComposite", { in: "mean", in2: "mask", operator: "in", result: "plate" }),
-    svg("feComposite", { in: "plate", in2: "vivid", operator: "over", result: "body" }),
-    // tone: body × gain(mean) for dark glass, 1 − (1 − body) × gain(mean) for light glass
+    // tone: lens × gain(mean) for dark glass, 1 − (1 − lens) × gain(mean) for light glass
     parts.gain,
-    parts.tone
+    parts.tone,
+    // glint on top of everything
+    parts.litMask,
+    parts.litShape,
+    parts.shadeMask,
+    parts.shadeShape,
+    svg("feComposite", { in: "lit", in2: "shade", operator: "arithmetic", k2: 1, k3: 1, result: "glintMask" }),
+    parts.glint,
+    svg("feComposite", { in: "white", in2: "glintMask", operator: "in", result: "glintLight" }),
+    svg("feComposite", { in: "glintLight", in2: "toned", operator: "over" })
   );
+  parts.litShape.appendChild(parts.litShapeA);
+  parts.shadeShape.appendChild(parts.shadeShapeA);
   defs!.appendChild(filter);
-  return { filter, parts, labelFloods: [] };
+  return { filter, parts, pieces };
 }
 
-/** Rectangles (relative to the surface) of the regions whose glyphs need a full plate. */
-function labelRects(el: HTMLElement, feather: number) {
-  const origin = el.getBoundingClientRect();
-  const pad = feather * 0.4;
-  const rects: { x: number; y: number; width: number; height: number }[] = [];
-  for (const node of el.querySelectorAll("[data-lg-plate]")) {
-    const r = node.getBoundingClientRect();
-    if (r.width === 0 || r.height === 0) continue;
-    rects.push({ x: r.left - origin.left - pad, y: r.top - origin.top - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
-  }
-  return rects;
+/**
+ * feColorMatrix that writes into alpha `side` × (outward normal · light) × bend, read from the
+ * field's red and green bytes (offset = 2·C − 1 inward), clamped to 0…1 by the filter.
+ */
+function glintRow(side: 1 | -1): string {
+  // outward·L = −(offset·L) = −((2R − 1)·Lx + (2G − 1)·Ly)
+  const r = -2 * LIGHT[0] * side;
+  const g = -2 * LIGHT[1] * side;
+  const k = (LIGHT[0] + LIGHT[1]) * side;
+  return `0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  ${r.toFixed(4)} ${g.toFixed(4)} 0 0 ${k.toFixed(4)}`;
 }
 
-/** Writes the surface's current size, label regions and tokens into its filter. */
+/** Writes the surface's current size and tokens into its filter. */
 function update(el: HTMLElement, surface: Surface): void {
   if (opaqueMode()) {
     el.style.removeProperty("--lg-backdrop");
@@ -225,43 +367,58 @@ function update(el: HTMLElement, surface: Surface): void {
   if (width < 2 || height < 2) return;
   const tokens = readTokens(el);
   const p = surface.parts;
+  const cs = getComputedStyle(el);
+  const radius = Math.min(parseFloat(cs.borderTopLeftRadius) || 0, width / 2, height / 2);
+  const exponent = cornerExponent(cs.getPropertyValue("corner-shape"));
+  const bezel = Math.min(tokens.bezel, width / 2, height / 2);
+  // A corner tile covers the curve and the full rim beside it; edges carry on from there.
+  const size = Math.max(1, Math.ceil(Math.min(Math.max(radius, bezel) + 1, width / 2, height / 2)));
 
-  const sigma = Math.min(tokens.bezel, width / 2, height / 2) / BEZEL_SIGMAS;
-  const margin = Math.ceil(Math.max(sigma, tokens.plateFeather / 2) * 3) + 2;
+  const rimKey = [size, radius.toFixed(1), bezel.toFixed(1), exponent].join(":");
+  if (surface.rimKey !== rimKey) {
+    let urls = pieceCache.get(rimKey);
+    if (!urls) {
+      urls = renderPieces(size, radius, bezel, exponent);
+      pieceCache.set(rimKey, urls);
+    }
+    surface.pieces.forEach((piece, i) => piece.setAttribute("href", urls[i]!));
+    surface.rimKey = rimKey;
+  }
+  const midW = Math.max(0, width - size * 2);
+  const midH = Math.max(0, height - size * 2);
+  const boxes = [
+    [0, 0, size, size],
+    [width - size, 0, size, size],
+    [width - size, height - size, size, size],
+    [0, height - size, size, size],
+    [size, 0, midW, size],
+    [width - size, size, size, midH],
+    [size, height - size, midW, size],
+    [0, size, size, midH],
+  ];
+  surface.pieces.forEach((piece, i) => {
+    const [x, y, w, h] = boxes[i]!;
+    set(piece, { x: x!, y: y!, width: w!, height: h! });
+  });
+
+  const margin = Math.ceil(Math.max(tokens.frost, tokens.meanBlur) * 3) + 2;
   set(surface.filter, { x: -margin, y: -margin, width: width + margin * 2, height: height + margin * 2 });
-  set(p.shape, { width, height });
-  set(p.shoulder, { stdDeviation: sigma.toFixed(2) });
 
-  // Sobel sums 8× the slope per device pixel. Normalise so the steepest point of the shoulder
-  // (the outline) maps to the end of the field's range, whatever the device pixel ratio.
-  const peakSlopePerDevicePx = UNIT_EDGE_SLOPE / (sigma * devicePixelRatio);
-  const divisor = ((8 * peakSlopePerDevicePx) / 0.5).toFixed(5);
-  set(p.slopeX, { divisor });
-  set(p.slopeY, { divisor });
-
-  const span = tokens.reach * 2; // field 0…1 ↔ −reach…+reach px
-  set(p.soften, { stdDeviation: tokens.frostClear });
+  // feDisplacementMap moves by scale × (C/255 − 0.5): a scale of 2 × reach reaches ±reach. A rim
+  // narrowed by a small surface keeps its proportions.
+  const span = tokens.reach * (bezel / tokens.bezel) * 2;
+  set(p.frost, { stdDeviation: tokens.frost });
   set(p.bendR, { scale: (span * (1 + tokens.dispersion)).toFixed(2) });
   set(p.bendG, { scale: span.toFixed(2) });
   set(p.bendB, { scale: (span * (1 - tokens.dispersion)).toFixed(2) });
   set(p.vivid, { values: tokens.saturation });
-  set(p.mean, { stdDeviation: tokens.frostPlate });
+  set(p.wide, { stdDeviation: tokens.meanBlur });
+  set(p.wideBend, { scale: span.toFixed(2) });
+  set(p.mean, { values: tokens.saturation });
 
-  const slope = tokens.bodyFrost / (1 - BODY_START);
-  set(p.bodyMask, { values: `0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  ${slope.toFixed(4)} 0 0 0 ${(-slope * BODY_START).toFixed(4)}` });
-
-  const rects = tokens.bodyFrost < 1 ? labelRects(el, tokens.plateFeather) : [];
-  while (surface.labelFloods.length < rects.length) {
-    const flood = svg("feFlood", { "flood-color": "#fff", result: `label${surface.labelFloods.length}` });
-    surface.filter.insertBefore(flood, p.labels);
-    p.labels.appendChild(svg("feMergeNode", { in: flood.getAttribute("result")! }));
-    surface.labelFloods.push(flood);
-  }
-  surface.labelFloods.forEach((flood, i) => {
-    const r = rects[i] ?? { x: 0, y: 0, width: 0, height: 0 };
-    set(flood, { x: r.x.toFixed(1), y: r.y.toFixed(1), width: r.width.toFixed(1), height: r.height.toFixed(1) });
-  });
-  set(p.labelMask, { stdDeviation: (tokens.plateFeather / 2).toFixed(2) });
+  // A high exponent keeps only where the bend is near its peak: a line a few px thin.
+  set(p.litShapeA, { amplitude: tokens.glint.toFixed(3), exponent: GLINT_SHARPNESS });
+  set(p.shadeShapeA, { amplitude: (tokens.glint * 0.45).toFixed(3), exponent: GLINT_SHARPNESS });
 
   set(p.gain, { values: toneMatrix(tokens).map((v) => +v.toFixed(4)).join(" ") });
   set(p.tone, tokens.scheme === "light" ? { k3: -1, k4: 1 } : { k3: 0, k4: 0 });
@@ -276,7 +433,7 @@ function refreshGlass(): void {
   for (const [el, surface] of surfaces) update(el, surface);
 }
 
-// The Sobel normalisation depends on the device pixel ratio; follow it across monitors.
+// Follow the device pixel ratio across monitors (UI scale changes it too).
 function watchPixelRatio(): void {
   matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener(
     "change",
@@ -338,21 +495,19 @@ function trackLight(el: HTMLElement, signal: AbortSignal): void {
 
 /**
  * Svelte attachment for a glass surface: `<div class="lg lg--bar" {@attach glass}>`.
- * Children marked `data-lg-plate` at mount time get a full frosted plate behind them.
  */
 export function glass(el: HTMLElement): (() => void) | void {
   if (!supported() || surfaces.has(el)) return;
   if (!defs) start();
   const listeners = new AbortController();
-  surfaces.set(el, { ...createFilter(`lg-lens-${nextId++}`), listeners });
-  const observed = [el, ...el.querySelectorAll("[data-lg-plate]")];
-  for (const node of observed) resizeObserver!.observe(node);
+  surfaces.set(el, { ...createFilter(`lg-lens-${nextId++}`), listeners, rimKey: "" });
+  resizeObserver!.observe(el);
   trackLight(el, listeners.signal);
 
   return () => {
     const surface = surfaces.get(el);
     if (!surface) return;
-    for (const node of observed) resizeObserver!.unobserve(node);
+    resizeObserver!.unobserve(el);
     surface.listeners.abort();
     surface.filter.remove();
     el.style.removeProperty("--lg-backdrop");

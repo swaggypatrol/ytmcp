@@ -10,7 +10,7 @@ import type {
   QueryError,
   SearchResult,
   Track,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import type { PageStatus } from "./page-state.js";
 
 export const SEARCH_PAGE_SIZE = 50;

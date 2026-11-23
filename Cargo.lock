@@ -2912,25 +2912,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ytm-glass-mcp"
-version = "1.0.0"
-dependencies = [
- "directories",
- "hex",
- "rand",
- "rmcp",
- "rusqlite",
- "rustix",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "ytm-control-api",
-]
-
-[[package]]
 name = "ytm-lyrics"
 version = "1.0.0"
 dependencies = [
@@ -3011,6 +2992,25 @@ dependencies = [
  "serde_json",
  "sha1",
  "tokio",
+]
+
+[[package]]
+name = "ytmcp"
+version = "1.0.0"
+dependencies = [
+ "directories",
+ "hex",
+ "rand",
+ "rmcp",
+ "rusqlite",
+ "rustix",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "ytm-control-api",
 ]
 
 [[package]]

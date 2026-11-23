@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location("live_read", Path(__file__).with_n
 live = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(live)
 
-TEST_PLAYLIST = "YTM Glass Test"
+TEST_PLAYLIST = "YTM Glass Test"  # account data, named before the rename
 
 
 class Client:

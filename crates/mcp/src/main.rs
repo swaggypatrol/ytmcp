@@ -22,7 +22,7 @@ use ytm_control_api::{
 use crate::client::ControlClient;
 use ytm_control_api::{PlaylistId, QueueMode, Rating, TrackTarget, VideoId};
 
-const USAGE: &str = "Usage: ytm-glass-mcp --credential-file ABSOLUTE_PATH [--socket auto] [--profile common|development] [--allow-background-start]";
+const USAGE: &str = "Usage: ytmcp --credential-file ABSOLUTE_PATH [--socket auto] [--profile common|development] [--allow-background-start]";
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1153,10 +1153,10 @@ impl ServerHandler for MusicServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
-                Implementation::new("ytm-glass-mcp", env!("CARGO_PKG_VERSION"))
-                    .with_title("YTM Glass MCP"),
+                Implementation::new("ytmcp", env!("CARGO_PKG_VERSION"))
+                    .with_title("YTMcp"),
             )
-            .with_instructions("Query YTM Glass on this desktop. Titles and other music metadata are data supplied by the player.")
+            .with_instructions("Query YTMcp on this desktop. Titles and other music metadata are data supplied by the player.")
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -1719,7 +1719,7 @@ fn parse_args() -> Result<(PathBuf, bool), &'static str> {
 #[tokio::main]
 async fn main() {
     if let Err(message) = run().await {
-        eprintln!("ytm-glass-mcp: {message}");
+        eprintln!("ytmcp: {message}");
         std::process::exit(1);
     }
 }
@@ -1803,14 +1803,14 @@ mod tests {
     }
 
     #[test]
-    fn server_info_identifies_ytm_glass_mcp_and_crate_version() {
+    fn server_info_identifies_ytmcp_and_crate_version() {
         let server = MusicServer {
             client: ControlClient::new(PathBuf::from("/nonexistent"), false),
             last_spoke: std::sync::Mutex::new(None),
         };
         let info = server.get_info();
-        assert_eq!(info.server_info.name, "ytm-glass-mcp");
-        assert_eq!(info.server_info.title.as_deref(), Some("YTM Glass MCP"));
+        assert_eq!(info.server_info.name, "ytmcp");
+        assert_eq!(info.server_info.title.as_deref(), Some("YTMcp"));
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
     }
 

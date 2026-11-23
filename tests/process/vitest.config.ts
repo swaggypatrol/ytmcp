@@ -11,7 +11,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@ytm-glass/protocol": resolve(import.meta.dirname, "../../packages/protocol/src/index.ts"),
+      "@ytmcp/protocol": resolve(import.meta.dirname, "../../packages/protocol/src/index.ts"),
     },
   },
 });

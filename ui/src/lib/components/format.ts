@@ -1,4 +1,4 @@
-import type { Track } from "@ytm-glass/protocol";
+import type { Track } from "@ytmcp/protocol";
 import { t } from "../i18n/index.svelte.js";
 
 export function formatDurationMs(ms: number | null | undefined): string {

@@ -12,7 +12,7 @@
     type PlayerOp,
     type PlaylistSummary,
     type Track,
-  } from "@ytm-glass/protocol";
+  } from "@ytmcp/protocol";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import { commandGate, playPauseGate, writeGate } from "../lib/capabilities.js";

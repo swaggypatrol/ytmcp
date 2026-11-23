@@ -1,4 +1,4 @@
-import type { AuthState, PlayerObservedState } from "@ytm-glass/protocol";
+import type { AuthState, PlayerObservedState } from "@ytmcp/protocol";
 import { Notification } from "electron";
 
 /** Rapid skips collapse into one notification for the track that is current once this settles. */

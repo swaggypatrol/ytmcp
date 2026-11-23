@@ -687,6 +687,7 @@ impl Harness {
                         playback_context: None,
                         position_ms,
                         duration_ms: entry.track.duration_ms,
+                        buffered_ms: None,
                         playback_rate: 1.0,
                         sample_age_ms: 0,
                         volume: 0.5,

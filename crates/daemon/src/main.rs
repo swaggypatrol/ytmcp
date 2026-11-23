@@ -41,7 +41,7 @@ use ytm_storage::{CoverCacheConfig, SqliteStorage, StoragePaths};
 const OUTBOUND_CHANNEL_CAPACITY: usize = 512;
 
 fn init_redacted_tracing() {
-    let filter = EnvFilter::try_from_env("YTM_GLASS_LOG")
+    let filter = EnvFilter::try_from_env("YTMCP_LOG")
         .or_else(|_| EnvFilter::try_from_default_env())
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
@@ -54,7 +54,7 @@ fn init_redacted_tracing() {
 }
 
 fn open_daemon_storage() -> Result<SqliteStorage, QueryError> {
-    if let Ok(custom_root) = std::env::var("YTM_GLASS_DATA_DIR") {
+    if let Ok(custom_root) = std::env::var("YTMCP_DATA_DIR") {
         let trimmed = custom_root.trim();
         if !trimmed.is_empty() {
             let paths = StoragePaths::for_root(PathBuf::from(trimmed));
@@ -330,12 +330,12 @@ async fn main() {
     });
 
     let (mpris_tx, mut mpris_rx) = mpsc::channel::<MprisHostAction>(16);
-    let no_mpris = std::env::var("YTM_GLASS_NO_MPRIS")
+    let no_mpris = std::env::var("YTMCP_NO_MPRIS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
     let mpris_handle = if no_mpris {
-        info!("MPRIS disabled via YTM_GLASS_NO_MPRIS=1");
+        info!("MPRIS disabled via YTMCP_NO_MPRIS=1");
         None
     } else {
         match MprisService::start(Arc::clone(&core), MprisConfig::default(), mpris_tx).await {

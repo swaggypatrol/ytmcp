@@ -41,8 +41,8 @@ def run(mcp, env, scope):
     found, _ = agent.call("ytm_search", {"query": SEARCH_QUERY, "limit": 5})
     search_ids = {item["videoId"] for item in found.get("items", [])} - {expected}
     config = Path(sys.argv[2]) / "claude-mcp.json"
-    config.write_text(json.dumps({"mcpServers": {"ytm": {"command": str(mcp), "args": ["--credential-file", str(credential)], "env": {k: env[k] for k in ("XDG_RUNTIME_DIR", "XDG_CONFIG_HOME") if k in env}}}}))
-    tools = ",".join(f"mcp__ytm__{name}" for name in ("ytm_search", "ytm_get_context", "ytm_seek",
+    config.write_text(json.dumps({"mcpServers": {"ytmcp": {"command": str(mcp), "args": ["--credential-file", str(credential)], "env": {k: env[k] for k in ("XDG_RUNTIME_DIR", "XDG_CONFIG_HOME") if k in env}}}}))
+    tools = ",".join(f"mcp__ytmcp__{name}" for name in ("ytm_search", "ytm_get_context", "ytm_seek",
                                                        "ytm_wait_dj_prompt"))
     out = subprocess.run(["claude", "-p", PROMPT, "--mcp-config", str(config), "--strict-mcp-config",
                           "--allowedTools", tools, "--model", "sonnet", "--output-format", "json"],

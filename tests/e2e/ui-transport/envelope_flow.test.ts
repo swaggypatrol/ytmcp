@@ -6,7 +6,7 @@ import {
   type Envelope,
   type MutationRequest,
   type StateDelta,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import {
   createUiClient,
   wrapPreloadEnvelopeBridge,

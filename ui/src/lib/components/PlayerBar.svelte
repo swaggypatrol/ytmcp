@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AppSnapshot, CommandReceipt, PlayerCommandPayload, PlayerOp, RepeatMode } from "@ytm-glass/protocol";
+  import type { AppSnapshot, CommandReceipt, PlayerCommandPayload, PlayerOp, RepeatMode } from "@ytmcp/protocol";
   import { commandGate, playPauseGate } from "../capabilities.js";
   import { glass } from "../glass/liquid-glass.js";
   import { t } from "../i18n/index.svelte.js";
@@ -15,6 +15,7 @@
   import Cover from "./Cover.svelte";
   import { detectCjkLangHint, formatArtists, formatDurationMs } from "./format.js";
   import Icon, { type IconName } from "./Icon.svelte";
+  import ScrubBar from "./ScrubBar.svelte";
 
   interface Props {
     snapshot: AppSnapshot | null;
@@ -26,8 +27,15 @@
     onOpenDiagnostics: () => void;
   }
 
-  let { snapshot, pendingOverlay, interpolatedPositionMs, onCommand, onOpenNowPlaying, onOpenLyrics, onOpenDiagnostics }: Props =
-    $props();
+  let {
+    snapshot,
+    pendingOverlay,
+    interpolatedPositionMs,
+    onCommand,
+    onOpenNowPlaying,
+    onOpenLyrics,
+    onOpenDiagnostics,
+  }: Props = $props();
 
   const NEXT_REPEAT: Record<RepeatMode, RepeatMode> = { off: "all", all: "one", one: "off" };
 
@@ -43,6 +51,10 @@
   const isPlaying = $derived(player?.playback === "playing");
   const activeOp = $derived(pendingOverlay.activeOp ?? snapshot?.pending.activeOp ?? null);
   const isPending = $derived(pendingOverlay.pendingCount > 0 || (snapshot?.pending.pendingCommandCount ?? 0) > 0);
+  const VOLUME_DRAFT_TIMEOUT_MS = 2000;
+  // Sliders answer under the hand, so their own commands never show as "waiting". A discrete
+  // command that is still unconfirmed after a moment shows as a quiet pulse on the status chip.
+  const isWaiting = $derived(isPending && activeOp !== "setVolume" && activeOp !== "seek" && activeOp !== "setMuted");
 
   const playGate = $derived(playPauseGate(caps?.playPause, connection, player?.playback, track !== null));
   const seekGate = $derived(commandGate(caps?.seek, connection));
@@ -52,7 +64,10 @@
   const shuffleGate = $derived(commandGate(caps?.shuffle, connection));
   const repeatGate = $derived(commandGate(caps?.repeat, connection));
 
-  const volumePercent = $derived(Math.round((player?.volume ?? 0) * 100));
+  // The value under the hand while dragging, kept until the player reports it (or gives up).
+  let volumeDraft = $state<number | null>(null);
+  let volumeDragging = $state(false);
+  const volumePercent = $derived(Math.round((volumeDraft ?? player?.volume ?? 0) * 100));
   const volumeIcon = $derived<IconName>(
     player?.muted || volumePercent === 0
       ? "volumeMuted"
@@ -70,6 +85,21 @@
   );
   const repeatLabel = $derived(t.player.repeat[player?.repeat ?? "unknown"]);
   const trackTooltip = $derived(track ? `${track.title} — ${formatArtists(track)}` : t.nav["now-playing"]);
+
+  $effect(() => {
+    if (volumeDraft === null || volumeDragging) return;
+    if (Math.abs((player?.volume ?? -1) - volumeDraft) < 0.005) {
+      volumeDraft = null;
+      return;
+    }
+    const timer = setTimeout(() => (volumeDraft = null), VOLUME_DRAFT_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  });
+
+  function previewVolume(percent: number) {
+    volumeDraft = percent / 100;
+    void onCommand("setVolume", { volume: percent / 100 });
+  }
 
   // Roll the preview back on track change, on any terminal receipt of its seek, or on timeout.
   $effect(() => {
@@ -105,17 +135,15 @@
   }
 </script>
 
-<!-- The dock holds the scroll-edge layer and the glass bar. Regions carrying glyphs are marked
-     data-lg-plate: the lens gives each a full frosted plate, the gaps between stay clear. -->
+<!-- The dock holds the glass bar. -->
 <div class="app-player-dock">
-  <div class="lg-scroll-edge" aria-hidden="true"></div>
   <footer
     class="app-player-bar lg lg--bar surface-rounded-xl"
     aria-label={t.player.controlsLabel}
     data-testid="player-bar"
     {@attach glass}
   >
-    <div class="player-now min-w-0" data-lg-plate>
+    <div class="player-now min-w-0">
       <button
         type="button"
         class="lg-press flex items-center gap-3 min-w-0 max-w-full text-left cursor-pointer rounded-xl p-1 pr-3 -m-1"
@@ -148,7 +176,7 @@
 
     <div class="min-w-0 flex flex-col items-center gap-1">
       <!-- Transport stays centred; status chips take what is left on its right. -->
-      <div class="player-transport-row w-full" data-lg-plate>
+      <div class="player-transport-row w-full">
         <div></div>
         <div class="flex items-center gap-1.5">
           <button
@@ -216,45 +244,44 @@
           </button>
         </div>
         <div class="flex items-center gap-1.5 min-w-0 overflow-hidden whitespace-nowrap">
-          <span class="player-status chip tabular-nums" data-testid="player-observed-status">{playbackLabel}</span>
-          {#if isPending}
-            <span class="chip chip-accent" data-testid="player-pending-badge">{t.player.pending}</span>
-          {/if}
-          {#if seekPreview}
-            <span class="chip chip-accent tabular-nums" data-testid="seek-preview-label">
-              {t.player.seekPreview} {formatDurationMs(seekPreview.positionMs)}
-            </span>
-          {/if}
+          <span
+            class="player-status chip tabular-nums"
+            class:is-waiting={isWaiting}
+            aria-busy={isWaiting}
+            data-testid="player-observed-status"
+          >{playbackLabel}</span>
         </div>
       </div>
 
-      <div class="w-full max-w-xl flex items-center gap-2.5" data-lg-plate>
-        <span class="w-11 text-right type-xs tabular-nums" style="color: var(--text-secondary);" data-testid="player-pos-text">
+      <div class="w-full max-w-xl flex items-center gap-2.5">
+        <span
+          class="player-pos w-11 text-right type-xs tabular-nums"
+          class:is-previewing={seekPreview !== null}
+          data-testid="player-pos-text"
+        >
           {formatDurationMs(displayPositionMs)}
         </span>
-        <input
-          type="range"
-          min="0"
-          max={seekMax}
+        <ScrubBar
+          class="flex-1"
           value={seekValue}
+          max={seekMax}
+          buffered={player?.bufferedMs ?? null}
           disabled={!seekGate.enabled || !track}
-          aria-label={t.player.seekLabel}
-          aria-valuetext={`${formatDurationMs(displayPositionMs)} / ${formatDurationMs(durationMs)}`}
+          label={t.player.seekLabel}
+          valueText={`${formatDurationMs(displayPositionMs)} / ${formatDurationMs(durationMs)}`}
           title={seekGate.reason ?? undefined}
-          class="range flex-1"
-          style="--range-fill: {(seekValue / seekMax) * 100}%;"
-          oninput={(e) => {
+          oninput={(v) => {
             seekSequence += 1;
-            seekPreview = startSeekPreview(Number(e.currentTarget.value), durationMs, player?.trackInstanceId);
+            seekPreview = startSeekPreview(v, durationMs, player?.trackInstanceId);
           }}
-          onchange={(e) => void commitSeek(Number(e.currentTarget.value))}
-          data-testid="player-seek-slider"
+          onchange={(v) => void commitSeek(v)}
+          testid="player-seek-slider"
         />
         <span class="w-11 type-xs tabular-nums" style="color: var(--text-secondary);">{formatDurationMs(durationMs)}</span>
       </div>
     </div>
 
-    <div class="player-tail flex items-center gap-2" data-lg-plate>
+    <div class="player-tail flex items-center gap-2">
       <button
         type="button"
         class="btn-secondary btn-mute lg-press type-xs tabular-nums"
@@ -267,18 +294,19 @@
         <Icon name={volumeIcon} />
         <span>{player?.muted ? t.player.muted : `${volumePercent}%`}</span>
       </button>
-      <input
-        type="range"
-        min="0"
-        max="100"
+      <ScrubBar
+        class="player-volume"
         value={volumePercent}
+        max={100}
         disabled={!volumeGate.enabled}
-        aria-label={t.player.volumeLabel}
-        title={volumeGate.reason ?? `${t.player.volumeLabel} ${volumePercent}%`}
-        class="player-volume range"
-        style="--range-fill: {volumePercent}%;"
-        oninput={(e) => void onCommand("setVolume", { volume: Number(e.currentTarget.value) / 100 })}
-        data-testid="player-volume-slider"
+        label={t.player.volumeLabel}
+        valueText={`${volumePercent}%`}
+        title={volumeGate.reason ?? undefined}
+        onpress={() => (volumeDragging = true)}
+        oninput={previewVolume}
+        onchange={() => (volumeDragging = false)}
+        onrelease={() => (volumeDragging = false)}
+        testid="player-volume-slider"
       />
       <button
         type="button"

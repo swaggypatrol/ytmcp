@@ -7,7 +7,7 @@ import {
   type Envelope,
   type QueryErrorCode,
   type SenderRole,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import type { IpcMainEvent, IpcMainInvokeEvent, WebContents, WebFrameMain } from "electron";
 
 export type RendererRole = Extract<SenderRole, "mainUi" | "playerBridge">;

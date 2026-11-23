@@ -39,7 +39,7 @@ Dropped for good: plans and approvals, session leases, budgets and call limits o
 - The play tier (`dj`) does not expire. Only the edit tier is time-limited.
 - Registering the same client name again keeps the credential file path, so the agent's configuration does not change.
 - The player is restarted once after the first registration.
-- The agent client allows all ytm tools at once, for example `mcp__ytm__*` in Claude Code's `permissions.allow`. This does not loosen safety; the gates are in the player.
+- The agent client allows all YTMcp tools at once, for example `mcp__ytmcp__*` in Claude Code's `permissions.allow`. This does not loosen safety; the gates are in the player.
 
 ## B. What the agent sees
 

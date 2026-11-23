@@ -2,8 +2,8 @@
 // Live M0 acceptance harness (T05). Drives the real desktop app through its real UI and
 // writes redacted gate evidence. See docs/building.md.
 //
-//   YTM_GLASS_ALLOW_LIVE=1 node tools/qa/m0.mjs --run dryrun --soak-min 5
-//   YTM_GLASS_ALLOW_LIVE=1 node tools/qa/m0.mjs --run final  --soak-min 30 --lock-screen
+//   YTMCP_ALLOW_LIVE=1 node tools/qa/m0.mjs --run dryrun --soak-min 5
+//   YTMCP_ALLOW_LIVE=1 node tools/qa/m0.mjs --run final  --soak-min 30 --lock-screen
 //
 // Phases (--phases, default all): build, process, A (G0 runtime/G1/G2 part 1),
 // B (G2 restart/G3/G4/G5), C (G4 failure isolation), D (G1 100% / 150% scale in a nested KWin).
@@ -68,13 +68,13 @@ const SOAK_MIN = Number(opt["soak-min"]);
 if (!Number.isFinite(SOAK_MIN) || SOAK_MIN <= 0) throw new Error("--soak-min must be a positive number");
 const REQUIRED_SOAK_MIN = RUN === "FINAL" ? 30 : SOAK_MIN;
 if (RUN === "FINAL" && SOAK_MIN < 30) throw new Error("final run needs --soak-min >= 30 (M0_CHECKLIST G3)");
-if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-  console.error("Refusing live M0 run without YTM_GLASS_ALLOW_LIVE=1");
+if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+  console.error("Refusing live M0 run without YTMCP_ALLOW_LIVE=1");
   process.exit(2);
 }
 
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-const scratch = process.env.YTM_GLASS_QA_WORKDIR ?? join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytm-glass-qa");
+const scratch = process.env.YTMCP_QA_WORKDIR ?? join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytmcp-qa");
 const ctx = {
   run: RUN,
   workDir: join(scratch, `m0-${stamp}`),
@@ -160,7 +160,7 @@ async function closeApp(app, gate, prefix) {
 // ------------------------------------------------------------------------------------------------
 const preexisting = findAppProcesses();
 if (preexisting.some((p) => p.realProfile)) {
-  console.error("A real-profile YTM Glass instance is running; refusing to start.", preexisting);
+  console.error("A real-profile YTMcp instance is running; refusing to start.", preexisting);
   process.exit(3);
 }
 const sink = await ensureNullSink();
@@ -284,7 +284,7 @@ try {
 
   if (PHASES.has("C")) {
     await phase("C", "g4", async () => {
-      const { app } = await launch("C", { daemonBin: resolve(REPO, "tools/qa/daemon-scope.sh"), extraEnv: { YTM_GLASS_QA_REAL_DAEMON: DAEMON } });
+      const { app } = await launch("C", { daemonBin: resolve(REPO, "tools/qa/daemon-scope.sh"), extraEnv: { YTMCP_QA_REAL_DAEMON: DAEMON } });
       try {
         add("g4", [], { processTreeC: describeProcesses(app.pids()).map((p) => ({ role: p.role, cgroup: p.cgroup?.split("/").pop() })) });
         const f = await failureIsolationChecks(app, { query: opt.query });
@@ -317,7 +317,7 @@ try {
               XDG_CONFIG_HOME: join(base, "config"),
               XDG_CACHE_HOME: join(base, "cache"),
               XDG_STATE_HOME: join(base, "state"),
-              YTM_GLASS_MODE: "mock",
+              YTMCP_MODE: "mock",
               WAYLAND_DISPLAY: nk.socket,
               DBUS_SESSION_BUS_ADDRESS: nk.bus,
             },

@@ -1,8 +1,8 @@
-import type { Envelope } from "@ytm-glass/protocol";
+import type { Envelope } from "@ytmcp/protocol";
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import { BRIDGE_WORLD_ID, IPC_CHANNELS, MUSIC_ORIGIN, type IpcAckResult } from "./channels.js";
 
-export interface YtmGlassPlayerBridge {
+export interface YtmcpPlayerBridge {
   sendEnvelope(envelope: Envelope): Promise<IpcAckResult>;
   onEnvelope(listener: (envelope: Envelope) => void): () => void;
 }
@@ -18,7 +18,7 @@ function isTrustedMusicTopFrame(): boolean {
 // NEVER expose or register bridge IPC outside the exact top-level music.youtube.com origin,
 // and never in the page main world: page scripts could otherwise forge any bridge.* frame.
 if (isTrustedMusicTopFrame()) {
-  const api: YtmGlassPlayerBridge = {
+  const api: YtmcpPlayerBridge = {
     sendEnvelope(envelope: Envelope): Promise<IpcAckResult> {
       if (!isTrustedMusicTopFrame()) {
         return Promise.resolve({
@@ -46,5 +46,5 @@ if (isTrustedMusicTopFrame()) {
     },
   };
 
-  contextBridge.exposeInIsolatedWorld(BRIDGE_WORLD_ID, "ytmGlassBridge", Object.freeze(api));
+  contextBridge.exposeInIsolatedWorld(BRIDGE_WORLD_ID, "ytmcpBridge", Object.freeze(api));
 }

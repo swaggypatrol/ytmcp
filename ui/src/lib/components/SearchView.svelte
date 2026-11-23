@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AlbumRef, ArtistRef, PlaylistSummary, QueryError, Track } from "@ytm-glass/protocol";
+  import type { AlbumRef, ArtistRef, PlaylistSummary, QueryError, Track } from "@ytmcp/protocol";
   import { untrack } from "svelte";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";

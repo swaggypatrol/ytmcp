@@ -12,8 +12,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 commit="$(git rev-parse HEAD)"
-out="${YTM_GLASS_PKG_OUT:-$repo/packaging/out}"
-build="$(mktemp -d "${TMPDIR:-/tmp}/ytm-glass-pkg.XXXXXX")"
+out="${YTMCP_PKG_OUT:-$repo/packaging/out}"
+build="$(mktemp -d "${TMPDIR:-/tmp}/ytmcp-pkg.XXXXXX")"
 trap 'rm -rf "$build"' EXIT
 mkdir -p "$out"
 cp packaging/PKGBUILD "$build/"
@@ -33,7 +33,7 @@ if cpus="$("$HOME/.local/bin/workload-cpus" 2>/dev/null)" && [[ -n "$cpus" ]]; t
   makepkg_cmd=(taskset -c "$cpus" makepkg)
 fi
 cd "$build"
-YTM_GLASS_REPO="$repo" YTM_GLASS_COMMIT="$commit" PKGDEST="$out" \
+YTMCP_REPO="$repo" YTMCP_COMMIT="$commit" PKGDEST="$out" \
   "${makepkg_cmd[@]}" --cleanbuild --force "$@"
 echo "commit: $commit"
 ls -la "$out"

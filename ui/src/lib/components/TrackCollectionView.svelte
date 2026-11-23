@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { CoverRef, QueryError, Track } from "@ytm-glass/protocol";
+  import type { CoverRef, QueryError, Track } from "@ytmcp/protocol";
   import type { Snippet } from "svelte";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";

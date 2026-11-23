@@ -29,7 +29,7 @@ pub enum MprisHostAction {
     Quit,
 }
 
-/// Configuration for the single YTM Glass MPRIS 2.2 service.
+/// Configuration for the single YTMcp MPRIS 2.2 service.
 #[derive(Debug, Clone)]
 pub struct MprisConfig {
     pub bus_name: String,
@@ -448,7 +448,7 @@ impl PlayerInterface for MprisService {
 
     async fn open_uri(&self, _uri: String) -> fdo::Result<()> {
         Err(fdo::Error::NotSupported(
-            "OpenUri is not supported by YTM Glass".to_string(),
+            "OpenUri is not supported by YTMcp".to_string(),
         ))
     }
 
@@ -651,10 +651,10 @@ mod tests {
     #[test]
     fn bus_name_suffix_and_cover_path_containment() {
         assert_eq!(
-            bus_name_suffix_from_full("org.mpris.MediaPlayer2.ytm_glass"),
-            "ytm_glass"
+            bus_name_suffix_from_full("org.mpris.MediaPlayer2.ytmcp"),
+            "ytmcp"
         );
-        assert_eq!(bus_name_suffix_from_full("ytm_glass"), "ytm_glass");
+        assert_eq!(bus_name_suffix_from_full("ytmcp"), "ytmcp");
 
         let test_base =
             std::env::temp_dir().join(format!("ytm-mpris-cover-{}", std::process::id()));
@@ -796,6 +796,7 @@ mod tests {
                     playback_context: None,
                     position_ms: 10_000,
                     duration_ms: Some(180_000),
+                    buffered_ms: None,
                     playback_rate: 1.0,
                     sample_age_ms: 0,
                     volume: 0.75,
@@ -841,8 +842,8 @@ mod tests {
             );
             guard.player.current_track = track;
         }
-        assert_eq!(svc.identity().await.unwrap(), "YTM Glass");
-        assert_eq!(svc.desktop_entry().await.unwrap(), "local.ytmglass.Desktop");
+        assert_eq!(svc.identity().await.unwrap(), "YTMcp");
+        assert_eq!(svc.desktop_entry().await.unwrap(), "local.ytmcp.Desktop");
         assert!(svc.can_raise().await.unwrap());
         assert!(svc.can_quit().await.unwrap());
         assert!(!svc.can_set_fullscreen().await.unwrap());
@@ -854,7 +855,7 @@ mod tests {
         assert_eq!(svc.position().await.unwrap(), Time::from_micros(15_000_000));
 
         // Stale TrackId ignored
-        let stale_tid = TrackId::try_from("/local/ytmglass/Desktop/track/stale").unwrap();
+        let stale_tid = TrackId::try_from("/local/ytmcp/Desktop/track/stale").unwrap();
         svc.set_position(stale_tid, Time::from_micros(30_000_000))
             .await
             .unwrap();
@@ -949,6 +950,7 @@ mod tests {
             playback_context: None,
             position_ms: 5_000,
             duration_ms: Some(180_000),
+            buffered_ms: None,
             playback_rate: 1.0,
             sample_age_ms: 0,
             volume: 0.75,

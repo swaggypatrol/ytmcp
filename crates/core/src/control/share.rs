@@ -268,6 +268,7 @@ mod tests {
                         playback_context: None,
                         position_ms: 0,
                         duration_ms: Some(20_000),
+                        buffered_ms: None,
                         playback_rate: 1.0,
                         sample_age_ms: 0,
                         volume: 0.5,

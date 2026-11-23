@@ -13,7 +13,7 @@ use ytm_control_api::local::{
 };
 use ytm_control_api::{GrantAction, PlaylistId};
 
-const USAGE: &str = "Usage: ytm-glass-mcp register --principal ID [--account-scope SCOPE|signed-out] [--grant dj|record|edit|playback|queue|rating|artist-subscription|library-membership|local-history|preferences|create-private-playlist|append-playlist|edit-playlist|delete-playlist|account-handoff] [--playlist PLAYLIST_ID] [--hours 1..168]";
+const USAGE: &str = "Usage: ytmcp register --principal ID [--account-scope SCOPE|signed-out] [--grant dj|record|edit|playback|queue|rating|artist-subscription|library-membership|local-history|preferences|create-private-playlist|append-playlist|edit-playlist|delete-playlist|account-handoff] [--playlist PLAYLIST_ID] [--hours 1..168]";
 const SIGN_IN_FIRST: &str = "no signed-in YouTube Music account was found in the player; sign in in the player first, or pass --account-scope signed-out for playback-only control";
 const PRIVACY_REFUSED: &str = "playlist privacy is not grantable: only the listener changes it, in the player or on the YouTube Music website";
 const DEFAULT_EDIT_HOURS: u64 = 24;
@@ -47,7 +47,7 @@ struct Request {
     hours: Option<u64>,
 }
 
-/// `ytm-glass-mcp register ...`: writes `control-credentials/<principal>.json` and prints its path.
+/// `ytmcp register ...`: writes `control-credentials/<principal>.json` and prints its path.
 pub fn register() -> Result<(), String> {
     let request = parse(std::env::args().skip(2))?;
     let now = u64::try_from(
@@ -278,9 +278,9 @@ fn active_account_scope(database: &Path) -> Result<Option<AccountScope>, String>
         .transpose()
 }
 
-/// `YTM_GLASS_DATA_DIR`, resolved the same way as the daemon's storage root.
+/// `YTMCP_DATA_DIR`, resolved the same way as the daemon's storage root.
 fn data_root() -> Option<PathBuf> {
-    std::env::var("YTM_GLASS_DATA_DIR")
+    std::env::var("YTMCP_DATA_DIR")
         .ok()
         .map(|root| root.trim().to_owned())
         .filter(|root| !root.is_empty())
@@ -289,21 +289,21 @@ fn data_root() -> Option<PathBuf> {
 
 fn config_dir() -> Result<PathBuf, String> {
     if let Some(root) = data_root() {
-        return Ok(root.join("config/ytm-glass"));
+        return Ok(root.join("config/ytmcp"));
     }
     directories::BaseDirs::new()
-        .map(|base| base.config_dir().join("ytm-glass"))
+        .map(|base| base.config_dir().join("ytmcp"))
         .ok_or_else(|| "the user configuration directory is unavailable".into())
 }
 
 fn database_file() -> Result<PathBuf, String> {
     let data = match data_root() {
-        Some(root) => root.join("data/ytm-glass"),
+        Some(root) => root.join("data/ytmcp"),
         None => directories::BaseDirs::new()
-            .map(|base| base.data_dir().join("ytm-glass"))
+            .map(|base| base.data_dir().join("ytmcp"))
             .ok_or("the user data directory is unavailable")?,
     };
-    Ok(data.join("ytm-glass.db"))
+    Ok(data.join("ytmcp.db"))
 }
 
 fn temporary_in(dir: &Path, stem: &str) -> PathBuf {
@@ -369,7 +369,7 @@ mod tests {
         fn new(active: Option<&str>) -> Self {
             let root = tempfile::tempdir().unwrap();
             let config = root.path().join("config");
-            let database = root.path().join("ytm-glass.db");
+            let database = root.path().join("ytmcp.db");
             let conn = rusqlite::Connection::open(&database).unwrap();
             conn.execute_batch(
                 "PRAGMA journal_mode = WAL;

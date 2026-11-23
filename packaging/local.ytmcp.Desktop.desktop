@@ -1,15 +1,15 @@
 [Desktop Entry]
 Type=Application
-Name=YTM Glass
+Name=YTMcp
 GenericName=Music Player
 # Simplified Chinese translations of GenericName and Comment.
 GenericName[zh_CN]=音乐播放器
 Comment=Desktop player for your YouTube Music account
 Comment[zh_CN]=YouTube Music 账号的桌面播放器
-Exec=/usr/bin/ytm-glass %U
-Icon=local.ytmglass.Desktop
+Exec=/usr/bin/ytmcp-player %U
+Icon=local.ytmcp.Desktop
 Terminal=false
 Categories=AudioVideo;Audio;Music;Player;
-StartupWMClass=local.ytmglass.Desktop
+StartupWMClass=local.ytmcp.Desktop
 StartupNotify=true
 SingleMainWindow=true

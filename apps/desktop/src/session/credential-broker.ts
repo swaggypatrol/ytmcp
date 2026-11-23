@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { QueryError, SessionMaterialPayload } from "@ytm-glass/protocol";
+import type { QueryError, SessionMaterialPayload } from "@ytmcp/protocol";
 import { safeStorage, type Cookie, type CookiesGetFilter, type Event, type Session } from "electron";
 import { MUSIC_ORIGIN } from "../../preload/channels.js";
 

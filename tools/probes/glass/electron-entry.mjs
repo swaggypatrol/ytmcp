@@ -235,7 +235,7 @@ const shotsEvidenceDir = process.env.GLASS_PROBE_SHOTS_DIR;
 const modes = {
   behavior: runBehavior,
   shots: (args) => runShots(shotsEvidenceDir ?? outDir, { quick: args.includes("quick") }),
-  look: (args) => runLook(shotsEvidenceDir ? join(shotsEvidenceDir, "look") : outDir, args[0] ?? "dark"),
+  look: (args) => runLook(shotsEvidenceDir ? join(shotsEvidenceDir, "look") : outDir, args[0] ?? "dark", { clean: args.includes("clean") }),
   perf: (args) => runPerf(process.env.GLASS_PROBE_PERF_FILE ?? join(outDir, "perf.json"), Number(args.find((a) => /^\d+$/.test(a)) ?? 60), args.includes("collapse") ? "collapse" : null),
 };
 

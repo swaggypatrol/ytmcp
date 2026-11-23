@@ -290,7 +290,7 @@ export async function soak(app, { minutes, sampleSec = 30, lockScreen = false, o
       run: async () => {
         const vd = await virtualDesktops();
         const home = vd.current;
-        const tmp = await createVirtualDesktop("YTM Glass QA");
+        const tmp = await createVirtualDesktop("YTMcp QA");
         if (!tmp) { mark("desktopCreateFailed"); return; }
         const undo = onCleanup(() => {
           execFileSync("busctl", ["--user", "set-property", "org.kde.KWin", "/VirtualDesktopManager", "org.kde.KWin.VirtualDesktopManager", "current", "s", home]);

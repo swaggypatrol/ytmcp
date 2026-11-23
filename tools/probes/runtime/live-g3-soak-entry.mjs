@@ -136,7 +136,7 @@ async function checkPipeWireActive(treePidSet) {
     const corkedMatch = block.match(/^\s*Corked:\s*(\S+)/m);
     const appName = appNameMatch ? appNameMatch[1] : "";
     const pid = pidMatch ? Number.parseInt(pidMatch[1], 10) : -1;
-    const isOurs = appName === "YTM Glass" || (pid > 0 && treePidSet.has(pid));
+    const isOurs = appName === "YTMcp" || (pid > 0 && treePidSet.has(pid));
     if (isOurs) {
       matchingStreams += 1;
       if ((corkedMatch?.[1] ?? "").toLowerCase() === "no") {
@@ -148,20 +148,20 @@ async function checkPipeWireActive(treePidSet) {
 }
 
 async function run() {
-  if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-    throw new Error("Refusing to run live G3 soak without YTM_GLASS_ALLOW_LIVE=1");
+  if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+    throw new Error("Refusing to run live G3 soak without YTMCP_ALLOW_LIVE=1");
   }
 
-  const soakSecondsRaw = Number.parseInt(process.env.YTM_GLASS_SOAK_SECONDS ?? "1800", 10);
+  const soakSecondsRaw = Number.parseInt(process.env.YTMCP_SOAK_SECONDS ?? "1800", 10);
   const soakSeconds = Number.isFinite(soakSecondsRaw) && soakSecondsRaw > 0 ? soakSecondsRaw : 1800;
   const sampleIntervalSec = soakSeconds <= 60 ? 5 : 30;
   const runScheduledChecks = soakSeconds >= 120;
 
-  const bootstrapModuleUrl = pathToFileURL(resolve(process.env.YTM_GLASS_M0_MAIN_MODULE)).href;
-  const entryModuleUrl = pathToFileURL(resolve(process.env.YTM_GLASS_M0_ENTRY_MODULE)).href;
-  const reportPath = resolve(process.env.YTM_GLASS_SOAK_REPORT_PATH);
-  const samplesPath = resolve(process.env.YTM_GLASS_SOAK_SAMPLES_PATH);
-  const commitSha = process.env.YTM_GLASS_COMMIT_SHA ?? "unknown";
+  const bootstrapModuleUrl = pathToFileURL(resolve(process.env.YTMCP_M0_MAIN_MODULE)).href;
+  const entryModuleUrl = pathToFileURL(resolve(process.env.YTMCP_M0_ENTRY_MODULE)).href;
+  const reportPath = resolve(process.env.YTMCP_SOAK_REPORT_PATH);
+  const samplesPath = resolve(process.env.YTMCP_SOAK_SAMPLES_PATH);
+  const commitSha = process.env.YTMCP_COMMIT_SHA ?? "unknown";
 
   mkdirSync(dirname(reportPath), { recursive: true });
   mkdirSync(dirname(samplesPath), { recursive: true });
@@ -205,7 +205,7 @@ async function run() {
   };
 
   const integrated = createIntegratedDesktopHooks({
-    daemonBin: process.env.YTM_GLASS_DAEMON_BIN,
+    daemonBin: process.env.YTMCP_DAEMON_BIN,
     clientOptions: {
       // Errors for host.sessionMaterial (e.g. a failed identity read) never reach onUiEnvelope.
       onSessionMaterialError: (err) => {

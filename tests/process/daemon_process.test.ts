@@ -8,17 +8,17 @@ import {
   parseAndValidateEnvelope,
   serializeEnvelope,
   type Envelope,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
-/** Finds the daemon under test: YTM_GLASS_DAEMON_BIN, else the debug build `just test` makes, else a release build. */
+/** Finds the daemon under test: YTMCP_DAEMON_BIN, else the debug build `just test` makes, else a release build. */
 function findDaemonBinary(): string {
-  const explicit = process.env.YTM_GLASS_DAEMON_BIN;
+  const explicit = process.env.YTMCP_DAEMON_BIN;
   if (explicit) {
     if (!existsSync(explicit)) {
-      throw new Error(`YTM_GLASS_DAEMON_BIN does not exist: ${explicit}`);
+      throw new Error(`YTMCP_DAEMON_BIN does not exist: ${explicit}`);
     }
     return explicit;
   }
@@ -50,8 +50,8 @@ function spawnDaemonHarness(): DaemonHarness {
     cwd: repoRoot,
     env: {
       ...process.env,
-      YTM_GLASS_NO_MPRIS: "1",
-      YTM_GLASS_DATA_DIR: tempRoot,
+      YTMCP_NO_MPRIS: "1",
+      YTMCP_DATA_DIR: tempRoot,
       XDG_CONFIG_HOME: join(tempRoot, "config"),
       XDG_DATA_HOME: join(tempRoot, "data"),
       XDG_CACHE_HOME: join(tempRoot, "cache"),

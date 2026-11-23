@@ -1,4 +1,4 @@
-import type { AuthState, CapabilitySupport, NetworkState, QueryError } from "@ytm-glass/protocol";
+import type { AuthState, CapabilitySupport, NetworkState, QueryError } from "@ytmcp/protocol";
 
 export type PageStatus = "idle" | "loading" | "done";
 

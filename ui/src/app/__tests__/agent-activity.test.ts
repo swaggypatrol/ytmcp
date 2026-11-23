@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
-import type { AgentActivityRequest, AgentActivitySnapshot } from "@ytm-glass/protocol";
-import { FakeCoreClient } from "@ytm-glass/protocol";
+import type { AgentActivityRequest, AgentActivitySnapshot } from "@ytmcp/protocol";
+import { FakeCoreClient } from "@ytmcp/protocol";
 import { tick } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
 import AgentActivity from "../../lib/components/AgentActivity.svelte";

@@ -21,7 +21,7 @@ import {
   type QueryError,
   type QueryErrorCode,
   type SessionMaterialPayload,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 
 export type DaemonStatus =
   | "idle"
@@ -72,7 +72,7 @@ export function resolveDaemonBinaryPath(explicitPath?: string): string | null {
     const trimmed = explicitPath.trim();
     return trimmed !== "" && existsSync(trimmed) ? trimmed : null;
   }
-  const envBin = process.env.YTM_GLASS_DAEMON_BIN?.trim();
+  const envBin = process.env.YTMCP_DAEMON_BIN?.trim();
   if (envBin) {
     return existsSync(envBin) ? envBin : null;
   }
@@ -80,7 +80,7 @@ export function resolveDaemonBinaryPath(explicitPath?: string): string | null {
     ...(typeof process.resourcesPath === "string"
       ? [resolve(process.resourcesPath, "bin/ytm-daemon")]
       : []),
-    "/opt/ytm-glass/bin/ytm-daemon",
+    "/opt/ytmcp/resources/bin/ytm-daemon",
     resolve(process.cwd(), "target/release/ytm-daemon"),
     resolve(process.cwd(), "target/debug/ytm-daemon"),
     resolve(import.meta.dirname, "../../../../target/release/ytm-daemon"),

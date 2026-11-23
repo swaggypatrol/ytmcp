@@ -11,8 +11,8 @@ import sys
 import threading
 import time
 
-SINK = "ytmglass_live_null"
-PLAYER_BINARIES = {"ytm-glass", "electron", "chrome"}
+SINK = "ytmcp_live_null"
+PLAYER_BINARIES = {"ytmcp-player", "electron", "chrome"}
 
 
 def pactl_json(*args):

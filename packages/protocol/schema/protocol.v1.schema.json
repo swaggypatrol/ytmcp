@@ -917,6 +917,15 @@
         "bridgeEpoch": {
           "$ref": "#/definitions/BridgeEpoch"
         },
+        "bufferedMs": {
+          "description": "How far the current track has loaded, from its start, in whole seconds (as ms).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "codec": {
           "type": [
             "string",
@@ -2456,6 +2465,15 @@
               "type": "null"
             }
           ]
+        },
+        "bufferedMs": {
+          "description": "How far the current track has loaded, as last reported by the page.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         },
         "codec": {
           "type": [

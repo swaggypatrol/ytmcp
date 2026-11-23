@@ -10,8 +10,8 @@ import type {
   PlayerObservedState,
   SessionMaterialPayload,
   StateDelta,
-} from "@ytm-glass/protocol";
-import { app, ipcMain, net, protocol, type Session } from "electron";
+} from "@ytmcp/protocol";
+import { app, dialog, ipcMain, net, protocol, type Session } from "electron";
 import {
   IPC_CHANNELS,
   MUSIC_ORIGIN,
@@ -34,6 +34,7 @@ import { WindowManager } from "../windows/window-manager.js";
 import { loadAppIdentity, type AppIdentity } from "./identity.js";
 import { validateElectronIpcEvent } from "./ipc-guard.js";
 import { createIntegratedDesktopHooks } from "../rust-host/desktop-hooks.js";
+import { legacyInstanceRunning, moveLegacyDirectories, xdgBases } from "./legacy-dirs.js";
 
 // Used by the G1 runtime probe, which bundles this module as its entry.
 export { validateRendererIpc } from "./ipc-guard.js";
@@ -150,7 +151,7 @@ function resolveRepoRoot(): string {
 }
 
 function resolveUiDistDir(repoRoot: string): string | null {
-  const override = process.env.YTM_GLASS_UI_DIST_DIR;
+  const override = process.env.YTMCP_UI_DIST_DIR;
   const candidates = [
     ...(override ? [resolve(override)] : []),
     ...(typeof process.resourcesPath === "string"
@@ -241,7 +242,7 @@ function registerAppProtocolHandler(
 ): void {
   // The G1 probe page is served only on explicit request in an unpackaged run.
   const probeHtml =
-    !app.isPackaged && process.env.YTM_GLASS_PROBE_HTML === "1" ? resolveGlassProbeHtml(repoRoot) : null;
+    !app.isPackaged && process.env.YTMCP_PROBE_HTML === "1" ? resolveGlassProbeHtml(repoRoot) : null;
   const uiDistDir = probeHtml ? null : resolveUiDistDir(repoRoot);
   const uiDistReal = uiDistDir ? realpathSync(uiDistDir) : null;
   const cspHeader = buildCspHeader(identity.appScheme);
@@ -363,11 +364,11 @@ function registerAppProtocolHandler(
 }
 
 /**
- * Dev-only UI server override: honoured only in an unpackaged run with YTM_GLASS_DEV=1,
+ * Dev-only UI server override: honoured only in an unpackaged run with YTMCP_DEV=1,
  * and only for a loopback http(s) origin.
  */
 function parseDevUiUrl(raw: string | undefined): { url: string; origin: string } | null {
-  if (app.isPackaged || process.env.YTM_GLASS_DEV !== "1" || !raw || raw.trim() === "") {
+  if (app.isPackaged || process.env.YTMCP_DEV !== "1" || !raw || raw.trim() === "") {
     return null;
   }
   try {
@@ -403,11 +404,11 @@ export async function startDesktopShell(
   hooks: DesktopHostHooks = {}
 ): Promise<DesktopHostController | null> {
   const identity = loadAppIdentity();
-  const mockMode = process.env.YTM_GLASS_MODE === "mock";
+  const mockMode = process.env.YTMCP_MODE === "mock";
   const launchIntent = process.argv.includes("--background") || process.argv.includes("--no-activate")
     ? "background"
     : "foreground";
-  const devUi = parseDevUiUrl(process.env.YTM_GLASS_UI_URL);
+  const devUi = parseDevUiUrl(process.env.YTMCP_UI_URL);
   const log = hooks.log ?? ((level, event, detail) => {
     const line = JSON.stringify({
       ts: new Date().toISOString(),
@@ -440,6 +441,28 @@ export async function startDesktopShell(
   }
 
   const hasExplicitUserDataDir = process.argv.some((arg) => arg.startsWith("--user-data-dir="));
+
+  // Before anything opens the current directories, the real install takes over one from before
+  // the rename, browser profile (and with it the sign-in) included. Mock mode and an explicit
+  // profile (tests, probes) never touch the user's directories. While the old app still runs,
+  // its directories must not move from under it: ask for it to be quit first.
+  if (!mockMode && !hasExplicitUserDataDir) {
+    const bases = xdgBases();
+    if (legacyInstanceRunning(bases[1]!)) {
+      log("warn", "legacy_instance_running");
+      if (launchIntent === "foreground") {
+        dialog.showErrorBox(
+          "YTM Glass is still running",
+          "Quit YTM Glass from its tray icon, then start YTMcp again. YTMcp takes over its settings, sign-in and library when it starts."
+        );
+      }
+      app.quit();
+      return null;
+    }
+    const movedLegacy = moveLegacyDirectories(bases, identity.xdgDirName);
+    if (movedLegacy.length > 0) log("info", "legacy_directories_moved", { entries: movedLegacy.length });
+  }
+
   if (!hasExplicitUserDataDir) {
     const xdgDataHome = process.env.XDG_DATA_HOME?.trim() || join(homedir(), ".local/share");
     const profileDir = join(xdgDataHome, identity.xdgDirName, "electron-profile");
@@ -781,7 +804,7 @@ export async function startDesktopShell(
   windowManager.createMainWindow({ show: showMainOnStart });
   activateMainWindow = () => windowManager.showMainWindow();
   if (!mockMode) {
-    const showPlayer = launchIntent === "foreground" && process.env.YTM_GLASS_SHOW_PLAYER === "1";
+    const showPlayer = launchIntent === "foreground" && process.env.YTMCP_SHOW_PLAYER === "1";
     windowManager.createPlayerWindow({ show: showPlayer, loadMusicUrl: true });
     credentialBroker.start();
   }
@@ -810,14 +833,14 @@ function logStartupError(event: "startup_failed" | "startup_cleanup_failed", err
 /**
  * The packaged app's startup: the desktop shell plus, outside UI-only mock mode, ytm-daemon.
  * Resolves with the shell controller (null when another instance owns the app); a failure is
- * logged before clean exit. Runs automatically unless YTM_GLASS_NO_AUTOSTART=1, which
+ * logged before clean exit. Runs automatically unless YTMCP_NO_AUTOSTART=1, which
  * lets an acceptance entry start the very same path and keep the controller.
  */
 export async function startApp(): Promise<DesktopHostController | null> {
   let integrated: ReturnType<typeof createIntegratedDesktopHooks> | undefined;
   let controller: DesktopHostController | null = null;
   try {
-    if (process.env.YTM_GLASS_MODE === "mock" && process.env.YTM_GLASS_WITH_DAEMON !== "1") {
+    if (process.env.YTMCP_MODE === "mock" && process.env.YTMCP_WITH_DAEMON !== "1") {
       return await startDesktopShell();
     }
     integrated = createIntegratedDesktopHooks();
@@ -843,7 +866,7 @@ export async function startApp(): Promise<DesktopHostController | null> {
 
 const isElectronMainEntry =
   typeof process.versions.electron === "string" &&
-  process.env.YTM_GLASS_NO_AUTOSTART !== "1";
+  process.env.YTMCP_NO_AUTOSTART !== "1";
 
 if (isElectronMainEntry) {
   void startApp();

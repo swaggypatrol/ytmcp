@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { EnqueuePosition, PlaylistSummary, QueryError, Track } from "@ytm-glass/protocol";
+  import type { EnqueuePosition, PlaylistSummary, QueryError, Track } from "@ytmcp/protocol";
   import type { Gate } from "../capabilities.js";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";

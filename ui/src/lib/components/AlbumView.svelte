@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AlbumDetail, Track } from "@ytm-glass/protocol";
+  import type { AlbumDetail, Track } from "@ytmcp/protocol";
   import { albumPlaybackContext } from "../catalog/catalog.svelte.js";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";

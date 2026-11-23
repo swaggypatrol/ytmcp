@@ -29,7 +29,7 @@ static void report_peak(pa_stream *stream, size_t available, void *userdata) {
 int main(void) {
     pa_mainloop *loop = pa_mainloop_new();
     if (loop == NULL) return EXIT_FAILURE;
-    pa_context *context = pa_context_new(pa_mainloop_get_api(loop), "YTM Glass QA meter");
+    pa_context *context = pa_context_new(pa_mainloop_get_api(loop), "YTMcp QA meter");
     pa_stream *stream = NULL;
     int status = EXIT_FAILURE;
     if (context == NULL || pa_context_connect(context, NULL, 0, NULL) < 0) goto done;
@@ -42,7 +42,7 @@ int main(void) {
     stream = pa_stream_new(context, "Null sink peak meter", &spec, NULL);
     if (stream == NULL) goto done;
     pa_stream_set_read_callback(stream, report_peak, loop);
-    if (pa_stream_connect_record(stream, "ytmglass_null.monitor", &buffer,
+    if (pa_stream_connect_record(stream, "ytmcp_null.monitor", &buffer,
                                  PA_STREAM_PEAK_DETECT | PA_STREAM_DONT_MOVE) < 0) goto done;
     while (PA_STREAM_IS_GOOD(pa_stream_get_state(stream))) {
         if (pa_mainloop_iterate(loop, 1, &status) < 0) break;

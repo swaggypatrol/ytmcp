@@ -1303,6 +1303,7 @@ impl CoreActor {
                 current_queue_entry_id: None,
                 playback_context: None,
                 time_anchor,
+                buffered_ms: None,
                 volume: 1.0,
                 muted: false,
                 shuffle: None,
@@ -3438,6 +3439,7 @@ impl CoreActor {
     }
 
     fn clear_page_media_observations(&mut self) {
+        self.player.buffered_ms = None;
         self.player.playback_context = None;
         self.player.autoplay = None;
         self.player.codec = None;
@@ -4271,6 +4273,7 @@ impl CoreActor {
             self.player.current_track.is_some() && self.player.track_instance_id.is_some()
         });
         self.player.time_anchor = self.clock_model.snapshot_anchor(now_ms);
+        self.player.buffered_ms = payload.buffered_ms;
         self.player.volume = payload.volume;
         self.player.muted = payload.muted;
         self.player.shuffle = payload.shuffle;

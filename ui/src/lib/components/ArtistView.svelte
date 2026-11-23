@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ArtistDetail, Track } from "@ytm-glass/protocol";
+  import type { ArtistDetail, Track } from "@ytmcp/protocol";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";
   import TileGrid from "./TileGrid.svelte";

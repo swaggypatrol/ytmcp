@@ -11,7 +11,7 @@
 # must exist. Every hit is printed before the script fails.
 #
 # The commit is authored as PUBLIC_AUTHOR ("Name <email>"), by default the project-neutral
-# "YTM Glass <noreply@ytm-glass.invalid>", never the local git identity.
+# "YTMcp <noreply@ytmcp.invalid>", never the local git identity.
 set -euo pipefail
 export LC_ALL=C.UTF-8
 
@@ -48,7 +48,7 @@ CJK_ALLOWED=(
   tools/qa/t17-write.mjs
   tools/qa/gates/g1.mjs
   # The desktop entry's localized name.
-  packaging/local.ytmglass.Desktop.desktop
+  packaging/local.ytmcp.Desktop.desktop
 )
 # Third-party license texts carry their authors' e-mail addresses.
 EMAIL_ALLOWED_PREFIX=(packaging/licenses/)
@@ -133,7 +133,7 @@ if [[ -s "$hits" ]]; then
 fi
 echo "scan clean"
 
-author="${PUBLIC_AUTHOR:-YTM Glass <noreply@ytm-glass.invalid>}"
+author="${PUBLIC_AUTHOR:-YTMcp <noreply@ytmcp.invalid>}"
 name="${author% <*}"
 email="${author##*<}"
 email="${email%>}"

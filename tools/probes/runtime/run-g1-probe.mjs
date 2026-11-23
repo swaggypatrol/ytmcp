@@ -14,11 +14,11 @@ if (!existsSync(electronBin)) {
   process.exit(1);
 }
 
-const tempUserDataDir = mkdtempSync(join(tmpdir(), "ytm-glass-g1-probe-"));
+const tempUserDataDir = mkdtempSync(join(tmpdir(), "ytmcp-g1-probe-"));
 const probeMainBundle = join(tempUserDataDir, "main-probe.mjs");
 
 try {
-  // Bundle main.ts with workspace @ytm-glass/protocol inlined so Electron ESM can import it directly.
+  // Bundle main.ts with workspace @ytmcp/protocol inlined so Electron ESM can import it directly.
   const bundleRes = spawnSync(
     esbuildBin,
     [
@@ -48,11 +48,11 @@ try {
       cwd: repoRoot,
       env: {
         ...process.env,
-        YTM_GLASS_NO_AUTOSTART: "1",
-        YTM_GLASS_MODE: "mock",
-        YTM_GLASS_PROBE_HTML: "1",
-        YTM_GLASS_G1_MAIN_MODULE: probeMainBundle,
-        YTM_GLASS_G1_REPORT_PATH: reportPath,
+        YTMCP_NO_AUTOSTART: "1",
+        YTMCP_MODE: "mock",
+        YTMCP_PROBE_HTML: "1",
+        YTMCP_G1_MAIN_MODULE: probeMainBundle,
+        YTMCP_G1_REPORT_PATH: reportPath,
         NODE_PATH: [
           resolve(repoRoot, "packages/protocol/node_modules"),
           resolve(repoRoot, "node_modules"),

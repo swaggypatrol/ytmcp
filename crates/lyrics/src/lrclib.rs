@@ -16,7 +16,7 @@ use crate::matcher::{
 };
 
 pub const DEFAULT_LRCLIB_BASE_URL: &str = "https://lrclib.net";
-pub const DEFAULT_USER_AGENT: &str = "YTM Glass/0.1.0 (https://local.ytmglass.Desktop)";
+pub const DEFAULT_USER_AGENT: &str = "YTMcp/0.1.0 (https://local.ytmcp.Desktop)";
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 2;
 pub const DEFAULT_RETRY_AFTER_MS: u64 = 60_000;

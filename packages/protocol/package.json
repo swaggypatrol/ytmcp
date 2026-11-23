@@ -1,5 +1,5 @@
 {
-  "name": "@ytm-glass/protocol",
+  "name": "@ytmcp/protocol",
   "private": true,
   "version": "1.0.0",
   "type": "module",

@@ -1,6 +1,6 @@
 import { JSDOM } from "jsdom";
 import { vi } from "vitest";
-import { isKindAllowedForRole, validateEnvelopeObject, type Envelope } from "@ytm-glass/protocol";
+import { isKindAllowedForRole, validateEnvelopeObject, type Envelope } from "@ytmcp/protocol";
 import { installPageShim } from "../src/page-shim.js";
 import type { BridgeTransport } from "../src/types.js";
 
@@ -190,6 +190,7 @@ export function createFakePage(options: {
   const player = {
     state: 2,
     timeSec: 0,
+    loadedFraction: 0.5 as number,
     cpnCounter: 1,
     volume: 100,
     muted: false,
@@ -206,6 +207,7 @@ export function createFakePage(options: {
   const api = {
     getPlayerState: vi.fn(() => player.state),
     getCurrentTime: vi.fn(() => player.timeSec),
+    getVideoLoadedFraction: vi.fn(() => player.loadedFraction),
     getVideoData: vi.fn(() => ({ video_id: player.videoId })),
     getPlayerResponse: vi.fn(() => ({ videoDetails: { videoId: player.videoId, title: "From details", lengthSeconds: player.lengthSec === null ? undefined : String(player.lengthSec) } })),
     getCpn: vi.fn(() => `cpn-${player.cpnCounter}`),

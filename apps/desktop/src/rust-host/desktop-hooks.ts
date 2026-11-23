@@ -1,7 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { OutputGateControlPayload, OutputGateResultPayload } from "@ytm-glass/protocol";
+import type { OutputGateControlPayload, OutputGateResultPayload } from "@ytmcp/protocol";
 import { app, net, powerMonitor } from "electron";
 import type { CoverAssetResolution, DesktopHostController, DesktopHostHooks } from "../bootstrap/main.js";
 import { attachPlayerBridgeInjector } from "./bridge-injector.js";
@@ -24,12 +24,12 @@ function readGpuAccelerated(): boolean | null {
 }
 
 export function resolveCoversCacheRoot(env: NodeJS.ProcessEnv = process.env): string {
-  const customRoot = env.YTM_GLASS_DATA_DIR?.trim();
+  const customRoot = env.YTMCP_DATA_DIR?.trim();
   if (customRoot) {
-    return resolve(customRoot, "cache/ytm-glass/covers");
+    return resolve(customRoot, "cache/ytmcp/covers");
   }
   const xdgCache = env.XDG_CACHE_HOME?.trim() || join(homedir(), ".cache");
-  return resolve(xdgCache, "ytm-glass/covers");
+  return resolve(xdgCache, "ytmcp/covers");
 }
 
 export interface CreateIntegratedDesktopHooksOptions {

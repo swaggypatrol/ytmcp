@@ -6,9 +6,10 @@
 //   node tools/probes/glass/run-probe.mjs perf [seconds]    real UI: frame pacing of automated scrolling (default 60 s per run)
 //   node tools/probes/glass/run-probe.mjs perf collapse     real UI: only the sidebar collapse transition
 //   node tools/probes/glass/run-probe.mjs look [dark|light] real UI: a few scenes and 2x crops, for visual iteration
+//                                          add "clean" to hide the mock-mode banner (README shots)
 //
 // shots, perf and look start the real application (apps/desktop/dist + ui/dist) with
-// YTM_GLASS_MODE=mock; build both first (`just dev-mock` shows how). They never contact
+// YTMCP_MODE=mock; build both first (`just dev-mock` shows how). They never contact
 // music.youtube.com and never touch the real profile: every XDG home points into a scratch
 // directory that is removed afterwards.
 //
@@ -46,7 +47,7 @@ for (const built of realUi ? ["apps/desktop/dist/main.mjs", "ui/dist/index.html"
 }
 
 mkdirSync(scratchParent, { recursive: true });
-const scratch = mkdtempSync(join(scratchParent, "ytm-glass-probe-"));
+const scratch = mkdtempSync(join(scratchParent, "ytmcp-probe-"));
 const dirs = { config: join(scratch, "config"), data: join(scratch, "data"), cache: join(scratch, "cache"), state: join(scratch, "state") };
 for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
 
@@ -73,7 +74,7 @@ const result = spawnSync(command, args, {
     XDG_DATA_HOME: dirs.data,
     XDG_CACHE_HOME: dirs.cache,
     XDG_STATE_HOME: dirs.state,
-    ...(realUi ? { YTM_GLASS_MODE: "mock" } : {}),
+    ...(realUi ? { YTMCP_MODE: "mock" } : {}),
     GLASS_PROBE_MODE: mode,
     GLASS_PROBE_ARGS: JSON.stringify(modeArgs),
     GLASS_PROBE_OUT: join(here, "out"),

@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type Envelope } from "@ytm-glass/protocol";
+import { PROTOCOL_VERSION, type Envelope } from "@ytmcp/protocol";
 import { expect, it, vi } from "vitest";
 
 vi.mock("electron", () => ({ app: {}, ipcMain: {}, net: {}, protocol: {} }));

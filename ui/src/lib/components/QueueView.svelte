@@ -9,7 +9,7 @@
     QueueEntry,
     QueueSummary,
     Track,
-  } from "@ytm-glass/protocol";
+  } from "@ytmcp/protocol";
   import { commandGate, type Gate } from "../capabilities.js";
   import { t } from "../i18n/index.svelte.js";
   import { isTerminalCommandStatus } from "../seek-preview.js";
@@ -292,7 +292,7 @@
         </button>
       {/if}
       {#if busy}
-        <span class="chip chip-accent" data-testid="queue-row-pending">{t.player.pending}</span>
+        <span class="wait-dot" style="color: var(--text-secondary);" role="img" aria-label={t.player.pending} data-testid="queue-row-pending"></span>
       {/if}
     </div>
   {/if}

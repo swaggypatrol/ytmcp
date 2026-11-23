@@ -269,6 +269,9 @@ pub struct PlayerObservedState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playback_context: Option<PlaybackContext>,
     pub time_anchor: PlaybackTimeAnchor,
+    /// How far the current track has loaded, as last reported by the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffered_ms: Option<u64>,
     pub volume: f64,
     pub muted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1114,6 +1117,9 @@ pub struct BridgePlaybackObservedPayload {
     pub position_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// How far the current track has loaded, from its start, in whole seconds (as ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffered_ms: Option<u64>,
     pub playback_rate: f64,
     pub sample_age_ms: u64,
     pub volume: f64,

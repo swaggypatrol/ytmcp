@@ -1,4 +1,4 @@
-import type { CommandReceipt, TrackInstanceId } from "@ytm-glass/protocol";
+import type { CommandReceipt, TrackInstanceId } from "@ytmcp/protocol";
 
 /** How long a committed seek preview may wait for its receipt before falling back to observed time. */
 export const SEEK_PREVIEW_TIMEOUT_MS = 4_000;

@@ -31,7 +31,7 @@ export async function accountFacts(app) {
 export async function quitViaMpris(app, timeoutMs = 25_000) {
   app.knownCgroups = app.cgroups();
   const t0 = Date.now();
-  const r = await run("busctl", ["--user", "call", "org.mpris.MediaPlayer2.ytm_glass", "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2", "Quit"]);
+  const r = await run("busctl", ["--user", "call", "org.mpris.MediaPlayer2.ytmcp", "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2", "Quit"]);
   const res = await app.waitExit(timeoutMs, t0);
   return { mprisQuitCall: r.ok, ...res };
 }

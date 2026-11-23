@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AppSnapshot } from "@ytm-glass/protocol";
+  import type { AppSnapshot } from "@ytmcp/protocol";
   import type { Gate } from "../capabilities.js";
   import { t } from "../i18n/index.svelte.js";
   import type { TrackAccent } from "../theme/accent.js";
@@ -7,6 +7,7 @@
   import { detectCjkLangHint, formatDurationMs } from "./format.js";
   import HeroWash from "./HeroWash.svelte";
   import Icon from "./Icon.svelte";
+  import ScrubBar from "./ScrubBar.svelte";
 
   interface Props {
     snapshot: AppSnapshot | null;
@@ -54,7 +55,6 @@
   const durationMs = $derived(player?.timeAnchor.durationMs ?? track?.durationMs ?? null);
   const seekMax = $derived(Math.max(durationMs ?? 0, 1));
   const clampedPos = $derived(Math.min(interpolatedPositionMs, seekMax));
-  const progressPct = $derived(durationMs && durationMs > 0 ? Math.min(100, (clampedPos / durationMs) * 100) : 0);
   const albumId = $derived(track?.album?.id ?? track?.album?.browseId ?? null);
   const drm = $derived(player?.drmProtected == null ? t.common.unknown : player.drmProtected ? t.common.yes : t.common.no);
   const hasAnyMediaFact = $derived(
@@ -138,18 +138,16 @@
 
         <div class="flex flex-col gap-1.5 max-w-xl">
           {#if onSeekMs}
-            <input
-              type="range"
-              min="0"
-              max={seekMax}
+            <ScrubBar
+              class="w-full"
               value={clampedPos}
+              max={seekMax}
+              buffered={player?.bufferedMs ?? null}
               disabled={!canSeek || !durationMs}
-              aria-label={t.player.seekLabel}
-              aria-valuetext={`${formatDurationMs(interpolatedPositionMs)} / ${formatDurationMs(durationMs)}`}
-              class="range w-full"
-              style="--range-fill: {progressPct}%;"
-              onchange={(e) => onSeekMs(Number(e.currentTarget.value))}
-              data-testid="np-seek-slider"
+              label={t.player.seekLabel}
+              valueText={`${formatDurationMs(interpolatedPositionMs)} / ${formatDurationMs(durationMs)}`}
+              onchange={onSeekMs}
+              testid="np-seek-slider"
             />
           {/if}
           <div class="flex items-center justify-between type-xs tabular-nums" style="color: var(--text-secondary);">

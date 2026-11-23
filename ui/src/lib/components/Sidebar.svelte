@@ -51,11 +51,11 @@
     onclick={() => onNavigate(item.id)}
     data-testid={`nav-${item.id}`}
   >
-    <!-- The current page is marked by its fill and an accent icon; the label stays primary. -->
+    <!-- The current page is marked by its fill and an accent icon (the DJ's own colour on its page); the label stays primary. -->
     <Icon
       name={showPlayingIcon ? "playing" : item.icon}
       filled={isActive}
-      style={isActive || showPlayingIcon ? "color: var(--accent);" : undefined}
+      style={isActive || showPlayingIcon ? `color: var(${item.id === "agent-activity" ? "--agent" : "--accent"});` : undefined}
     />
     {#if !collapsed}
       <span class="flex-1 truncate type-sm font-medium">{label}</span>

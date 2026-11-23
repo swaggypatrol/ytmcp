@@ -16,7 +16,7 @@ import {
 } from "../lib/sys.mjs";
 import { navigate } from "./common.mjs";
 
-const APP_ID = "local.ytmglass.Desktop";
+const APP_ID = "local.ytmcp.Desktop";
 
 function parseSs(text) {
   return text
@@ -31,7 +31,7 @@ function parseSs(text) {
 }
 
 /** Unix-socket peer evidence: which app processes are connected to the compositor or Xwayland. */
-/** Isolated world in which the player preload exposes ytmGlassBridge (preload/channels.ts). */
+/** Isolated world in which the player preload exposes ytmcpBridge (preload/channels.ts). */
 const BRIDGE_WORLD = 1001;
 
 export async function socketPeers(appPids) {
@@ -138,10 +138,10 @@ export async function sandboxChecks(app) {
   const renderers = procs.filter((p) => p.role === "renderer");
   const wins = await app.call("windows");
   const mainProbe = await app.evalMain(`({
-    preloadSandboxed: window.ytmGlassUi ? window.ytmGlassUi.getSandboxStatus().sandboxed : null,
+    preloadSandboxed: window.ytmcpUi ? window.ytmcpUi.getSandboxStatus().sandboxed : null,
     pageHasProcess: typeof process !== "undefined",
     pageHasRequire: typeof require !== "undefined",
-    uiApiKeys: window.ytmGlassUi ? Object.keys(window.ytmGlassUi).sort() : null
+    uiApiKeys: window.ytmcpUi ? Object.keys(window.ytmcpUi).sort() : null
   })`);
   const playerProbe = await app.evalPlayer(`({
     pageHasProcess: typeof process !== "undefined",
@@ -150,7 +150,7 @@ export async function sandboxChecks(app) {
   playerProbe.bridgeWorld = await app.evalPlayer(`({
     hasProcess: typeof process !== "undefined",
     hasRequire: typeof require !== "undefined",
-    bridgeApiKeys: window.ytmGlassBridge ? Object.keys(window.ytmGlassBridge).sort() : null
+    bridgeApiKeys: window.ytmcpBridge ? Object.keys(window.ytmcpBridge).sort() : null
   })`, { worldId: BRIDGE_WORLD });
   const perRenderer = renderers.map((r) => ({
     pid: r.pid,
@@ -191,7 +191,7 @@ export async function sandboxChecks(app) {
 
 export async function sessionChecks(app) {
   const s = await app.call("sessions");
-  const uiApi = await app.evalMain(`window.ytmGlassUi ? Object.keys(window.ytmGlassUi).sort() : null`);
+  const uiApi = await app.evalMain(`window.ytmcpUi ? Object.keys(window.ytmcpUi).sort() : null`);
   const mainWc = s.webContents.filter((w) => w.origin === "null" || w.origin.startsWith("app"));
   const playerWc = s.webContents.filter((w) => w.origin === "https://music.youtube.com");
   return {
@@ -215,23 +215,23 @@ const envelope = (kind, payload = {}) =>
 /** Sends deliberately invalid envelopes through the real preloads into the host IPC guard. */
 export async function ipcRejectionChecks(app) {
   const logStart = app.logs().length;
-  const sendUi = (expr) => app.evalMain(`window.ytmGlassUi.sendEnvelope(${expr}).then((r) => r, (e) => ({ thrown: String(e) }))`);
+  const sendUi = (expr) => app.evalMain(`window.ytmcpUi.sendEnvelope(${expr}).then((r) => r, (e) => ({ thrown: String(e) }))`);
   const results = {
     uiSendsBridgeOnlyKind: await sendUi(`Object.assign(${envelope("player.snapshotRequest")}, { payload: null })`),
     uiSendsUnknownKind: await sendUi(envelope("ui.evalScript", { js: "1" })),
     uiSendsOversized: await sendUi(envelope("ui.ping", { pad: "x".repeat(2 * 1024 * 1024) })),
     uiSendsBadVersion: await sendUi(`Object.assign(${envelope("ui.ping")}, { protocolVersion: 99 })`),
     // The player preload exposes its API only in the bridge's isolated world (id 1001).
-    playerSendsUiKind: await app.evalPlayer(`window.ytmGlassBridge ? window.ytmGlassBridge.sendEnvelope(${envelope("ui.ping")}).then((r) => r, (e) => ({ thrown: String(e) })) : { unavailable: true }`, { worldId: BRIDGE_WORLD }),
-    playerSendsHostKind: await app.evalPlayer(`window.ytmGlassBridge ? window.ytmGlassBridge.sendEnvelope(Object.assign(${envelope("host.powerResume")}, { payload: null })).then((r) => r, (e) => ({ thrown: String(e) })) : { unavailable: true }`, { worldId: BRIDGE_WORLD }),
-    playerMainWorldHasNoApi: await app.evalPlayer(`typeof window.ytmGlassBridge === "undefined"`),
+    playerSendsUiKind: await app.evalPlayer(`window.ytmcpBridge ? window.ytmcpBridge.sendEnvelope(${envelope("ui.ping")}).then((r) => r, (e) => ({ thrown: String(e) })) : { unavailable: true }`, { worldId: BRIDGE_WORLD }),
+    playerSendsHostKind: await app.evalPlayer(`window.ytmcpBridge ? window.ytmcpBridge.sendEnvelope(Object.assign(${envelope("host.powerResume")}, { payload: null })).then((r) => r, (e) => ({ thrown: String(e) })) : { unavailable: true }`, { worldId: BRIDGE_WORLD }),
+    playerMainWorldHasNoApi: await app.evalPlayer(`typeof window.ytmcpBridge === "undefined"`),
   };
   // Subframes never receive the preload APIs (nodeIntegrationInSubFrames=false + top-frame checks).
   results.uiSubframeApi = await app.evalMain(`new Promise((resolve) => {
     const f = document.createElement("iframe");
     f.srcdoc = "<p>qa</p>";
     f.style.display = "none";
-    f.onload = () => { const has = typeof f.contentWindow.ytmGlassUi !== "undefined"; f.remove(); resolve({ subframeHasUiApi: has }); };
+    f.onload = () => { const has = typeof f.contentWindow.ytmcpUi !== "undefined"; f.remove(); resolve({ subframeHasUiApi: has }); };
     document.body.appendChild(f);
     setTimeout(() => resolve({ timeout: true }), 4000);
   })`);
@@ -239,11 +239,11 @@ export async function ipcRejectionChecks(app) {
     const f = document.createElement("iframe");
     f.src = "about:blank";
     f.style.display = "none";
-    f.onload = () => { let has = null; try { has = typeof f.contentWindow.ytmGlassBridge !== "undefined"; } catch (e) { has = "cross-origin"; } f.remove(); resolve({ subframeHasBridgeApi: has }); };
+    f.onload = () => { let has = null; try { has = typeof f.contentWindow.ytmcpBridge !== "undefined"; } catch (e) { has = "cross-origin"; } f.remove(); resolve({ subframeHasBridgeApi: has }); };
     document.body.appendChild(f);
     setTimeout(() => resolve({ timeout: true }), 4000);
   })`);
-  results.playerSubframes = await app.call("evalFrames", { target: "player", js: `({ hasBridge: typeof window.ytmGlassBridge !== "undefined", hasUi: typeof window.ytmGlassUi !== "undefined" })` });
+  results.playerSubframes = await app.call("evalFrames", { target: "player", js: `({ hasBridge: typeof window.ytmcpBridge !== "undefined", hasUi: typeof window.ytmcpUi !== "undefined" })` });
   await sleep(300);
   const rejectionLogs = app
     .logs()
@@ -307,7 +307,7 @@ export async function nonMusicOriginCheck(app) {
   await app.call("winop", { target: "player", op: "appBlankPlayer" });
   await app.call("winop", { target: "player", op: "loadURL", args: ["https://consent.youtube.com/"] }, 30_000);
   await sleep(2500);
-  const there = await app.evalPlayer(`({ origin: location.origin, hasBridge: typeof window.ytmGlassBridge !== "undefined" })`, { worldId: BRIDGE_WORLD }).catch((e) => ({ error: String(e) }));
+  const there = await app.evalPlayer(`({ origin: location.origin, hasBridge: typeof window.ytmcpBridge !== "undefined" })`, { worldId: BRIDGE_WORLD }).catch((e) => ({ error: String(e) }));
   const stateThere = await app.snapshot();
   const bannerThere = await app.evalMain(`(() => {
     const b = document.querySelector('[data-testid="banner-bridge-disconnected"]');
@@ -450,8 +450,8 @@ export async function reopenChecks(app, snapshot) {
   // A second instance with the same profile must hand over to the running one and exit.
   const t0 = Date.now();
   const second = await new Promise((resolve) => {
-    const env = { ...process.env, PULSE_SINK: "ytmglass_null" };
-    delete env.YTM_GLASS_QA_SOCKET;
+    const env = { ...process.env, PULSE_SINK: "ytmcp_null" };
+    delete env.YTMCP_QA_SOCKET;
     const child = spawn(ELECTRON, [PROD_MAIN], { cwd: REPO, env, stdio: "ignore" });
     const timer = setTimeout(() => {
       child.kill("SIGKILL");

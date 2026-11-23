@@ -3,24 +3,24 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { app } from "electron";
 
-const entryModuleUrl = process.env.YTM_GLASS_M0_ENTRY_MODULE
-  ? pathToFileURL(process.env.YTM_GLASS_M0_ENTRY_MODULE).href
+const entryModuleUrl = process.env.YTMCP_M0_ENTRY_MODULE
+  ? pathToFileURL(process.env.YTMCP_M0_ENTRY_MODULE).href
   : new URL("../../../../apps/desktop/dist/main.mjs", import.meta.url).href;
 
-const bootstrapModuleUrl = process.env.YTM_GLASS_M0_MAIN_MODULE
-  ? pathToFileURL(process.env.YTM_GLASS_M0_MAIN_MODULE).href
+const bootstrapModuleUrl = process.env.YTMCP_M0_MAIN_MODULE
+  ? pathToFileURL(process.env.YTMCP_M0_MAIN_MODULE).href
   : new URL("../../../../apps/desktop/dist/main.mjs", import.meta.url).href;
 
 const { startDesktopShell } = await import(bootstrapModuleUrl);
 const { createIntegratedDesktopHooks } = await import(entryModuleUrl);
 
 async function run() {
-  const reportPath = process.env.YTM_GLASS_M0_REPORT_PATH
-    ? resolve(process.env.YTM_GLASS_M0_REPORT_PATH)
+  const reportPath = process.env.YTMCP_M0_REPORT_PATH
+    ? resolve(process.env.YTMCP_M0_REPORT_PATH)
     : null;
 
   const integrated = createIntegratedDesktopHooks({
-    daemonBin: process.env.YTM_GLASS_DAEMON_BIN,
+    daemonBin: process.env.YTMCP_DAEMON_BIN,
   });
 
   const controller = await startDesktopShell(integrated.hooks);
@@ -52,7 +52,7 @@ async function run() {
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   }
 
-  if (process.env.YTM_GLASS_M0_PROBE_EXIT === "1") {
+  if (process.env.YTMCP_M0_PROBE_EXIT === "1") {
     await integrated.shutdown();
     controller.shutdown();
     app.exit(0);

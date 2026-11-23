@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a packaged YTM Glass against its own existing player profile, using read-only MCP grants."""
+"""Check a packaged YTMcp against its own existing player profile, using read-only MCP grants."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -70,7 +70,7 @@ def register(mcp, env, principal, scope, *, playback=False):
 
 
 def wait_for_session(app, root, socket_path):
-    database = root / "data/ytm-glass/ytm-glass.db"
+    database = root / "data/ytmcp/ytmcp.db"
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline and app.poll() is None:
         if database.is_file() and socket_path.is_socket():
@@ -116,7 +116,7 @@ def operation_reader(credential):
     """Returns a function that reads an operation's receipt over the player's local control
     socket. Agents no longer get the ledger tools; live checks still follow long operations."""
     data = json.loads(Path(credential).read_text())
-    path = Path(os.environ["XDG_RUNTIME_DIR"]) / "ytm-glass/control.sock"
+    path = Path(os.environ["XDG_RUNTIME_DIR"]) / "ytmcp/control.sock"
 
     def read(operation_id):
         connection = smoke.LocalConnection(path)
@@ -293,23 +293,23 @@ def examine(mcp, credential, env, stage, tool, arguments, follow_cursors):
 
 
 def run_native_session(package, witness, run):
-    electron = package / "opt/ytm-glass/ytm-glass"
+    electron = package / "opt/ytmcp/ytmcp-player"
     resources = electron.parent / "resources"
-    mcp = package / "usr/bin/ytm-glass-mcp"
+    mcp = package / "usr/bin/ytmcp"
     runtime = Path(os.environ["XDG_RUNTIME_DIR"])
-    socket_path = runtime / "ytm-glass/control.sock"
+    socket_path = runtime / "ytmcp/control.sock"
     running = any(subprocess.run(["pgrep", "-x", name], stdout=subprocess.DEVNULL).returncode == 0
-                  for name in ("ytm-glass", "ytm-daemon"))
+                  for name in ("ytmcp-player", "ytm-daemon"))
     if running or socket_path.exists():
         report(dict(stage="launch", status="BLOCKED", reason="an existing player owns the profile or control socket"))
         return 2
     with tempfile.TemporaryDirectory(prefix="isolated-store-", dir=witness) as isolated:
         root = Path(isolated)
-        env = dict(os.environ, YTM_GLASS_DAEMON_BIN=str(resources / "bin/ytm-daemon"),
-                   YTM_GLASS_UI_DIST_DIR=str(resources / "ui-dist"),
-                   YTM_GLASS_BRIDGE_DIST_DIR=str(resources / "bridge-dist"),
-                   YTM_GLASS_IDENTITY_PATH=str(resources / "config/app-identity.json"),
-                   YTM_GLASS_DATA_DIR=str(root), RUST_LOG="warn")
+        env = dict(os.environ, YTMCP_DAEMON_BIN=str(resources / "bin/ytm-daemon"),
+                   YTMCP_UI_DIST_DIR=str(resources / "ui-dist"),
+                   YTMCP_BRIDGE_DIST_DIR=str(resources / "bridge-dist"),
+                   YTMCP_IDENTITY_PATH=str(resources / "config/app-identity.json"),
+                   YTMCP_DATA_DIR=str(root), RUST_LOG="warn")
         # The daemon only enables the listener when the local user has registered a client.
         register(mcp, env, "bootstrap-read-check", "signed-out")
         with (witness / "native-runtime.log").open("w") as log:

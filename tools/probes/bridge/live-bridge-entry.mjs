@@ -7,7 +7,7 @@ import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { app } from "electron";
 
-const MODE = process.env.YTM_GLASS_LIVE_MODE;
+const MODE = process.env.YTMCP_LIVE_MODE;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HINT_RE = /^acct:[0-9a-f]{32}$/;
 
@@ -52,7 +52,7 @@ function sinkReport() {
     );
     const blocks = execFileSync("pactl", ["list", "sink-inputs"], { encoding: "utf8" }).split(/(?=^Sink Input #)/m);
     return blocks
-      .filter((b) => /application\.name = "YTM Glass"/.test(b))
+      .filter((b) => /application\.name = "YTMcp"/.test(b))
       .map((b) => ({ sink: sinks[(/^\s*Sink: (\d+)/m.exec(b) ?? [])[1]] ?? null, corked: (/^\s*Corked: (\S+)/m.exec(b) ?? [])[1] ?? null }));
   } catch (err) {
     return [{ error: String(err.message ?? err) }];
@@ -60,8 +60,8 @@ function sinkReport() {
 }
 
 async function run() {
-  const { startDesktopShell } = await import(pathToFileURL(process.env.YTM_GLASS_LIVE_MAIN_MODULE).href);
-  const { createIntegratedDesktopHooks } = await import(pathToFileURL(process.env.YTM_GLASS_LIVE_HOST_MODULE).href);
+  const { startDesktopShell } = await import(pathToFileURL(process.env.YTMCP_LIVE_MAIN_MODULE).href);
+  const { createIntegratedDesktopHooks } = await import(pathToFileURL(process.env.YTMCP_LIVE_HOST_MODULE).href);
   let seq = 9000;
   const integrated = createIntegratedDesktopHooks({
     clientOptions: {
@@ -312,11 +312,11 @@ async function run() {
     report.fatal = String(err?.message ?? err);
   }
   report.finishedAt = new Date().toISOString();
-  writeFileSync(process.env.YTM_GLASS_LIVE_REPORT, `${JSON.stringify(report, null, 2)}\n`);
+  writeFileSync(process.env.YTMCP_LIVE_REPORT, `${JSON.stringify(report, null, 2)}\n`);
   app.exit(report.fatal ? 1 : 0);
 }
 
 run().catch((err) => {
-  writeFileSync(process.env.YTM_GLASS_LIVE_REPORT, `${JSON.stringify({ fatal: String(err?.stack ?? err) }, null, 2)}\n`);
+  writeFileSync(process.env.YTMCP_LIVE_REPORT, `${JSON.stringify({ fatal: String(err?.stack ?? err) }, null, 2)}\n`);
   app.exit(1);
 });

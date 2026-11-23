@@ -2387,7 +2387,7 @@ fn page_read_error(position: &CursorPosition, error: QueryError) -> QueryError {
 
 fn mood_scope_key(epoch: &AccountEpoch, scope: &AccountScope, locale: &str) -> [u8; 32] {
     let mut hash = Sha256::new();
-    hash.update(b"ytm-glass:mood-category:v1");
+    hash.update(b"ytmcp:mood-category:v1");
     for field in [epoch.as_str(), scope.as_str(), locale] {
         hash.update((field.len() as u64).to_be_bytes());
         hash.update(field.as_bytes());

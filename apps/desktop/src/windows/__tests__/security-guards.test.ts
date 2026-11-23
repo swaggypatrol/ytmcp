@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_FRAME_BYTES, PROTOCOL_VERSION, type SessionMaterialPayload } from "@ytm-glass/protocol";
+import { MAX_FRAME_BYTES, PROTOCOL_VERSION, type SessionMaterialPayload } from "@ytmcp/protocol";
 
 const mockSafeStorageState = {
   encryptionAvailable: true,
@@ -58,7 +58,7 @@ import {
 describe("app-identity & window security options", () => {
   it("loads config/app-identity.json with isolated partitions", () => {
     const identity = loadAppIdentity();
-    expect(identity.appId).toBe("local.ytmglass.Desktop");
+    expect(identity.appId).toBe("local.ytmcp.Desktop");
     expect(identity.playerSessionPartition).toBe("persist:player-default");
     expect(identity.uiSessionPartition).toBe("ytm-ui-ephemeral");
     expect(identity.appScheme).toBe("app");

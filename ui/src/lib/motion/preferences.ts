@@ -1,4 +1,4 @@
-import type { PlaybackStatus } from "@ytm-glass/protocol";
+import type { PlaybackStatus } from "@ytmcp/protocol";
 
 export interface MotionPolicyInput {
   readonly reduceMotionSetting: boolean;

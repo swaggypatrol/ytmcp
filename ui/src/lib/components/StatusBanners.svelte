@@ -7,7 +7,7 @@
 </script>
 
 <script lang="ts">
-  import type { AppSnapshot, CommandReceipt, FakeScenario, QueryError } from "@ytm-glass/protocol";
+  import type { AppSnapshot, CommandReceipt, FakeScenario, QueryError } from "@ytmcp/protocol";
   import { FAKE_SCENARIO_PRESETS } from "../../fixtures/synthetic.js";
   import { t } from "../i18n/index.svelte.js";
   import type { ClientTransportMode } from "../ipc/client.js";

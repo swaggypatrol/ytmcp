@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import type { CoverRef } from "@ytm-glass/protocol";
+  import type { CoverRef } from "@ytmcp/protocol";
 
   /** One navigable album / artist / playlist tile. */
   export interface Tile {

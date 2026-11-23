@@ -17,7 +17,7 @@ export type NavView =
  */
 export const en = {
   app: {
-    name: "YTM Glass",
+    name: "YTMcp",
     collapseSidebar: "Collapse sidebar",
     expandSidebar: "Expand sidebar",
     sidebarLabel: "Main navigation",
@@ -129,7 +129,7 @@ export const en = {
     unsupportedBanner: "The player page does not support some basic controls. Those buttons are disabled.",
     bridgeDisconnectedBanner: "The player page is disconnected or not ready. Check the official player page.",
     bridgeNotDetectedBanner:
-      "No connection to the desktop main process (window.ytmGlassUi). To preview the interface, enable mock mode explicitly (?mock=1).",
+      "No connection to the desktop main process (window.ytmcpUi). To preview the interface, enable mock mode explicitly (?mock=1).",
     connectionFailedBanner: "Could not connect to the player core.",
     reconnect: "Reconnect",
     errorTitle: "Could not load",

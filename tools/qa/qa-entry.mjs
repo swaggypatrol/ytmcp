@@ -5,7 +5,7 @@
 // (player reload, blanking) can be exercised through the production WindowManager. Observers only copy what crosses the existing IPC channels;
 // they never alter, block or originate envelopes. Never shipped in the package.
 //
-// Env: YTM_GLASS_QA_SOCKET (required), YTM_GLASS_QA_MAIN (default: ../../apps/desktop/dist/main.mjs)
+// Env: YTMCP_QA_SOCKET (required), YTMCP_QA_MAIN (default: ../../apps/desktop/dist/main.mjs)
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
@@ -13,18 +13,18 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, ipcMain, session, webContents } from "electron";
 
-const SOCKET = process.env.YTM_GLASS_QA_SOCKET;
+const SOCKET = process.env.YTMCP_QA_SOCKET;
 if (!SOCKET) {
-  process.stderr.write("qa-entry: YTM_GLASS_QA_SOCKET is required\n");
+  process.stderr.write("qa-entry: YTMCP_QA_SOCKET is required\n");
   process.exit(2);
 }
-const MAIN = resolve(process.env.YTM_GLASS_QA_MAIN ?? resolve(import.meta.dirname, "../../apps/desktop/dist/main.mjs"));
+const MAIN = resolve(process.env.YTMCP_QA_MAIN ?? resolve(import.meta.dirname, "../../apps/desktop/dist/main.mjs"));
 
 const CH = {
-  UI_SEND: "ytm-glass:ui:send",
-  UI_EVENT: "ytm-glass:ui:event",
-  BRIDGE_SEND: "ytm-glass:bridge:send",
-  BRIDGE_EVENT: "ytm-glass:bridge:event",
+  UI_SEND: "ytmcp:ui:send",
+  UI_EVENT: "ytmcp:ui:event",
+  BRIDGE_SEND: "ytmcp:bridge:send",
+  BRIDGE_EVENT: "ytmcp:bridge:event",
 };
 
 const hash = (v) => (v == null ? null : `h:${createHash("sha256").update(String(v)).digest("hex").slice(0, 12)}`);
@@ -330,7 +330,7 @@ const ops = {
   async eval({ target, js, userGesture = false, worldId = null }) {
     const win = findWindow(target);
     if (!win) throw new Error(`no ${target} window`);
-    // worldId: an isolated world, e.g. 1001 where the player preload exposes ytmGlassBridge.
+    // worldId: an isolated world, e.g. 1001 where the player preload exposes ytmcpBridge.
     if (worldId != null) return win.webContents.executeJavaScriptInIsolatedWorld(worldId, [{ code: js }], userGesture);
     return win.webContents.executeJavaScript(js, userGesture);
   },
@@ -409,7 +409,7 @@ const ops = {
         forceDeviceScaleFactor: app.commandLine.getSwitchValue("force-device-scale-factor"),
       },
       isPackaged: app.isPackaged,
-      userDataIsXdg: app.getPath("userData").endsWith("/ytm-glass/electron-profile"),
+      userDataIsXdg: app.getPath("userData").endsWith("/ytmcp/electron-profile"),
       versions: process.versions,
     };
   },
@@ -477,9 +477,9 @@ function startControlServer() {
 
 startControlServer();
 record("qa-entry", { main: MAIN.split("/").slice(-3).join("/") });
-process.env.YTM_GLASS_NO_AUTOSTART = "1";
+process.env.YTMCP_NO_AUTOSTART = "1";
 const mainModule = await import(pathToFileURL(MAIN).href);
-delete process.env.YTM_GLASS_NO_AUTOSTART;
+delete process.env.YTMCP_NO_AUTOSTART;
 if (typeof mainModule.startApp !== "function") {
   process.stderr.write("qa-entry: production main has no startApp export\n");
   app.exit(2);

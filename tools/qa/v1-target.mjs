@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run after Stage B. Uses the installed resources and the byte-identical Electron
 // through the existing QA entry. Drives read-only views and a public playback sample.
-// YTM_GLASS_ALLOW_LIVE=1 node tools/qa/v1-target.mjs
+// YTMCP_ALLOW_LIVE=1 node tools/qa/v1-target.mjs
 import { join } from "node:path";
 import { AppInstance, ELECTRON, REPO, waitAppReady } from "./lib/app.mjs";
 import { check, gateDoc, writeEvidence } from "./lib/evidence.mjs";
@@ -9,16 +9,16 @@ import { ensureNullSink, fileSha256, NULL_SINK, run, sha256Short, sinkInputsFor,
 import { navigate, pageMedia, sinceSeq } from "./gates/common.mjs";
 import { quitViaMpris } from "./gates/g2.mjs";
 
-if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-  console.error("Refusing live v1 checks without YTM_GLASS_ALLOW_LIVE=1");
+if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+  console.error("Refusing live v1 checks without YTMCP_ALLOW_LIVE=1");
   process.exit(2);
 }
 
-const RESOURCES = "/opt/ytm-glass/resources";
-const INSTALLED_ELECTRON = "/opt/ytm-glass/ytm-glass";
+const RESOURCES = "/opt/ytmcp/resources";
+const INSTALLED_ELECTRON = "/opt/ytmcp/ytmcp-player";
 const MAIN = join(RESOURCES, "app/dist/main.mjs");
 const DAEMON = join(RESOURCES, "bin/ytm-daemon");
-const workDir = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytm-glass-qa", `v1-${Date.now()}`);
+const workDir = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytmcp-qa", `v1-${Date.now()}`);
 const SEARCH_VIEW = '[data-testid="view-search"]';
 const SONGS = `${SEARCH_VIEW} button[data-row-index]:not([aria-disabled="true"])`;
 const ROWS = '[data-testid="virtual-track-row"]';
@@ -456,10 +456,10 @@ if (canLaunch) {
   const launch = (label) => AppInstance.launch({
     label, workDir, daemonBin: DAEMON,
     extraEnv: {
-      YTM_GLASS_QA_MAIN: MAIN,
-      YTM_GLASS_UI_DIST_DIR: join(RESOURCES, "ui-dist"),
-      YTM_GLASS_BRIDGE_DIST_DIR: join(RESOURCES, "bridge-dist"),
-      YTM_GLASS_IDENTITY_PATH: join(RESOURCES, "config/app-identity.json"),
+      YTMCP_QA_MAIN: MAIN,
+      YTMCP_UI_DIST_DIR: join(RESOURCES, "ui-dist"),
+      YTMCP_BRIDGE_DIST_DIR: join(RESOURCES, "bridge-dist"),
+      YTMCP_IDENTITY_PATH: join(RESOURCES, "config/app-identity.json"),
     },
   });
   try {

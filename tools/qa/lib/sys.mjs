@@ -302,7 +302,7 @@ export function percentile(values, p) {
 
 // ---------------------------------------------------------------- audio
 
-export const NULL_SINK = "ytmglass_null";
+export const NULL_SINK = "ytmcp_null";
 
 /** Loads the QA null sink (idempotent). Restores the default sink if loading changed it. */
 export async function ensureNullSink() {
@@ -383,10 +383,10 @@ export async function mprisNames(appPids = []) {
     const m = /\.chromium\.instance(\d+)$/.exec(n);
     return m ? pidSet.has(Number(m[1])) : false;
   });
-  return { all: names, ytmGlass: names.filter((n) => n === "org.mpris.MediaPlayer2.ytm_glass"), chromiumFromApp };
+  return { all: names, ytmcp: names.filter((n) => n === "org.mpris.MediaPlayer2.ytmcp"), chromiumFromApp };
 }
 
-export async function mprisProps(name = "org.mpris.MediaPlayer2.ytm_glass") {
+export async function mprisProps(name = "org.mpris.MediaPlayer2.ytmcp") {
   const get = async (prop) => {
     const r = await run("busctl", ["--user", "-j", "get-property", name, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", prop]);
     if (!r.ok) return null;
@@ -547,7 +547,7 @@ export async function removeVirtualDesktop(id) {
  * systemd timer deletes the table after `fallbackSec` even if this process dies.
  */
 export async function cutNetwork(cgroups, { fallbackSec = 180 } = {}) {
-  const table = `ytmglass_qa_${Date.now()}`;
+  const table = `ytmcp_qa_${Date.now()}`;
   const rules = cgroups
     .map((cg) => {
       const rel = cg.replace(/^\//, "");
@@ -562,7 +562,7 @@ export async function cutNetwork(cgroups, { fallbackSec = 180 } = {}) {
     "systemd-run",
     `--on-active=${fallbackSec}`,
     `--unit=${unit}`,
-    "--description=YTM Glass QA: remove temporary nftables table",
+    "--description=YTMcp QA: remove temporary nftables table",
     "/usr/bin/nft",
     "delete",
     "table",

@@ -42,7 +42,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * `config/app-identity.json` is found.
  */
 export function resolveIdentityFilePath(explicitPath?: string): string {
-  const envOverride = explicitPath ?? process.env.YTM_GLASS_IDENTITY_PATH;
+  const envOverride = explicitPath ?? process.env.YTMCP_IDENTITY_PATH;
   if (envOverride) {
     return resolve(envOverride);
   }

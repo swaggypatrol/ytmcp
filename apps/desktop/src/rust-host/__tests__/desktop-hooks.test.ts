@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SessionMaterialPayload } from "@ytm-glass/protocol";
+import type { SessionMaterialPayload } from "@ytmcp/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesktopHostController } from "../../bootstrap/main.js";
 

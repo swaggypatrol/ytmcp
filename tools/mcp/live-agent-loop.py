@@ -78,14 +78,14 @@ def run(mcp, env, scope, minutes):
     started, _ = agent.call("ytm_play_context", {"target": {"kind": "album", "albumId": album, "startIndex": 0}})
     evidence = Path(sys.argv[2])
     config = evidence / "claude-mcp.json"
-    config.write_text(json.dumps({"mcpServers": {"ytm": {
+    config.write_text(json.dumps({"mcpServers": {"ytmcp": {
         "command": str(mcp), "args": ["--credential-file", str(credential)]}}}))
     stream = evidence / "agent-stream.jsonl"
     began = time.monotonic()
     with stream.open("w") as out:
         process = subprocess.Popen(
             ["claude", "-p", INSTRUCTIONS, "--mcp-config", str(config), "--strict-mcp-config",
-             "--allowedTools", "mcp__ytm__*", "--model", "sonnet", "--output-format", "stream-json",
+             "--allowedTools", "mcp__ytmcp__*", "--model", "sonnet", "--output-format", "stream-json",
              "--verbose"],
             stdout=out, stderr=subprocess.DEVNULL, cwd=evidence, text=True)
         try:

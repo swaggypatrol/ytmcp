@@ -29,10 +29,10 @@ importers:
 
   apps/desktop:
     dependencies:
-      '@ytm-glass/bridge':
+      '@ytmcp/bridge':
         specifier: workspace:*
         version: link:../../bridge
-      '@ytm-glass/protocol':
+      '@ytmcp/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
     devDependencies:
@@ -54,7 +54,7 @@ importers:
 
   bridge:
     dependencies:
-      '@ytm-glass/protocol':
+      '@ytmcp/protocol':
         specifier: workspace:*
         version: link:../packages/protocol
     devDependencies:
@@ -98,7 +98,7 @@ importers:
       '@tanstack/svelte-virtual':
         specifier: 3.13.53
         version: 3.13.53(svelte@5.59.1(@typescript-eslint/types@8.73.0))
-      '@ytm-glass/protocol':
+      '@ytmcp/protocol':
         specifier: workspace:*
         version: link:../packages/protocol
     devDependencies:

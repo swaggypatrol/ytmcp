@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-  console.error("Refusing to run live M0 probe without YTM_GLASS_ALLOW_LIVE=1");
+if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+  console.error("Refusing to run live M0 probe without YTMCP_ALLOW_LIVE=1");
   process.exit(1);
 }
 
@@ -12,7 +12,7 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 const electronBin = resolve(repoRoot, "apps/desktop/node_modules/.bin/electron");
 const esbuildBin = resolve(repoRoot, "apps/desktop/node_modules/esbuild/bin/esbuild");
 const entryScript = resolve(import.meta.dirname, "live-m0-electron-entry.mjs");
-const daemonBin = process.env.YTM_GLASS_DAEMON_BIN || resolve(repoRoot, "target/release/ytm-daemon");
+const daemonBin = process.env.YTMCP_DAEMON_BIN || resolve(repoRoot, "target/release/ytm-daemon");
 const reportPath = resolve(repoRoot, "artifacts/m0/live-g2-g4-g3-g5-probe.json");
 const mprisReportPath = resolve(repoRoot, "artifacts/m0/g5-live-mpris-check.json");
 
@@ -25,7 +25,7 @@ if (!existsSync(daemonBin)) {
   process.exit(1);
 }
 
-const tempRoot = mkdtempSync(join(tmpdir(), "ytm-glass-live-m0-"));
+const tempRoot = mkdtempSync(join(tmpdir(), "ytmcp-live-m0-"));
 const mainBundle = join(tempRoot, "main.mjs");
 const rustHostBundle = join(tempRoot, "rust-host.mjs");
 
@@ -47,21 +47,21 @@ try {
     }
   }
 
-  // Note: Do NOT pass --user-data-dir so it uses the persisted $XDG_DATA_HOME/ytm-glass/electron-profile.
-  // Do NOT set YTM_GLASS_SHOW_PLAYER=1 so player window stays HIDDEN.
+  // Note: Do NOT pass --user-data-dir so it uses the persisted $XDG_DATA_HOME/ytmcp/electron-profile.
+  // Do NOT set YTMCP_SHOW_PLAYER=1 so player window stays HIDDEN.
   const childEnv = { ...process.env };
-  delete childEnv.YTM_GLASS_SHOW_PLAYER;
+  delete childEnv.YTMCP_SHOW_PLAYER;
   const res = spawnSync(electronBin, [entryScript], {
     cwd: repoRoot,
     env: {
       ...childEnv,
-      YTM_GLASS_ALLOW_LIVE: "1",
-      YTM_GLASS_NO_AUTOSTART: "1",
-      YTM_GLASS_DAEMON_BIN: daemonBin,
-      YTM_GLASS_M0_MAIN_MODULE: mainBundle,
-      YTM_GLASS_M0_ENTRY_MODULE: rustHostBundle,
-      YTM_GLASS_LIVE_REPORT_PATH: reportPath,
-      YTM_GLASS_LIVE_MPRIS_PATH: mprisReportPath,
+      YTMCP_ALLOW_LIVE: "1",
+      YTMCP_NO_AUTOSTART: "1",
+      YTMCP_DAEMON_BIN: daemonBin,
+      YTMCP_M0_MAIN_MODULE: mainBundle,
+      YTMCP_M0_ENTRY_MODULE: rustHostBundle,
+      YTMCP_LIVE_REPORT_PATH: reportPath,
+      YTMCP_LIVE_MPRIS_PATH: mprisReportPath,
     },
     encoding: "utf8",
     timeout: 180_000,

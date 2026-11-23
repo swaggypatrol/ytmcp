@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 describe("player bridge world isolation", () => {
-  it("exposes ytmGlassBridge only in the bridge isolated world, never to the page main world", async () => {
+  it("exposes ytmcpBridge only in the bridge isolated world, never to the page main world", async () => {
     stubPageWindow(MUSIC_ORIGIN);
     await import("../../../preload/player-preload.js");
 
@@ -45,7 +45,7 @@ describe("player bridge world isolation", () => {
     expect(worldId).toBe(BRIDGE_WORLD_ID);
     expect(worldId).not.toBe(0);
     expect(worldId).not.toBe(999);
-    expect(key).toBe("ytmGlassBridge");
+    expect(key).toBe("ytmcpBridge");
     expect(Object.isFrozen(api)).toBe(true);
     expect(Object.keys(api).sort()).toEqual(["onEnvelope", "sendEnvelope"]);
   });
@@ -84,7 +84,7 @@ describe("player bridge world isolation", () => {
     const [worldId, scripts] = isolatedWorld.mock.calls[0] as unknown as [number, Array<{ code: string }>];
     expect(worldId).toBe(BRIDGE_WORLD_ID);
     expect(scripts).toHaveLength(1);
-    expect(scripts[0]!.code).toContain("installBridge(window.ytmGlassBridge");
+    expect(scripts[0]!.code).toContain("installBridge(window.ytmcpBridge");
     expect(scripts[0]!.code).toContain(JSON.stringify(epoch));
   });
 
@@ -94,7 +94,7 @@ describe("player bridge world isolation", () => {
     const source =
       "function installBridge(t, e) { return { installed: true, bridgeEpoch: e, uninstall: () => {}, getStateSnapshot: () => null }; }\nexport { installBridge };\n";
     const code = buildBridgeInjectionScript(source, "bridge-test");
-    const fakeWindow: Record<string, unknown> = { location: { origin: MUSIC_ORIGIN }, ytmGlassBridge: {} };
+    const fakeWindow: Record<string, unknown> = { location: { origin: MUSIC_ORIGIN }, ytmcpBridge: {} };
     fakeWindow.top = fakeWindow;
     const result = new Function("window", `return ${code}`)(fakeWindow) as unknown;
     expect(structuredClone(result)).toEqual({ installed: true, reason: null });

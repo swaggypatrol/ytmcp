@@ -1,9 +1,9 @@
-# `@ytm-glass/bridge` — YouTube Music page bridge
+# `@ytmcp/bridge` — YouTube Music page bridge
 
 `bridge/` is the only module allowed to depend on YouTube Music DOM structure, private page
 objects and page-side request shapes. There is exactly one shipped bridge.
 
-## Bundles (built by `pnpm --filter @ytm-glass/bridge run build`)
+## Bundles (built by `pnpm --filter @ytmcp/bridge run build`)
 
 | Source | Output | World | Role |
 | --- | --- | --- | --- |
@@ -57,9 +57,9 @@ for main-window visibility, so cadence does not depend on it.
 ## Checks
 
 ```bash
-pnpm --filter @ytm-glass/bridge run typecheck
-pnpm --filter @ytm-glass/bridge test
-pnpm --filter @ytm-glass/bridge run build
+pnpm --filter @ytmcp/bridge run typecheck
+pnpm --filter @ytmcp/bridge test
+pnpm --filter @ytmcp/bridge run build
 # Live (real profile, audio on a temporary null sink; see docs/building.md)
-YTM_GLASS_ALLOW_LIVE=1 node tools/probes/bridge/run-live-bridge-probe.mjs
+YTMCP_ALLOW_LIVE=1 node tools/probes/bridge/run-live-bridge-probe.mjs
 ```

@@ -6,7 +6,7 @@ import type {
   BridgePlaybackObservedPayload,
   BridgeReadyPayload,
   QueueSnapshot,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import { installBridge } from "../src/bridge.js";
 import { installPageShim } from "../src/page-shim.js";
 import { PAGE_SHIM_CHANNEL } from "../src/types.js";
@@ -143,6 +143,25 @@ describe("bridge time model", () => {
     expect(p.positionMs).toBe(2400);
     expect(p.durationMs).toBe(187_000);
     expect(p.currentTrack?.durationMs).toBe(187_000);
+  });
+
+  it("reports how far the current track has loaded, per track and in whole seconds", async () => {
+    const { page, t } = setup();
+    await waitInitial(t);
+    // The media element's buffered ranges span earlier gapless tracks too; the player API's
+    // loaded fraction is per track.
+    Object.assign(page.player, { state: 1, timeSec: 3, lengthSec: 240, loadedFraction: 0.2871 });
+    const from = t.sent.length;
+    page.fire("playing");
+    await t.waitFor(
+      (e) =>
+        e.kind === "bridge.playbackObserved" &&
+        (e.payload as BridgePlaybackObservedPayload).playback === "playing",
+      "playing observation",
+      from
+    );
+    // 0.2871 × 240 s = 68.9 s, reported as 68 s.
+    expect(playback(t).bufferedMs).toBe(68_000);
   });
 
   it("seeks in the player API's per-track seconds and never writes media.currentTime", async () => {

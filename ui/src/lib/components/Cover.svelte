@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { CoverRef } from "@ytm-glass/protocol";
+  import type { CoverRef } from "@ytmcp/protocol";
   import { artworkSrc } from "../cover.js";
 
   interface Props {

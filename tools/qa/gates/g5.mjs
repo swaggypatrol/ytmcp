@@ -34,9 +34,9 @@ export async function g5Checks(app) {
   const names = await mprisNames(pids);
   const players = (await run("playerctl", ["-l"])).stdout.trim().split("\n").filter(Boolean);
   const props = await mprisProps();
-  const nameCheck = check("G5.singleService", "session bus has exactly one org.mpris.MediaPlayer2.ytm_glass and no Chromium MPRIS from app processes", {
-    measured: { mprisNames: names.all, ytmGlass: names.ytmGlass.length, chromiumFromApp: names.chromiumFromApp, playerctlPlayers: players, props: { status: props.status, hasTitle: props.hasTitle, lengthUs: props.lengthUs } },
-    pass: names.ytmGlass.length === 1 && names.chromiumFromApp.length === 0,
+  const nameCheck = check("G5.singleService", "session bus has exactly one org.mpris.MediaPlayer2.ytmcp and no Chromium MPRIS from app processes", {
+    measured: { mprisNames: names.all, ytmcp: names.ytmcp.length, chromiumFromApp: names.chromiumFromApp, playerctlPlayers: players, props: { status: props.status, hasTitle: props.hasTitle, lengthUs: props.lengthUs } },
+    pass: names.ytmcp.length === 1 && names.chromiumFromApp.length === 0,
   });
   await ensurePlaying(app);
   const first = await pressPlayPause(app);

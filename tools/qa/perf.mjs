@@ -5,9 +5,9 @@
 //  - 60 s scroll frame timing in the real UI at the measured refresh rate
 //  - visible playing, hidden playing and hidden paused process-tree CPU, wakeups and PSS
 //
-//   YTM_GLASS_ALLOW_LIVE=1 node tools/qa/perf.mjs [--target dev|installed] [--starts 20] [--clicks 20]
+//   YTMCP_ALLOW_LIVE=1 node tools/qa/perf.mjs [--target dev|installed] [--starts 20] [--clicks 20]
 //
-// --target installed runs the INSTALLED resources (/opt/ytm-glass/resources: main bundle,
+// --target installed runs the INSTALLED resources (/opt/ytmcp/resources: main bundle,
 // daemon, UI, bridge, identity) through tools/qa/qa-entry.mjs with the dev tree's Electron of
 // the same version (the packaged binary cannot take a QA entry); app.isPackaged is then false.
 import { spawn } from "node:child_process";
@@ -33,26 +33,26 @@ const { values: opt } = parseArgs({
     "glass-only": { type: "boolean", default: false },
   },
 });
-if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-  console.error("Refusing live perf run without YTM_GLASS_ALLOW_LIVE=1");
+if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+  console.error("Refusing live perf run without YTMCP_ALLOW_LIVE=1");
   process.exit(2);
 }
 
-const RES = "/opt/ytm-glass/resources";
-const INSTALLED_ELECTRON = "/opt/ytm-glass/ytm-glass";
+const RES = "/opt/ytmcp/resources";
+const INSTALLED_ELECTRON = "/opt/ytmcp/ytmcp-player";
 const target =
   opt.target === "installed"
     ? {
         daemonBin: `${RES}/bin/ytm-daemon`,
         extraEnv: {
-          YTM_GLASS_QA_MAIN: `${RES}/app/dist/main.mjs`,
-          YTM_GLASS_UI_DIST_DIR: `${RES}/ui-dist`,
-          YTM_GLASS_BRIDGE_DIST_DIR: `${RES}/bridge-dist`,
-          YTM_GLASS_IDENTITY_PATH: `${RES}/config/app-identity.json`,
+          YTMCP_QA_MAIN: `${RES}/app/dist/main.mjs`,
+          YTMCP_UI_DIST_DIR: `${RES}/ui-dist`,
+          YTMCP_BRIDGE_DIST_DIR: `${RES}/bridge-dist`,
+          YTMCP_IDENTITY_PATH: `${RES}/config/app-identity.json`,
         },
       }
-    : { daemonBin: DAEMON, extraEnv: { YTM_GLASS_QA_MAIN: PROD_MAIN } };
-const workDir = join(process.env.YTM_GLASS_QA_WORKDIR ?? join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytm-glass-qa"), `perf-${Date.now()}`);
+    : { daemonBin: DAEMON, extraEnv: { YTMCP_QA_MAIN: PROD_MAIN } };
+const workDir = join(process.env.YTMCP_QA_WORKDIR ?? join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytmcp-qa"), `perf-${Date.now()}`);
 const stats = (v) => ({ n: v.length, p50: round(percentile(v, 50), 0), p95: round(percentile(v, 95), 0), min: v.length ? Math.min(...v) : null, max: v.length ? Math.max(...v) : null });
 
 /** Spawn -> main UI interactive (DOM ready, nav enabled, core snapshot rendered). */
@@ -466,7 +466,7 @@ async function main() {
   const out = {
     target: opt.target,
     daemonSha256: fileSha256(target.daemonBin),
-    mainSha256: fileSha256(target.extraEnv.YTM_GLASS_QA_MAIN),
+    mainSha256: fileSha256(target.extraEnv.YTMCP_QA_MAIN),
     startedAt: new Date().toISOString(),
     notes: [],
   };

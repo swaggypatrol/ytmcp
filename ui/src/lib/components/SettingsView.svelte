@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AppSettings, AppSettingsPatch, AppSnapshot, ThemeMode } from "@ytm-glass/protocol";
+  import type { AppSettings, AppSettingsPatch, AppSnapshot, ThemeMode } from "@ytmcp/protocol";
   import { LOCALE_NAMES, LOCALES, t, type Locale } from "../i18n/index.svelte.js";
   import type { CacheClearOutcome, SettingsUpdateOutcome } from "../ipc/client.js";
   import AccessibleDialog from "./AccessibleDialog.svelte";

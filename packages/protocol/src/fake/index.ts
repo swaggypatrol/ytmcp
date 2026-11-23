@@ -163,6 +163,7 @@ export class FakeCoreClient {
           anchorCoreMonotonicMs: 0,
           extrapolating: false,
         },
+        bufferedMs: Math.round((firstTrack.durationMs ?? 185_000) * 0.4),
         volume: 0.72,
         muted: false,
         shuffle: false,

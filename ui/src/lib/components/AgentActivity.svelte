@@ -5,7 +5,7 @@
     AgentOperationPhase,
     AgentOperationSummary,
     AgentPreferenceSummary,
-  } from "@ytm-glass/protocol";
+  } from "@ytmcp/protocol";
   import { onDestroy, untrack } from "svelte";
   import { t } from "../i18n/index.svelte.js";
   import type { YtmUiClient } from "../ipc/client.js";
@@ -141,7 +141,7 @@
                   <div class="min-w-0 flex flex-col gap-0.5">
                     <p class="type-sm font-medium wrap-anywhere">{operation.operationId}</p>
                     <p class="type-xs wrap-anywhere" style="color: var(--text-secondary);">
-                      {operation.principal}{#if operation.resource} · {resourceLabel(operation.resource)}{/if}
+                      <span style="color: var(--agent);">{operation.principal}</span>{#if operation.resource} · {resourceLabel(operation.resource)}{/if}
                     </p>
                   </div>
                   <span class="chip" style:color={phaseTone[operation.phase]} data-testid="agent-operation-phase">
@@ -194,7 +194,7 @@
                 <div class="min-w-0 flex flex-col gap-1">
                   <p class="type-sm font-medium wrap-anywhere">{name}</p>
                   <div class="flex flex-wrap items-center gap-2 type-xs" style="color: var(--text-secondary);">
-                    <span class="chip" data-testid="agent-preference-stance">{stanceLabel(preference)}</span>
+                    <span class="chip chip-agent" data-testid="agent-preference-stance">{stanceLabel(preference)}</span>
                     <span class="wrap-anywhere">{copy.recordedBy.replace("{client}", preference.recordedBy)}</span>
                   </div>
                 </div>

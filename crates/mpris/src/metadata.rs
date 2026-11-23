@@ -7,27 +7,27 @@ use ytm_protocol::{
 };
 
 pub const MPRIS_BUS_PREFIX: &str = "org.mpris.MediaPlayer2.";
-pub const DEFAULT_MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.ytm_glass";
-pub const DEFAULT_MPRIS_IDENTITY: &str = "YTM Glass";
-pub const DEFAULT_DESKTOP_ENTRY: &str = "local.ytmglass.Desktop";
-pub const TRACK_PATH_PREFIX: &str = "/local/ytmglass/Desktop/track/";
+pub const DEFAULT_MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.ytmcp";
+pub const DEFAULT_MPRIS_IDENTITY: &str = "YTMcp";
+pub const DEFAULT_DESKTOP_ENTRY: &str = "local.ytmcp.Desktop";
+pub const TRACK_PATH_PREFIX: &str = "/local/ytmcp/Desktop/track/";
 
-/// Resolves the canonical covers cache root respecting `YTM_GLASS_DATA_DIR`,
-/// `XDG_CACHE_HOME`, and `$HOME/.cache/ytm-glass/covers`.
+/// Resolves the canonical covers cache root respecting `YTMCP_DATA_DIR`,
+/// `XDG_CACHE_HOME`, and `$HOME/.cache/ytmcp/covers`.
 pub fn resolve_covers_cache_root() -> Option<PathBuf> {
-    if let Ok(custom) = std::env::var("YTM_GLASS_DATA_DIR") {
+    if let Ok(custom) = std::env::var("YTMCP_DATA_DIR") {
         let trimmed = custom.trim();
         if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed).join("cache/ytm-glass/covers"));
+            return Some(PathBuf::from(trimmed).join("cache/ytmcp/covers"));
         }
     }
     if let Ok(xdg_cache) = std::env::var("XDG_CACHE_HOME") {
         let trimmed = xdg_cache.trim();
         if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed).join("ytm-glass/covers"));
+            return Some(PathBuf::from(trimmed).join("ytmcp/covers"));
         }
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/ytm-glass/covers"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/ytmcp/covers"))
 }
 
 /// Validates that `candidate_file` exists inside canonical `cache_root` before converting to `file://` URI.

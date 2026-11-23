@@ -44,7 +44,7 @@ export async function collectEnvironment() {
       "pnpm-lock.yaml": fileSha256(join(REPO, "pnpm-lock.yaml")),
       "config/app-identity.json": fileSha256(join(REPO, "config/app-identity.json")),
     },
-    profile: "existing-app-owned (~/.local/share/ytm-glass)",
+    profile: "existing-app-owned (~/.local/share/ytmcp)",
     buildMode: "release daemon + esbuild/vite production bundles, unpackaged Electron",
   };
 }
@@ -54,9 +54,9 @@ export async function buildRelease() {
   const cpus = (await run(`${process.env.HOME}/.local/bin/workload-cpus`, [])).stdout.trim() || null;
   const steps = [
     ["cargo", ["build", "--release", "-j", "12", "-p", "ytm-daemon"]],
-    ["pnpm", ["--filter", "@ytm-glass/bridge", "run", "build"]],
-    ["pnpm", ["--filter", "@ytm-glass/ui", "run", "build"]],
-    ["pnpm", ["--filter", "@ytm-glass/desktop", "run", "build"]],
+    ["pnpm", ["--filter", "@ytmcp/bridge", "run", "build"]],
+    ["pnpm", ["--filter", "@ytmcp/ui", "run", "build"]],
+    ["pnpm", ["--filter", "@ytmcp/desktop", "run", "build"]],
   ];
   const results = [];
   for (const [cmd, args] of steps) {
@@ -146,8 +146,8 @@ async function sidecarFailureRun(ctx, label, daemonBin) {
     XDG_CONFIG_HOME: join(base, "config"),
     XDG_CACHE_HOME: join(base, "cache"),
     XDG_STATE_HOME: join(base, "state"),
-    YTM_GLASS_MODE: "mock",
-    YTM_GLASS_WITH_DAEMON: "1",
+    YTMCP_MODE: "mock",
+    YTMCP_WITH_DAEMON: "1",
   };
   let app = null;
   let launchError = null;

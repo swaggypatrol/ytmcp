@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 
 const repo = resolve(import.meta.dirname, "../..");
 const LICENSE_FILE = /^(licen[cs]e|copying|notice)([-_.].*)?$/i;
-const RUST_BINARY_PACKAGES = ["ytm-daemon", "ytm-glass-mcp"];
+const RUST_BINARY_PACKAGES = ["ytm-daemon", "ytmcp"];
 // These locked crates omit the license file from the registry tarball.
 // The checked-in copies come from the crate's published VCS revision.
 const upstreamLicenseFiles = new Map([
@@ -82,7 +82,7 @@ function npmPackages() {
   const out = [];
   for (const [license, pkgs] of Object.entries(raw)) {
     for (const p of pkgs) {
-      if (p.name.startsWith("@ytm-glass/")) continue;
+      if (p.name.startsWith("@ytmcp/")) continue;
       out.push({
         name: p.name,
         version: p.versions.join(", "),
@@ -118,9 +118,9 @@ function section(title, items) {
 }
 
 const header = [
-  "# YTM Glass third-party notices",
+  "# YTMcp third-party notices",
   "",
-  "YTM Glass is MIT licensed. The Electron/Chromium runtime notices are installed next to this file under electron/.",
+  "YTMcp is MIT licensed. The Electron/Chromium runtime notices are installed next to this file under electron/.",
   "",
 ].join("\n");
 

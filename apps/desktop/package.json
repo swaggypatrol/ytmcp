@@ -1,5 +1,5 @@
 {
-  "name": "@ytm-glass/desktop",
+  "name": "@ytmcp/desktop",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -10,8 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ytm-glass/bridge": "workspace:*",
-    "@ytm-glass/protocol": "workspace:*"
+    "@ytmcp/bridge": "workspace:*",
+    "@ytmcp/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

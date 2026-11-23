@@ -12,7 +12,7 @@ import {
   type MutationRequest,
   type MutationResult,
   type StateDelta,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { tick } from "svelte";
 import App from "../App.svelte";
@@ -24,7 +24,7 @@ import {
   createUiClient,
   wrapPreloadEnvelopeBridge,
   type RawPreloadUiBridge,
-  type YtmGlassUiBridge,
+  type YtmcpUiBridge,
 } from "../../lib/ipc/client.js";
 import { LONG_CJK_MIXED_SAMPLE_TRACK } from "../../fixtures/synthetic.js";
 import { en, type NavView } from "../../lib/i18n/en.js";
@@ -53,8 +53,8 @@ const DISABLED_LYRICS: LyricsResult = {
 interface BridgeOptions {
   snapshot?: (base: AppSnapshot) => AppSnapshot;
   queryCatalog?: (req: CatalogQueryRequest) => CatalogResponsePayload | Promise<CatalogResponsePayload>;
-  sendMutation?: YtmGlassUiBridge["sendMutation"];
-  queryLyrics?: YtmGlassUiBridge["queryLyrics"];
+  sendMutation?: YtmcpUiBridge["sendMutation"];
+  queryLyrics?: YtmcpUiBridge["queryLyrics"];
 }
 
 /** A non-mock preload bridge backed by the synthetic fake core, with per-test overrides. */
@@ -80,11 +80,11 @@ function createPreloadBridge(options: BridgeOptions = {}) {
     clearCache: vi.fn(),
     sendMutation: options.sendMutation,
     logout: vi.fn(),
-  } satisfies YtmGlassUiBridge;
+  } satisfies YtmcpUiBridge;
   return { bridge, snapshot, catalogCalls, emit: (d: StateDelta) => listener?.(d) };
 }
 
-function renderApp(bridge: YtmGlassUiBridge, initialView: NavView = "home") {
+function renderApp(bridge: YtmcpUiBridge, initialView: NavView = "home") {
   return render(App, { props: { client: createUiClient({ preloadBridge: bridge }), initialView } });
 }
 
@@ -583,7 +583,7 @@ describe("Account writes and queue controls", () => {
   });
 
   it("uses a refreshed liked collection without keeping an earlier local unlike", async () => {
-    const sendMutation = vi.fn<NonNullable<YtmGlassUiBridge["sendMutation"]>>(() => ({
+    const sendMutation = vi.fn<NonNullable<YtmcpUiBridge["sendMutation"]>>(() => ({
       kind: "setLike", outcome: "confirmed", error: null,
     }));
     const { bridge, emit, snapshot } = createPreloadBridge({ snapshot: writeReady, sendMutation });
@@ -709,7 +709,9 @@ describe("Player bar seek preview", () => {
 
     const slider = screen.getByTestId("player-seek-slider") as HTMLInputElement;
     await fireEvent.input(slider, { target: { value: "50000" } });
-    expect(screen.getByTestId("seek-preview-label").textContent).toContain("0:50");
+    // The preview is the elapsed time itself, in the accent: no extra label appears.
+    expect(screen.getByTestId("player-pos-text").textContent).toBe("0:50");
+    expect(screen.getByTestId("player-pos-text").classList.contains("is-previewing")).toBe(true);
     await fireEvent.change(slider, { target: { value: "50000" } });
     expect(onCommand).toHaveBeenCalledWith("seek", { positionMs: 50_000, trackInstanceId: "ti-mock-1" });
     resolveCmd!({ commandId: "seek-1", op: "seek", status: "accepted", acceptedAtMs: 0, observedAtMs: null, deduplicated: false, error: null });
@@ -718,13 +720,35 @@ describe("Player bar seek preview", () => {
 
     const failed: CommandReceipt = { commandId: "seek-1", op: "seek", status: "failed", acceptedAtMs: 0, observedAtMs: null, deduplicated: false, error: null };
     await rerender({ snapshot: { ...snap, pending: { ...snap.pending, lastReceipt: failed } } });
-    await waitFor(() => expect(screen.queryByTestId("seek-preview-label")).toBeNull());
+    await waitFor(() => expect(screen.getByTestId("player-pos-text").classList.contains("is-previewing")).toBe(false));
     expect(screen.getByTestId("player-pos-text").textContent).toBe("0:12");
 
     await fireEvent.input(slider, { target: { value: "90000" } });
-    expect(screen.getByTestId("seek-preview-label")).toBeTruthy();
+    expect(screen.getByTestId("player-pos-text").classList.contains("is-previewing")).toBe(true);
     await rerender({ snapshot: { ...snap, player: { ...snap.player, trackInstanceId: "ti-mock-2" } } });
-    await waitFor(() => expect(screen.queryByTestId("seek-preview-label")).toBeNull());
+    await waitFor(() => expect(screen.getByTestId("player-pos-text").classList.contains("is-previewing")).toBe(false));
+  });
+
+  it("changes volume without any words appearing in the bar and holds the dragged value", async () => {
+    const fake = new FakeCoreClient("normal");
+    const snap = fake.subscribeSnapshot(() => {}).snapshot;
+    const onCommand = vi.fn(() => new Promise<CommandReceipt | null>(() => {}));
+    const pendingVolume = { pendingCount: 1, activeOp: "setVolume" as const, desiredPlayback: null, desiredPositionMs: null, desiredVolume: 0.3, lastError: null };
+    render(PlayerBar, {
+      props: { snapshot: snap, pendingOverlay: pendingVolume, interpolatedPositionMs: 12_000, onCommand, onOpenNowPlaying: () => {}, onOpenLyrics: () => {}, onOpenDiagnostics: () => {} },
+    });
+    const bar = screen.getByTestId("player-bar");
+    const before = bar.textContent;
+    const slider = screen.getByTestId("player-volume-slider") as HTMLInputElement;
+
+    await fireEvent.pointerDown(slider);
+    await fireEvent.input(slider, { target: { value: "30" } });
+    expect(onCommand).toHaveBeenLastCalledWith("setVolume", { volume: 0.3 });
+    // Only the number on the mute button changes; nothing like "waiting" is added.
+    expect(bar.textContent).toBe(before!.replace(`${Math.round(snap.player.volume * 100)}%`, "30%"));
+    expect(slider.value).toBe("30");
+    expect(slider.getAttribute("title")).toBeNull();
+    expect(screen.getByTestId("player-observed-status").classList.contains("is-waiting")).toBe(false);
   });
 });
 
@@ -1409,7 +1433,7 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     const fake = new FakeCoreClient("normal");
     const snap = { ...fake.subscribeSnapshot(() => {}).snapshot, mockMode: false };
     let attempts = 0;
-    const autoRetryBridge: YtmGlassUiBridge = {
+    const autoRetryBridge: YtmcpUiBridge = {
       subscribeSnapshot: () => {
         attempts += 1;
         if (attempts === 1) {
@@ -1439,7 +1463,7 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     const retryDelaysMs = [10, 20];
     let manualAttempts = 0;
     let allowManual = false;
-    const manualBridge: YtmGlassUiBridge = {
+    const manualBridge: YtmcpUiBridge = {
       ...autoRetryBridge,
       subscribeSnapshot: () => {
         manualAttempts += 1;

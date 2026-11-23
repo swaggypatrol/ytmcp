@@ -4,13 +4,13 @@ import {
   type AppSnapshot,
   type CoreReadyPayload,
   type Envelope,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createUiClient,
   wrapPreloadEnvelopeBridge,
   type RawPreloadUiBridge,
-  type YtmGlassUiBridge,
+  type YtmcpUiBridge,
 } from "../client.js";
 
 afterEach(() => {
@@ -91,7 +91,7 @@ describe("resubscribe after a core restart", () => {
       coreEpoch: "core-1",
       restart: (_ready: CoreReadyPayload) => {},
     };
-    const bridge: YtmGlassUiBridge = {
+    const bridge: YtmcpUiBridge = {
       subscribeSnapshot: () => {
         state.attempts += 1;
         if (state.failSubscribe) return Promise.reject(new Error("new daemon not ready"));

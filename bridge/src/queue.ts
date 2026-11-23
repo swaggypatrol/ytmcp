@@ -1,4 +1,4 @@
-import type { BridgeEpoch, QueueCompleteness, QueueEntry, QueueEntryId, QueueSnapshot } from "@ytm-glass/protocol";
+import type { BridgeEpoch, QueueCompleteness, QueueEntry, QueueEntryId, QueueSnapshot } from "@ytmcp/protocol";
 import { sanitizeTrack } from "./guard.js";
 import type { PageQueue } from "./types.js";
 

@@ -1,4 +1,4 @@
-import type { AuthStatusInfo, CapabilitySupport, PlaybackStatus, PlayerConnectionState } from "@ytm-glass/protocol";
+import type { AuthStatusInfo, CapabilitySupport, PlaybackStatus, PlayerConnectionState } from "@ytmcp/protocol";
 import { t } from "./i18n/index.svelte.js";
 
 /** Whether a control may be used, and the reason shown when it is disabled or unverified. */

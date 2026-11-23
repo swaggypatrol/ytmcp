@@ -1,19 +1,22 @@
-# Maintainer: YTM Glass contributors <noreply@ytm-glass.invalid>
+# Maintainer: YTMcp contributors <noreply@ytmcp.invalid>
 #
-# Reproducible build of YTM Glass from a pinned git commit.
-# Build through tools/package/build-package.sh, which sets YTM_GLASS_REPO and
-# YTM_GLASS_COMMIT (the commit must be clean and committed) and runs makepkg.
+# Reproducible build of YTMcp from a pinned git commit.
+# Build through tools/package/build-package.sh, which sets YTMCP_REPO and
+# YTMCP_COMMIT (the commit must be clean and committed) and runs makepkg.
 
-pkgname=ytm-glass
+pkgname=ytmcp
 pkgver=1.0.0
 pkgrel=1
 pkgdesc="Native Wayland music player shell for the official YouTube Music web player (Electron + Rust)"
 arch=('x86_64')
-url="https://github.com/swaggypatrol/ytm-glass"
+url="https://github.com/swaggypatrol/ytmcp"
 license=('MIT')
+# The project was called YTM Glass (package ytm-glass) up to 1.0.0; this package takes its place.
+conflicts=('ytm-glass')
+replaces=('ytm-glass')
 _electron=45.4.1
-_repo="${YTM_GLASS_REPO:?set YTM_GLASS_REPO to the git repository path}"
-_commit="${YTM_GLASS_COMMIT:?set YTM_GLASS_COMMIT to a full commit sha}"
+_repo="${YTMCP_REPO:?set YTMCP_REPO to the git repository path}"
+_commit="${YTMCP_COMMIT:?set YTMCP_COMMIT to a full commit sha}"
 
 # Shared libraries resolved from the ELF NEEDED entries of electron, libffmpeg,
 # chrome_crashpad_handler and both Rust executables (see docs/building.md).
@@ -35,7 +38,7 @@ optdepends=(
 )
 options=('!strip' '!debug' '!lto')
 source=(
-  "ytm-glass::git+file://${_repo}#commit=${_commit}"
+  "ytmcp::git+file://${_repo}#commit=${_commit}"
   "electron-v${_electron}-linux-x64.zip::https://github.com/electron/electron/releases/download/v${_electron}/electron-v${_electron}-linux-x64.zip"
 )
 noextract=("electron-v${_electron}-linux-x64.zip")
@@ -43,7 +46,7 @@ sha256sums=('SKIP'
             'e1d077c7a087d7e344350ea0c5cd2b7dc5af3d9bf7979474f38e0fc1a560b875')
 
 prepare() {
-  cd ytm-glass
+  cd ytmcp
   [[ "$(pnpm --version)" == "${_pnpm}" ]] || { echo "need pnpm ${_pnpm} in PATH" >&2; return 1; }
   local node_version rust_version
   node_version="$(node -p "require('./package.json').engines.node")"
@@ -60,12 +63,12 @@ prepare() {
 }
 
 build() {
-  cd ytm-glass
+  cd ytmcp
   export CARGO_TARGET_DIR="${srcdir}/target"
-  cargo build --release --frozen -p ytm-daemon -p ytm-glass-mcp
-  pnpm --filter @ytm-glass/bridge run build
-  pnpm --filter @ytm-glass/ui run build
-  pnpm --filter @ytm-glass/desktop run build
+  cargo build --release --frozen -p ytm-daemon -p ytmcp
+  pnpm --filter @ytmcp/bridge run build
+  pnpm --filter @ytmcp/ui run build
+  pnpm --filter @ytmcp/desktop run build
   node tools/package/gen-notices.mjs > "${srcdir}/THIRD_PARTY_NOTICES.md"
   {
     printf 'source_commit=%s\n' "$(git rev-parse HEAD)"
@@ -79,7 +82,7 @@ build() {
     printf '\nLock and identity SHA-256:\n'
     sha256sum Cargo.lock pnpm-lock.yaml config/app-identity.json
     printf '\nShipped Rust binaries SHA-256:\n'
-    ( cd "${CARGO_TARGET_DIR}/release" && sha256sum ytm-daemon ytm-glass-mcp )
+    ( cd "${CARGO_TARGET_DIR}/release" && sha256sum ytm-daemon ytmcp )
     printf '\nDirect and optional system dependencies on the build host:\n'
     local dependency name
     for dependency in "${depends[@]}" "${optdepends[@]}"; do
@@ -95,24 +98,24 @@ build() {
 }
 
 check() {
-  cd ytm-glass
+  cd ytmcp
   export CARGO_TARGET_DIR="${srcdir}/target"
   cargo test --frozen --workspace
   pnpm -r test
 }
 
 package() {
-  local root="${pkgdir}/opt/ytm-glass"
+  local root="${pkgdir}/opt/ytmcp"
   local res="${root}/resources"
 
   install -dm755 "${root}"
   cp -a "${srcdir}/electron/." "${root}/"
   rm -f "${res}/default_app.asar"
-  mv "${root}/electron" "${root}/ytm-glass"
+  mv "${root}/electron" "${root}/ytmcp-player"
   # Chromium uses the unprivileged user-namespace sandbox; no setuid helper.
   rm -f "${root}/chrome-sandbox"
 
-  cd ytm-glass
+  cd ytmcp
   install -Dm755 "${srcdir}/target/release/ytm-daemon" "${res}/bin/ytm-daemon"
   install -Dm644 packaging/app-package.json "${res}/app/package.json"
   cp -a apps/desktop/dist "${res}/app/dist"
@@ -121,12 +124,12 @@ package() {
   install -Dm644 config/app-identity.json "${res}/config/app-identity.json"
   install -Dm644 /dev/null "${res}/config/mcp-background-v1"
 
-  install -Dm755 packaging/ytm-glass.sh "${pkgdir}/usr/bin/ytm-glass"
-  install -Dm755 "${srcdir}/target/release/ytm-glass-mcp" "${pkgdir}/usr/bin/ytm-glass-mcp"
-  install -Dm644 packaging/local.ytmglass.Desktop.desktop \
-    "${pkgdir}/usr/share/applications/local.ytmglass.Desktop.desktop"
-  install -Dm644 packaging/ytm-glass.svg \
-    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/local.ytmglass.Desktop.svg"
+  install -Dm755 packaging/ytmcp-player.sh "${pkgdir}/usr/bin/ytmcp-player"
+  install -Dm755 "${srcdir}/target/release/ytmcp" "${pkgdir}/usr/bin/ytmcp"
+  install -Dm644 packaging/local.ytmcp.Desktop.desktop \
+    "${pkgdir}/usr/share/applications/local.ytmcp.Desktop.desktop"
+  install -Dm644 packaging/ytmcp.svg \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/local.ytmcp.Desktop.svg"
   install -Dm644 "${srcdir}/BUILD-MANIFEST.txt" "${pkgdir}/usr/share/doc/${pkgname}/BUILD-MANIFEST.txt"
 
   local lic="${pkgdir}/usr/share/licenses/${pkgname}"

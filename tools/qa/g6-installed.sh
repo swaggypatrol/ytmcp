@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # G6 installed-package smoke test (run AFTER the package is installed; installs nothing).
-#   YTM_GLASS_QA_EVIDENCE_SUBDIR=0.1.0-3 tools/qa/g6-installed.sh [--run final|dryrun]
+#   YTMCP_QA_EVIDENCE_SUBDIR=0.1.0-3 tools/qa/g6-installed.sh [--run final|dryrun]
 # Launches through KDE (kioclient exec on the desktop entry), checks it runs from /opt
 # without the dev tree, plays (volume 0, stream moved to a null sink), single instance
 # (second launch activates the first or KWin signals attention), quit leaves no
@@ -12,22 +12,22 @@ RUN=final
 [[ "${1:-}" == "--run" ]] && RUN="${2:-final}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT_DIR="$REPO/artifacts/m0"
-if [[ -n "${YTM_GLASS_QA_EVIDENCE_SUBDIR:-}" ]]; then
-  if [[ ! "$YTM_GLASS_QA_EVIDENCE_SUBDIR" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
-    echo 'YTM_GLASS_QA_EVIDENCE_SUBDIR must name a subdirectory of artifacts/m0' >&2
+if [[ -n "${YTMCP_QA_EVIDENCE_SUBDIR:-}" ]]; then
+  if [[ ! "$YTMCP_QA_EVIDENCE_SUBDIR" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo 'YTMCP_QA_EVIDENCE_SUBDIR must name a subdirectory of artifacts/m0' >&2
     exit 2
   fi
-  OUT_DIR="$OUT_DIR/$YTM_GLASS_QA_EVIDENCE_SUBDIR"
+  OUT_DIR="$OUT_DIR/$YTMCP_QA_EVIDENCE_SUBDIR"
 elif [[ "$RUN" != "final" ]]; then
   OUT_DIR="$OUT_DIR/$RUN"
 fi
 mkdir -p "$OUT_DIR"
-DESKTOP=/usr/share/applications/local.ytmglass.Desktop.desktop
-BIN=/opt/ytm-glass/ytm-glass
-DAEMON=/opt/ytm-glass/resources/bin/ytm-daemon
-MPRIS=org.mpris.MediaPlayer2.ytm_glass
+DESKTOP=/usr/share/applications/local.ytmcp.Desktop.desktop
+BIN=/opt/ytmcp/ytmcp-player
+DAEMON=/opt/ytmcp/resources/bin/ytm-daemon
+MPRIS=org.mpris.MediaPlayer2.ytmcp
 MP_PATH=/org/mpris/MediaPlayer2
-SINK=ytmglass_null
+SINK=ytmcp_null
 RESTORE_TOLERANCE_US=2000000
 RESTORE_SETTLE_SECONDS=18
 CHECKS=()
@@ -107,9 +107,9 @@ compare_paused_restore() {
 
 read_launch_autoplay() {
   local config_root="${XDG_CONFIG_HOME:-$HOME/.config}" autoplay
-  [[ -z "${YTM_GLASS_DATA_DIR:-}" ]] || config_root="$YTM_GLASS_DATA_DIR/config"
+  [[ -z "${YTMCP_DATA_DIR:-}" ]] || config_root="$YTMCP_DATA_DIR/config"
   # The daemon defaults to paused restore when no persisted settings are available.
-  if autoplay="$(jq -sr 'length == 1 and .[0].autoplayOnLaunch == true' "$config_root/ytm-glass/settings.json" 2>/dev/null)"; then
+  if autoplay="$(jq -sr 'length == 1 and .[0].autoplayOnLaunch == true' "$config_root/ytmcp/settings.json" 2>/dev/null)"; then
     printf '%s\n' "$autoplay"
   else
     echo false
@@ -235,14 +235,14 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------- preconditions
-PKG="$(pacman -Q ytm-glass 2>/dev/null || echo MISSING)"
+PKG="$(pacman -Q ytmcp 2>/dev/null || echo MISSING)"
 if [[ "$PKG" == MISSING || ! -x "$BIN" || ! -f "$DESKTOP" ]]; then
-  check G6.installed BLOCKED "ytm-glass package installed (pacman -Q), $BIN and $DESKTOP present" "$(jq -nc --arg p "$PKG" '{package:$p}')"
+  check G6.installed BLOCKED "ytmcp package installed (pacman -Q), $BIN and $DESKTOP present" "$(jq -nc --arg p "$PKG" '{package:$p}')"
   jq -n --arg run "$RUN" --argjson checks "[$(IFS=,; echo "${CHECKS[*]}")]" '{gate:"G6",run:($run|ascii_upcase),result:"BLOCKED",checks:$checks}' >"$OUT_DIR/g6.json"
   echo "BLOCKED: package not installed"; exit 2
 fi
 if [[ -n "$(app_pids)" ]]; then echo "an installed instance is already running; quit it first" >&2; exit 3; fi
-check G6.installed PASS_TARGET "ytm-glass package installed" "$(jq -nc --arg p "$PKG" --arg sha "$(sha256sum "$BIN" | cut -c1-16)" '{package:$p,binSha256Prefix:$sha}')"
+check G6.installed PASS_TARGET "ytmcp package installed" "$(jq -nc --arg p "$PKG" --arg sha "$(sha256sum "$BIN" | cut -c1-16)" '{package:$p,binSha256Prefix:$sha}')"
 if ! pactl list short sinks | awk '{print $2}' | grep -qx "$SINK"; then
   if ! SINK_MOD="$(pactl load-module module-null-sink sink_name=$SINK sink_properties=device.description=YTMGlassNull)"; then
     echo "BLOCKED: temporary null sink unavailable" >&2
@@ -261,8 +261,8 @@ UNIT="$(cut -d: -f3 "/proc/$MAIN/cgroup" 2>/dev/null | awk -F/ '{print $NF}')"
 REFS="$(dev_tree_refs)"
 WIN=""; for ((i = 0; i < 30; i++)); do WIN="$(kwin_app_window "$MAIN")"; [[ -n "$WIN" && "$WIN" != null ]] && break; sleep 0.5; done
 check G6.kdeLaunch "$(pass_if "$([[ -n "$MAIN" ]] && mpris_up && has_null_sink_target "$MAIN" && echo true)")" "KDE launcher starts the app with QA audio routing and its MPRIS service" "$(jq -nc --arg u "$UNIT" --argjson up "$(mpris_up && echo true || echo false)" --argjson routed "$(has_null_sink_target "$MAIN" && echo true || echo false)" '{scope:$u,mprisUp:$up,nullSinkTargetInherited:$routed}')"
-check G6.fromOpt "$(pass_if "$([[ "$EXE" == /opt/ytm-glass/* && "$DEXE" == "$DAEMON" && "$REFS" == 0 ]] && echo true)")" "runtime, sidecar and resources come from /opt; no dev-tree file is mapped or open" "$(jq -nc --arg e "$EXE" --arg d "$DEXE" --argjson r "$REFS" '{electronExe:$e,daemonExe:$d,devTreeRefs:$r}')"
-check G6.identity "$(pass_if "$(echo "$WIN" | jq -r '(.desktopFileName=="local.ytmglass.Desktop") and (.cls|startswith("KWin::XdgToplevelWindow"))' 2>/dev/null)")" "window is native Wayland with desktopFileName local.ytmglass.Desktop" "${WIN:-null}"
+check G6.fromOpt "$(pass_if "$([[ "$EXE" == /opt/ytmcp/* && "$DEXE" == "$DAEMON" && "$REFS" == 0 ]] && echo true)")" "runtime, sidecar and resources come from /opt; no dev-tree file is mapped or open" "$(jq -nc --arg e "$EXE" --arg d "$DEXE" --argjson r "$REFS" '{electronExe:$e,daemonExe:$d,devTreeRefs:$r}')"
+check G6.identity "$(pass_if "$(echo "$WIN" | jq -r '(.desktopFileName=="local.ytmcp.Desktop") and (.cls|startswith("KWin::XdgToplevelWindow"))' 2>/dev/null)")" "window is native Wayland with desktopFileName local.ytmcp.Desktop" "${WIN:-null}"
 play_check first "$MAIN" "$FIRST_SINCE"; check G6.play "$(pass_if "$(echo "$PLAY_JSON" | jq -r .ok)")" "installed app plays (MPRIS Play -> Playing, position advances, stream active)" "$PLAY_JSON"
 
 # ---------------------------------------------------------------- single instance

@@ -159,20 +159,60 @@ async fn xdg_paths_permissions_and_atomic_settings_roundtrip() {
     assert!(paths.covers_dir().starts_with(&paths.cache_dir));
     assert!(!paths.covers_dir().starts_with(&paths.data_dir));
 
-    // Verify from_xdg resolves `ytm-glass` app-identity directory names cleanly.
+    // Verify from_xdg resolves `ytmcp` app-identity directory names cleanly.
     let xdg = StoragePaths::from_xdg().unwrap();
     assert_eq!(
         xdg.config_dir.file_name().and_then(|s| s.to_str()),
-        Some("ytm-glass")
+        Some("ytmcp")
     );
     assert_eq!(
         xdg.data_dir.file_name().and_then(|s| s.to_str()),
-        Some("ytm-glass")
+        Some("ytmcp")
     );
     assert_eq!(
         xdg.cache_dir.file_name().and_then(|s| s.to_str()),
-        Some("ytm-glass")
+        Some("ytmcp")
     );
+}
+
+#[tokio::test]
+async fn a_database_from_before_the_rename_is_adopted_with_its_wal() {
+    // An install from before the rename (YTM Glass) left `ytm-glass.db` with its WAL and
+    // shared-memory files; opening the storage takes them over under the current name and keeps
+    // what was committed, including what still sits in the WAL.
+    let tmp = TempDir::new().unwrap();
+    let paths = StoragePaths::for_root(tmp.path());
+    fs::create_dir_all(&paths.data_dir).unwrap();
+    let legacy = paths.data_dir.join("ytm-glass.db");
+    {
+        let conn = Connection::open(&legacy).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE kept (v TEXT); INSERT INTO kept VALUES ('from the old name');",
+        )
+        .unwrap();
+        assert!(paths.data_dir.join("ytm-glass.db-wal").exists());
+        // Leave the WAL in place, as a crash before a checkpoint would.
+        std::mem::forget(conn);
+    }
+
+    let clock = Arc::new(MockClock::new(1_700_000_123_456));
+    let storage =
+        SqliteStorage::open(paths.clone(), clock, CoverCacheConfig::production()).unwrap();
+    drop(storage);
+
+    assert!(paths.database_file().exists());
+    assert!(!legacy.exists());
+    assert!(!paths.data_dir.join("ytm-glass.db-wal").exists());
+    let conn = Connection::open(paths.database_file()).unwrap();
+    let kept: String = conn
+        .query_row("SELECT v FROM kept", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, "from the old name");
+
+    // A second open, or a fresh install without a legacy file, changes nothing.
+    assert!(!paths.adopt_legacy_database().unwrap());
 }
 
 #[tokio::test]

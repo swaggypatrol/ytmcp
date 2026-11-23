@@ -3,7 +3,7 @@ import type { Messages } from "./en.js";
 /** Simplified Chinese translation of the English strings in en.ts. */
 export const zhCN: Messages = {
   app: {
-    name: "YTM Glass",
+    name: "YTMcp",
     collapseSidebar: "折叠侧边栏",
     expandSidebar: "展开侧边栏",
     sidebarLabel: "主导航",
@@ -113,7 +113,7 @@ export const zhCN: Messages = {
     unsupportedBanner: "播放页不支持部分基础控制，相关按钮已禁用。",
     bridgeDisconnectedBanner: "播放页已断开或未就绪，请检查官方播放页。",
     bridgeNotDetectedBanner:
-      "未检测到桌面主进程连接（window.ytmGlassUi）。如需预览界面，请显式启用模拟模式（?mock=1）。",
+      "未检测到桌面主进程连接（window.ytmcpUi）。如需预览界面，请显式启用模拟模式（?mock=1）。",
     connectionFailedBanner: "无法连接到播放器核心进程。",
     reconnect: "重新连接",
     errorTitle: "加载失败",

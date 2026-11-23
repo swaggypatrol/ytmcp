@@ -1,10 +1,10 @@
 # MCP server
 
-`ytm-glass-mcp` is a Model Context Protocol server over stdio. An AI agent such as Claude Code starts it as a local MCP server, and it controls the running YTM Glass through the daemon's private control socket. Audio still comes from the official web player; the agent uses the same command path and sees the same state as the interface and MPRIS.
+`ytmcp` is a Model Context Protocol server over stdio. An AI agent such as Claude Code starts it as a local MCP server, and it controls the running YTMcp through the daemon's private control socket. Audio still comes from the official web player; the agent uses the same command path and sees the same state as the interface and MPRIS.
 
 ```
-agent ── MCP stdio ──▶ ytm-glass-mcp ── one connection per call ──▶ $XDG_RUNTIME_DIR/ytm-glass/control.sock
-                                                                    (0600, current user only)
+agent ── MCP stdio ──▶ ytmcp ── one connection per call ──▶ $XDG_RUNTIME_DIR/ytmcp/control.sock
+                                                            (0600, current user only)
 ```
 
 ## Registration
@@ -12,21 +12,21 @@ agent ── MCP stdio ──▶ ytm-glass-mcp ── one connection per call �
 Each client is registered once from a terminal. Registration does not start the player.
 
 ```sh
-ytm-glass-mcp register --principal NAME [--grant TIER_OR_ACTION]... [--playlist PLAYLIST_ID]... \
+ytmcp register --principal NAME [--grant TIER_OR_ACTION]... [--playlist PLAYLIST_ID]... \
   [--account-scope SCOPE|signed-out] [--hours 1-168]
 ```
 
 - **Default account.** Without `--account-scope`, the client is bound to the account currently signed in to the player, read from the player's database without changing it. If no account is signed in, registration fails and asks you to sign in first, or to pass `--account-scope signed-out` for playback-only control.
-- **Stable credential path.** The command prints the path of the client's credential file, `$XDG_CONFIG_HOME/ytm-glass/control-credentials/NAME.json` (0600). Registering the same name again replaces the token but keeps the path, so the MCP client configuration does not change. The registration list stores only a SHA-256 of each token.
+- **Stable credential path.** The command prints the path of the client's credential file, `$XDG_CONFIG_HOME/ytmcp/control-credentials/NAME.json` (0600). Registering the same name again replaces the token but keeps the path, so the MCP client configuration does not change. The registration list stores only a SHA-256 of each token.
 - **Lifetime.** Without `--hours`, a registration without edit-tier grants does not expire, and one with any edit-tier grant expires after 24 hours. `--hours` (1 to 168) sets the lifetime explicitly.
 - **Limits.** At most 16 registrations are active at once.
-- **First start.** The daemon opens the control socket at startup only if the registration list exists, so restart YTM Glass once after the first registration. Later registrations and removals take effect immediately: every handshake and request rereads the list. Removing a client's entry from `control-clients.json` revokes it.
+- **First start.** The daemon opens the control socket at startup only if the registration list exists, so restart YTMcp once after the first registration. Later registrations and removals take effect immediately: every handshake and request rereads the list. Removing a client's entry from `control-clients.json` revokes it.
 
 Then add the server to your MCP client:
 
 ```sh
-claude mcp add ytm -s user -- /usr/bin/ytm-glass-mcp \
-  --credential-file ~/.config/ytm-glass/control-credentials/NAME.json --allow-background-start
+claude mcp add ytmcp -s user -- /usr/bin/ytmcp \
+  --credential-file ~/.config/ytmcp/control-credentials/NAME.json --allow-background-start
 ```
 
 For clients configured by JSON, use the same command and arguments:
@@ -34,15 +34,15 @@ For clients configured by JSON, use the same command and arguments:
 ```json
 {
   "mcpServers": {
-    "ytm": {
-      "command": "/usr/bin/ytm-glass-mcp",
-      "args": ["--credential-file", "/home/USER/.config/ytm-glass/control-credentials/NAME.json", "--allow-background-start"]
+    "ytmcp": {
+      "command": "/usr/bin/ytmcp",
+      "args": ["--credential-file", "/home/USER/.config/ytmcp/control-credentials/NAME.json", "--allow-background-start"]
     }
   }
 }
 ```
 
-With `--allow-background-start`, a call made while the player is closed starts it with `--background --no-activate`: no window opens and nothing takes focus. The agent exiting never closes the player. In Claude Code you can allow every tool of this server at once by adding `mcp__ytm__*` to `permissions.allow` in your settings; the gates that matter are in the player.
+With `--allow-background-start`, a call made while the player is closed starts it with `--background --no-activate`: no window opens and nothing takes focus. The agent exiting never closes the player. In Claude Code you can allow every tool of this server at once by adding `mcp__ytmcp__*` to `permissions.allow` in your settings; the gates that matter are in the player.
 
 ## Grants and tiers
 

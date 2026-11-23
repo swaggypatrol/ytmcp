@@ -8,7 +8,7 @@ it("finds a bundled sidecar without a wrapper and honors explicit overrides", ()
   const resourcesPath = mkdtempSync(join(tmpdir(), "ytm-daemon-resources-"));
   const descriptor = Object.getOwnPropertyDescriptor(process, "resourcesPath");
   Object.defineProperty(process, "resourcesPath", { configurable: true, value: resourcesPath });
-  vi.stubEnv("YTM_GLASS_DAEMON_BIN", undefined);
+  vi.stubEnv("YTMCP_DAEMON_BIN", undefined);
   try {
     const bundled = join(resourcesPath, "bin", "ytm-daemon");
     const override = join(resourcesPath, "custom-daemon");
@@ -17,7 +17,7 @@ it("finds a bundled sidecar without a wrapper and honors explicit overrides", ()
     writeFileSync(override, "", { mode: 0o755 });
     expect(resolveDaemonBinaryPath()).toBe(bundled);
 
-    vi.stubEnv("YTM_GLASS_DAEMON_BIN", override);
+    vi.stubEnv("YTMCP_DAEMON_BIN", override);
     expect(resolveDaemonBinaryPath()).toBe(override);
     expect(resolveDaemonBinaryPath(bundled)).toBe(bundled);
   } finally {

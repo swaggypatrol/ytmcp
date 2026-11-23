@@ -1,4 +1,4 @@
-import type { UiLanguage } from "@ytm-glass/protocol";
+import type { UiLanguage } from "@ytmcp/protocol";
 import { en, type Messages } from "./en.js";
 import { zhCN } from "./zh-CN.js";
 import { setActiveMessages } from "./active.js";

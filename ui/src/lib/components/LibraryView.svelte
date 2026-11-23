@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { PlaylistSummary, QueryError } from "@ytm-glass/protocol";
+  import type { PlaylistSummary, QueryError } from "@ytmcp/protocol";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";
   import Icon from "./Icon.svelte";

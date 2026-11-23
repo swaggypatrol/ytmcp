@@ -24,7 +24,7 @@ export const DAEMON = resolve(TARGET_DIR, "release/ytm-daemon");
 export const QA_ENTRY = resolve(REPO, "tools/qa/qa-entry.mjs");
 export const PROD_MAIN = resolve(REPO, "apps/desktop/dist/main.mjs");
 
-/** Processes on this machine that belong to any YTM Glass instance (dev or installed). */
+/** Processes on this machine that belong to any YTMcp instance (dev or installed). */
 export function findAppProcesses() {
   const out = [];
   for (const pid of allPids()) {
@@ -33,10 +33,10 @@ export function findAppProcesses() {
     const joined = argv.join(" ");
     if (
       argv[0]?.endsWith("/ytm-daemon") ||
-      argv[0] === "/opt/ytm-glass/ytm-glass" ||
-      (argv[0]?.includes("electron") && /ytm-glass|qa-entry\.mjs|apps\/desktop\/dist\/main\.mjs/.test(joined)) ||
-      /--user-data-dir=[^ ]*ytm-glass/.test(joined) ||
-      /ytm-glass\/electron-profile/.test(joined)
+      argv[0] === "/opt/ytmcp/ytmcp-player" ||
+      (argv[0]?.includes("electron") && /ytmcp|qa-entry\.mjs|apps\/desktop\/dist\/main\.mjs/.test(joined)) ||
+      /--user-data-dir=[^ ]*ytmcp/.test(joined) ||
+      /ytmcp\/electron-profile/.test(joined)
     ) {
       out.push({ pid, exe: (argv[0] ?? "").split("/").pop(), cgroup: cgroupOf(pid), realProfile: usesRealProfile(pid) });
     }
@@ -44,7 +44,7 @@ export function findAppProcesses() {
   return out;
 }
 
-const REAL_PROFILE_DIR = join(process.env.HOME ?? "", ".local/share/ytm-glass");
+const REAL_PROFILE_DIR = join(process.env.HOME ?? "", ".local/share/ytmcp");
 
 function userDataDirArg(pid) {
   return procCmdline(pid).find((a) => a.startsWith("--user-data-dir="))?.slice(16) ?? null;
@@ -77,12 +77,12 @@ export function usesRealProfile(pid) {
   }
   const vars = Object.fromEntries(env.split("\0").filter((kv) => kv.includes("=")).map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]));
   if (!Object.keys(vars).length) return true; // unknown: treat as real to stay safe
-  if (vars.YTM_GLASS_MODE === "mock") return false;
+  if (vars.YTMCP_MODE === "mock") return false;
   const data = vars.XDG_DATA_HOME;
   return !data || data === join(process.env.HOME ?? "", ".local/share");
 }
 
-/** Waits until no other YTM Glass process exists; refuses at once if one uses the real profile. */
+/** Waits until no other YTMcp process exists; refuses at once if one uses the real profile. */
 export async function waitNoOtherInstances({ timeoutMs = 180_000 } = {}) {
   const t0 = Date.now();
   // Mock Electron-only probes of other lanes do not conflict; a mock ytm-daemon would (MPRIS name).
@@ -90,10 +90,10 @@ export async function waitNoOtherInstances({ timeoutMs = 180_000 } = {}) {
   let others = conflicting();
   while (others.length) {
     if (others.some((p) => p.realProfile)) {
-      throw new Error(`refusing to launch: a real-profile YTM Glass instance is running: ${JSON.stringify(others.filter((p) => p.realProfile))}`);
+      throw new Error(`refusing to launch: a real-profile YTMcp instance is running: ${JSON.stringify(others.filter((p) => p.realProfile))}`);
     }
     if (Date.now() - t0 > timeoutMs) {
-      throw new Error(`other (mock) YTM Glass instances kept running for ${timeoutMs} ms: ${JSON.stringify(others)}`);
+      throw new Error(`other (mock) YTMcp instances kept running for ${timeoutMs} ms: ${JSON.stringify(others)}`);
     }
     await sleep(2000);
     others = conflicting();
@@ -153,7 +153,7 @@ class Control {
 }
 
 /**
- * A running app instance. `launch()` refuses to start while any other YTM Glass
+ * A running app instance. `launch()` refuses to start while any other YTMcp
  * process exists (one real-profile instance at a time).
  */
 export class AppInstance {
@@ -178,29 +178,29 @@ export class AppInstance {
   }) {
     // One instance at a time: other lanes' mock instances would also claim the MPRIS name.
     await waitNoOtherInstances();
-    if (live && process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-      throw new Error("refusing live launch without YTM_GLASS_ALLOW_LIVE=1");
+    if (live && process.env.YTMCP_ALLOW_LIVE !== "1") {
+      throw new Error("refusing live launch without YTMCP_ALLOW_LIVE=1");
     }
     mkdirSync(workDir, { recursive: true, mode: 0o700 });
     // AF_UNIX paths are limited to 108 bytes; the runtime dir is short and private (0700).
     const socket = join(process.env.XDG_RUNTIME_DIR || "/tmp", `ytmqa-${label}-${process.pid}.sock`);
     const logPath = join(workDir, `app-${label}.log`);
-    const unit = `ytm-glass-qa-${label}-${Date.now()}`;
+    const unit = `ytmcp-qa-${label}-${Date.now()}`;
     const env = {
       ...process.env,
-      PULSE_SINK: "ytmglass_null",
-      YTM_GLASS_QA_SOCKET: socket,
-      YTM_GLASS_QA_MAIN: PROD_MAIN,
-      YTM_GLASS_DAEMON_BIN: daemonBin,
+      PULSE_SINK: "ytmcp_null",
+      YTMCP_QA_SOCKET: socket,
+      YTMCP_QA_MAIN: PROD_MAIN,
+      YTMCP_DAEMON_BIN: daemonBin,
       ...extraEnv,
     };
-    delete env.YTM_GLASS_SHOW_PLAYER;
+    delete env.YTMCP_SHOW_PLAYER;
     delete env.ELECTRON_RUN_AS_NODE;
     if (xdg) Object.assign(env, xdg);
     const argv = [...extraArgs, entry];
     const cmd = scope ? "systemd-run" : ELECTRON;
     const args = scope
-      ? ["--user", "--scope", "--quiet", `--unit=${unit}`, "--description=YTM Glass QA run", ELECTRON, ...argv]
+      ? ["--user", "--scope", "--quiet", `--unit=${unit}`, "--description=YTMcp QA run", ELECTRON, ...argv]
       : argv;
     const child = spawn(cmd, args, { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
     const inst = new AppInstance({ label, workDir, socket, logPath, unit, live, scope });
@@ -294,7 +294,7 @@ export class AppInstance {
   /** systemd units holding app processes: the QA scope plus the scope Chromium moves itself into. */
   units() {
     const out = [`${this.opts.unit}.scope`];
-    if (this.mainPid) out.push(`app-local.ytmglass.Desktop-${this.mainPid}.scope`);
+    if (this.mainPid) out.push(`app-local.ytmcp.Desktop-${this.mainPid}.scope`);
     return out;
   }
 

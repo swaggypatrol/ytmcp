@@ -1,8 +1,8 @@
-import type { BridgeEpoch, BridgeHealthPayload, BridgePlaybackObservedPayload, CapabilitySet, Envelope, QueueSnapshot, RepeatMode } from "@ytm-glass/protocol";
+import type { BridgeEpoch, BridgeHealthPayload, BridgePlaybackObservedPayload, CapabilitySet, Envelope, QueueSnapshot, RepeatMode } from "@ytmcp/protocol";
 
 export const MUSIC_ORIGIN = "https://music.youtube.com";
 export const BRIDGE_VERSION = "0.2.0";
-export const PAGE_SHIM_CHANNEL = "ytm-glass:page-shim:v2";
+export const PAGE_SHIM_CHANNEL = "ytmcp:page-shim:v2";
 
 export function isPlaylistEntryId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 256
@@ -95,6 +95,8 @@ export interface PageSnapshot {
   readonly track: PageTrack | null;
   readonly positionMs: number | null;
   readonly durationMs: number | null;
+  /** How much of the current track has loaded, 0…1, from the player API. */
+  readonly loadedFraction: number | null;
   readonly playerState: number | null;
   readonly volume0To100: number | null;
   readonly muted: boolean | null;

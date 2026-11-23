@@ -1,4 +1,4 @@
-import type { Envelope, PROTOCOL_VERSION } from "@ytm-glass/protocol";
+import type { Envelope, PROTOCOL_VERSION } from "@ytmcp/protocol";
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import {
   IPC_CHANNELS,
@@ -7,7 +7,7 @@ import {
   type IpcAckResult,
 } from "./channels.js";
 
-export interface YtmGlassUiBridge {
+export interface YtmcpUiBridge {
   sendEnvelope(envelope: Envelope): Promise<IpcAckResult>;
   onEnvelope(listener: (envelope: Envelope) => void): () => void;
   getHostInfo(): Promise<HostRuntimeInfo>;
@@ -19,7 +19,7 @@ function isTopLevelUiFrame(): boolean {
 }
 
 if (isTopLevelUiFrame()) {
-  const api: YtmGlassUiBridge = {
+  const api: YtmcpUiBridge = {
     sendEnvelope(envelope: Envelope): Promise<IpcAckResult> {
       if (!isTopLevelUiFrame()) {
         return Promise.resolve({
@@ -57,7 +57,7 @@ if (isTopLevelUiFrame()) {
     },
   };
 
-  contextBridge.exposeInMainWorld("ytmGlassUi", Object.freeze(api));
+  contextBridge.exposeInMainWorld("ytmcpUi", Object.freeze(api));
 
   // Tray playback actions enter the core through the same ui.playerCommand path (and the
   // same host IPC guard) as the UI's own buttons; the host never issues UI commands itself.

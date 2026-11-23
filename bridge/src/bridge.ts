@@ -14,7 +14,7 @@ import type {
   QueryErrorCode,
   QueueSnapshot,
   TrackInstanceId,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import { DomObserver } from "./dom-observer.js";
 import {
   PROTOCOL_VERSION,
@@ -423,6 +423,13 @@ class BridgeController {
         ? toUint64Ms(media.duration * 1000)
         : null;
 
+    // How far the track has loaded, per track from the player API, in whole seconds so that a
+    // loading track does not send an observation for every chunk.
+    const loaded = api?.loadedFraction ?? null;
+    const bufferedMs = durationMs !== null && loaded !== null && loaded >= 0
+      ? Math.floor((Math.min(1, loaded) * durationMs) / 1000) * 1000
+      : null;
+
     const currentEntryId = this.queueSnapshot?.currentEntryId ?? null;
     const videoId = api?.videoId ?? null;
     const trackInstanceId = this.resolveInstance(videoId, api?.instanceKey ?? currentEntryId, status);
@@ -436,6 +443,7 @@ class BridgeController {
       playback: status,
       positionMs: durationMs !== null ? Math.min(positionMs, durationMs) : positionMs,
       durationMs,
+      bufferedMs,
       playbackRate: normalizePlaybackRate(api?.playbackRate ?? media?.playbackRate),
       sampleAgeMs: 0,
       volume:
@@ -692,7 +700,7 @@ class BridgeController {
   }
 }
 
-const ACTIVE_BRIDGE_SYMBOL = Symbol.for("ytmGlassActiveBridge");
+const ACTIVE_BRIDGE_SYMBOL = Symbol.for("ytmcpActiveBridge");
 
 /** Tears down the bridge installed on `win`, including one installed by an earlier injection. */
 export function uninstallBridge(win: Window | undefined = typeof window !== "undefined" ? window : undefined): void {

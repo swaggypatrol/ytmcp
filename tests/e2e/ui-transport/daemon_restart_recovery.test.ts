@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Envelope } from "@ytm-glass/protocol";
+import type { Envelope } from "@ytmcp/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesktopHostController } from "../../../apps/desktop/src/bootstrap/main.js";
 import {

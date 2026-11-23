@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { HomeFeed, Track } from "@ytm-glass/protocol";
+  import type { HomeFeed, Track } from "@ytmcp/protocol";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";
   import CoverShelf from "./CoverShelf.svelte";

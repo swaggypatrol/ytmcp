@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Focused rerun against the same release build as the formal M0 evidence.
-// YTM_GLASS_ALLOW_LIVE=1 CARGO_TARGET_DIR=<formal M0 target dir> node tools/qa/recheck-g1-origin.mjs
+// YTMCP_ALLOW_LIVE=1 CARGO_TARGET_DIR=<formal M0 target dir> node tools/qa/recheck-g1-origin.mjs
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AppInstance, DAEMON, ELECTRON, PROD_MAIN, REPO, waitAppReady } from "./lib/app.mjs";
@@ -10,8 +10,8 @@ import { collectEnvironment } from "./gates/g0.mjs";
 import { nonMusicOriginCheck } from "./gates/g1.mjs";
 import { quitViaMpris } from "./gates/g2.mjs";
 
-if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-  console.error("Refusing live G1 origin recheck without YTM_GLASS_ALLOW_LIVE=1");
+if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+  console.error("Refusing live G1 origin recheck without YTMCP_ALLOW_LIVE=1");
   process.exit(2);
 }
 
@@ -79,7 +79,7 @@ try {
   if (originalsMatch && compatible) {
     step = "authenticated launch";
     sink = await ensureNullSink();
-    const scratch = process.env.YTM_GLASS_QA_WORKDIR ?? join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytm-glass-qa");
+    const scratch = process.env.YTMCP_QA_WORKDIR ?? join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytmcp-qa");
     app = await AppInstance.launch({ label: "g1-origin", workDir: join(scratch, `g1-origin-${stamp}`) });
     const ready = await waitAppReady(app, { timeoutMs: 90_000 });
     checks.push(check("G1.recheck.ready", "player starts authenticated with the app-owned session and its bridge ready", {

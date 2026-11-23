@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { app } from "electron";
 
-// Disable Chromium's built-in MPRIS/MediaSession before app.ready() so only ytm_glass registers on D-Bus.
+// Disable Chromium's built-in MPRIS/MediaSession before app.ready() so only ytmcp registers on D-Bus.
 if (!app.isReady() && app.commandLine && typeof app.commandLine.appendSwitch === "function") {
   const existing =
     typeof app.commandLine.getSwitchValue === "function"
@@ -72,13 +72,13 @@ async function captureMprisBusCheck() {
   const externalChromiumInstances = chromiumInstances.filter(
     (name) => !appChromiumInstances.includes(name)
   );
-  const ytmInstances = mprisNames.filter((name) => name.includes("ytm_glass"));
+  const ytmInstances = mprisNames.filter((name) => name.includes("ytmcp"));
 
   const playerctlList = await execText("playerctl", ["-l"]);
-  const playerctlStatus = await execText("playerctl", ["-p", "ytm_glass", "status"]);
+  const playerctlStatus = await execText("playerctl", ["-p", "ytmcp", "status"]);
   const playerctlMeta = await execText("playerctl", [
     "-p",
-    "ytm_glass",
+    "ytmcp",
     "metadata",
     "--format",
     "{{status}}|{{mpris:trackid}}|{{xesam:title}}|{{xesam:artist}}|{{mpris:length}}",
@@ -88,7 +88,7 @@ async function captureMprisBusCheck() {
     timestamp: new Date().toISOString(),
     appPid: process.pid,
     mprisBusNames: mprisNames,
-    ytmGlassBusCount: ytmInstances.length,
+    ytmcpBusCount: ytmInstances.length,
     chromiumMprisCount: chromiumInstances.length,
     appChromiumMprisCount: appChromiumInstances.length,
     appChromiumMprisNames: appChromiumInstances,
@@ -129,14 +129,14 @@ async function captureAudioSinkInputs() {
 }
 
 async function run() {
-  if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-    throw new Error("Refusing to run live M0 probe without YTM_GLASS_ALLOW_LIVE=1");
+  if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+    throw new Error("Refusing to run live M0 probe without YTMCP_ALLOW_LIVE=1");
   }
 
-  const bootstrapModuleUrl = pathToFileURL(resolve(process.env.YTM_GLASS_M0_MAIN_MODULE)).href;
-  const entryModuleUrl = pathToFileURL(resolve(process.env.YTM_GLASS_M0_ENTRY_MODULE)).href;
-  const reportPath = resolve(process.env.YTM_GLASS_LIVE_REPORT_PATH);
-  const mprisReportPath = resolve(process.env.YTM_GLASS_LIVE_MPRIS_PATH);
+  const bootstrapModuleUrl = pathToFileURL(resolve(process.env.YTMCP_M0_MAIN_MODULE)).href;
+  const entryModuleUrl = pathToFileURL(resolve(process.env.YTMCP_M0_ENTRY_MODULE)).href;
+  const reportPath = resolve(process.env.YTMCP_LIVE_REPORT_PATH);
+  const mprisReportPath = resolve(process.env.YTMCP_LIVE_MPRIS_PATH);
 
   const { startDesktopShell } = await import(bootstrapModuleUrl);
   const { createIntegratedDesktopHooks } = await import(entryModuleUrl);
@@ -196,7 +196,7 @@ async function run() {
 
   let controller = null;
   const integrated = createIntegratedDesktopHooks({
-    daemonBin: process.env.YTM_GLASS_DAEMON_BIN,
+    daemonBin: process.env.YTMCP_DAEMON_BIN,
     clientOptions: {
       // Errors for host.sessionMaterial (e.g. a failed identity read) never reach onUiEnvelope.
       onSessionMaterialError: (err) => {
@@ -705,7 +705,7 @@ async function run() {
 
     // G5 Action 1: playerctl PlayPause (Playing -> Paused)
     const beforeMprisPause = (await fetchSnapshot()).player.playback;
-    const mprisPauseCmd = await execText("playerctl", ["-p", "ytm_glass", "play-pause"]);
+    const mprisPauseCmd = await execText("playerctl", ["-p", "ytmcp", "play-pause"]);
     await waitUntil(
       "MPRIS PlayPause -> paused",
       () => latestPlayer?.playback === "paused",
@@ -714,7 +714,7 @@ async function run() {
     const afterMprisPause = (await fetchSnapshot()).player.playback;
 
     // G5 Action 2: playerctl PlayPause (Paused -> Playing)
-    const mprisResumeCmd = await execText("playerctl", ["-p", "ytm_glass", "play-pause"]);
+    const mprisResumeCmd = await execText("playerctl", ["-p", "ytmcp", "play-pause"]);
     await waitUntil(
       "MPRIS PlayPause -> playing",
       () => latestPlayer?.playback === "playing",

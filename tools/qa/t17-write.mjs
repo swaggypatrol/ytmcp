@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// T17 account-write acceptance on an existing private test playlist named "YTM Glass Test".
-// YTM_GLASS_ALLOW_LIVE=1 YTM_GLASS_ALLOW_WRITES=1 node tools/qa/t17-write.mjs
-// YTM_GLASS_ALLOW_LIVE=1 node tools/qa/t17-write.mjs --probe  # locate the playlist, read-only
+// T17 account-write acceptance on an existing private test playlist named "YTM Glass Test"
+// (created on the reference account before the project was renamed; the name is account data).
+// YTMCP_ALLOW_LIVE=1 YTMCP_ALLOW_WRITES=1 node tools/qa/t17-write.mjs
+// YTMCP_ALLOW_LIVE=1 node tools/qa/t17-write.mjs --probe  # locate the playlist, read-only
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { AppInstance, REPO, waitAppReady } from "./lib/app.mjs";
@@ -12,12 +13,12 @@ import { quitViaMpris } from "./gates/g2.mjs";
 
 const TEST_TITLE = "YTM Glass Test";
 const { values: opt } = parseArgs({ options: { query: { type: "string", default: "Satie Gymnopedie No.1" }, probe: { type: "boolean", default: false } } });
-if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-  console.error("Refusing without YTM_GLASS_ALLOW_LIVE=1");
+if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+  console.error("Refusing without YTMCP_ALLOW_LIVE=1");
   process.exit(2);
 }
-if (!opt.probe && process.env.YTM_GLASS_ALLOW_WRITES !== "1") {
-  console.error("Refusing account writes without YTM_GLASS_ALLOW_WRITES=1 (final run only)");
+if (!opt.probe && process.env.YTMCP_ALLOW_WRITES !== "1") {
+  console.error("Refusing account writes without YTMCP_ALLOW_WRITES=1 (final run only)");
   process.exit(2);
 }
 
@@ -300,7 +301,7 @@ async function main() {
   const checks = [];
   const ev = {};
   try {
-    app = await AppInstance.launch({ label: "t17", workDir: join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytm-glass-qa", `t17-${Date.now()}`) });
+    app = await AppInstance.launch({ label: "t17", workDir: join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytmcp-qa", `t17-${Date.now()}`) });
     const ready = await waitAppReady(app, { timeoutMs: 90_000 });
     await app.waitFor((s) => s?.authState?.playerCatalogMatched === true, { timeoutMs: 20_000 });
     const snap = await app.snapshot();

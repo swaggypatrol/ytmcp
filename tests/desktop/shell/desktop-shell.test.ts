@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import { PROTOCOL_VERSION, type AppSettings, type Envelope } from "@ytm-glass/protocol";
+import { PROTOCOL_VERSION, type AppSettings, type Envelope } from "@ytmcp/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const trayHost = vi.hoisted(() => ({ registered: false, owner: ":1.42", delayMs: 0, failing: false }));
@@ -102,9 +102,14 @@ beforeEach(() => {
   trayHost.delayMs = 0;
   trayHost.failing = false;
   tempRoot = mkdtempSync(join(tmpdir(), "ytm-desktop-shell-"));
+  // Every XDG home and HOME point into the temp root: startup moves pre-rename directories, and a
+  // test must never reach the user's own.
+  vi.stubEnv("HOME", tempRoot);
+  vi.stubEnv("XDG_CONFIG_HOME", join(tempRoot, "config"));
   vi.stubEnv("XDG_DATA_HOME", join(tempRoot, "data"));
-  vi.stubEnv("YTM_GLASS_MODE", "");
-  vi.stubEnv("YTM_GLASS_UI_DIST_DIR", join(tempRoot, "no-ui"));
+  vi.stubEnv("XDG_CACHE_HOME", join(tempRoot, "cache"));
+  vi.stubEnv("YTMCP_MODE", "");
+  vi.stubEnv("YTMCP_UI_DIST_DIR", join(tempRoot, "no-ui"));
 });
 
 afterEach(() => {
@@ -115,6 +120,20 @@ afterEach(() => {
 });
 
 describe("main window close policy", () => {
+  it("takes over directories from before the rename, but not in mock mode", async () => {
+    mkdirSync(join(tempRoot, "config", "ytm-glass"), { recursive: true });
+    writeFileSync(join(tempRoot, "config", "ytm-glass", "settings.json"), "{}");
+    vi.stubEnv("YTMCP_MODE", "mock");
+    await startDesktopShell();
+    expect(existsSync(join(tempRoot, "config", "ytm-glass", "settings.json"))).toBe(true);
+    expect(existsSync(join(tempRoot, "config", "ytmcp"))).toBe(false);
+
+    vi.stubEnv("YTMCP_MODE", "");
+    await startDesktopShell();
+    expect(existsSync(join(tempRoot, "config", "ytmcp", "settings.json"))).toBe(true);
+    expect(existsSync(join(tempRoot, "config", "ytm-glass"))).toBe(false);
+  });
+
   it("quits the whole app on close when no tray host is registered, even with closeToTray on", async () => {
     const controller = (await startDesktopShell())!;
     expect(controller.trayAvailable).toBe(false);
@@ -206,7 +225,7 @@ describe("startup ordering", () => {
 describe("single instance", () => {
   it("starts both windows hidden without a tray and ignores background relaunches", async () => {
     process.argv = [process.execPath, "--background", "--no-activate"];
-    vi.stubEnv("YTM_GLASS_SHOW_PLAYER", "1");
+    vi.stubEnv("YTMCP_SHOW_PLAYER", "1");
     const log = vi.fn();
     const controller = (await startDesktopShell({ log }))!;
     const main = mainWindow();
@@ -386,7 +405,7 @@ describe("logout", () => {
 
 describe("startup failure", () => {
   it("logs the missing sidecar, stops the player and exits without waiting for a dialog", async () => {
-    vi.stubEnv("YTM_GLASS_DAEMON_BIN", join(tempRoot, "missing-daemon"));
+    vi.stubEnv("YTMCP_DAEMON_BIN", join(tempRoot, "missing-daemon"));
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     try {
       await expect(startApp()).resolves.toBeNull();
@@ -498,7 +517,7 @@ describe("tray", () => {
 describe("app://covers", () => {
   it("returns HTTP 400 for malformed percent encoding on UI and cover routes", async () => {
     writeFileSync(join(tempRoot, "index.html"), "<title>fixture</title>");
-    vi.stubEnv("YTM_GLASS_UI_DIST_DIR", tempRoot);
+    vi.stubEnv("YTMCP_UI_DIST_DIR", tempRoot);
     const resolveCoverAsset = vi.fn();
     const controller = (await startDesktopShell({ resolveCoverAsset }))!;
     const handler = fake.sessions.get(controller.identity.uiSessionPartition)!

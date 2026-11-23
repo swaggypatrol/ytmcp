@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createVirtualizer } from "@tanstack/svelte-virtual";
-  import type { Track } from "@ytm-glass/protocol";
+  import type { Track } from "@ytmcp/protocol";
   import type { Snippet } from "svelte";
   import { get } from "svelte/store";
   import { t } from "../i18n/index.svelte.js";

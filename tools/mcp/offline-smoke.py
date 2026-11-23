@@ -118,7 +118,7 @@ class LossyRelay:
     "drop" loses its reply, "swallow" never delivers it, "stale" refuses it as stale."""
 
     def __init__(self, runtime, upstream):
-        directory = runtime / "ytm-glass"
+        directory = runtime / "ytmcp"
         directory.mkdir(mode=0o700)
         path = directory / "control.sock"
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -192,7 +192,7 @@ def init_mcp(binary, config, env, profile="development"):
     }, 1))
     init_result = mcp.receive(lambda frame: frame.get("id") == 1)["result"]
     assert init_result["capabilities"]["tools"] is not None
-    assert init_result["serverInfo"]["name"] == "ytm-glass-mcp", init_result["serverInfo"]
+    assert init_result["serverInfo"]["name"] == "ytmcp", init_result["serverInfo"]
     assert init_result["serverInfo"]["version"] == "1.0.0", init_result["serverInfo"]
     mcp.send(rpc("notifications/initialized"))
     return mcp
@@ -201,7 +201,7 @@ def init_mcp(binary, config, env, profile="development"):
 def run(daemon_bin, mcp_bin, root):
     runtime = root / "runtime"
     runtime.mkdir(mode=0o700)
-    config_dir = root / "config" / "ytm-glass"
+    config_dir = root / "config" / "ytmcp"
     config_dir.mkdir(mode=0o700, parents=True)
     registrations = config_dir / "control-clients.json"
     credential = root / "credential.json"
@@ -217,9 +217,9 @@ def run(daemon_bin, mcp_bin, root):
         "tokenSha256": hashlib.sha256(observer_token.encode()).hexdigest(),
     }])
     write_json(credential, {"principal": "offline-fixture", "token": token})
-    env = {**os.environ, "YTM_GLASS_NO_MPRIS": "1", "XDG_RUNTIME_DIR": str(runtime),
-           "YTM_GLASS_DATA_DIR": str(root)}
-    path = runtime / "ytm-glass" / "control.sock"
+    env = {**os.environ, "YTMCP_NO_MPRIS": "1", "XDG_RUNTIME_DIR": str(runtime),
+           "YTMCP_DATA_DIR": str(root)}
+    path = runtime / "ytmcp" / "control.sock"
 
     daemon = Process([daemon_bin], env)
     try:

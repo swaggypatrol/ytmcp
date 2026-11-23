@@ -3054,15 +3054,15 @@ async fn same_epoch_credential_rotation_preserves_inflight_catalog_queries() {
 }
 
 #[tokio::test]
-#[ignore = "requires YTM_GLASS_ALLOW_LIVE=1 and real YouTube Music session cookie"]
+#[ignore = "requires YTMCP_ALLOW_LIVE=1 and real YouTube Music session cookie"]
 async fn live_catalog_probe() {
-    if std::env::var("YTM_GLASS_ALLOW_LIVE").as_deref() != Ok("1") {
-        println!("NOT_RUN: YTM_GLASS_ALLOW_LIVE != 1");
+    if std::env::var("YTMCP_ALLOW_LIVE").as_deref() != Ok("1") {
+        println!("NOT_RUN: YTMCP_ALLOW_LIVE != 1");
         return;
     }
 
-    let cookie_raw = if let Ok(path) = std::env::var("YTM_GLASS_LIVE_COOKIE_FILE") {
-        std::fs::read_to_string(path).expect("read YTM_GLASS_LIVE_COOKIE_FILE")
+    let cookie_raw = if let Ok(path) = std::env::var("YTMCP_LIVE_COOKIE_FILE") {
+        std::fs::read_to_string(path).expect("read YTMCP_LIVE_COOKIE_FILE")
     } else {
         use std::io::Read;
         let mut buf = String::new();

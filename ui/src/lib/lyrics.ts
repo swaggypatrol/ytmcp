@@ -1,4 +1,4 @@
-import type { LyricsLine, LyricsResult } from "@ytm-glass/protocol";
+import type { LyricsLine, LyricsResult } from "@ytmcp/protocol";
 
 export const USER_OFFSET_LIMIT_MS = 10_000;
 

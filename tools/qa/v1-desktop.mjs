@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Optional R10 evidence through the real MPRIS and StatusNotifierItem session-bus APIs.
-// YTM_GLASS_ALLOW_LIVE=1 node tools/qa/v1-desktop.mjs
+// YTMCP_ALLOW_LIVE=1 node tools/qa/v1-desktop.mjs
 import { spawn } from "node:child_process";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -12,16 +12,16 @@ import { ensureNullSink, fileSha256, mprisProps, NULL_SINK, run, sinkInputsFor, 
 import { quitViaMpris } from "./gates/g2.mjs";
 import { pageMedia, uiSearch } from "./gates/common.mjs";
 
-if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-  console.error("Refusing live desktop acceptance without YTM_GLASS_ALLOW_LIVE=1");
+if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+  console.error("Refusing live desktop acceptance without YTMCP_ALLOW_LIVE=1");
   process.exit(2);
 }
 
 const ROOT = "org.mpris.MediaPlayer2";
 const PLAYER = `${ROOT}.Player`;
-const SERVICE = `${ROOT}.ytm_glass`;
+const SERVICE = `${ROOT}.ytmcp`;
 const MPRIS_PATH = "/org/mpris/MediaPlayer2";
-const RESOURCES = "/opt/ytm-glass/resources";
+const RESOURCES = "/opt/ytmcp/resources";
 const MAIN = `${RESOURCES}/app/dist/main.mjs`;
 const DAEMON = `${RESOURCES}/bin/ytm-daemon`;
 const SEEK_TOLERANCE_US = 2_000_000;
@@ -48,7 +48,7 @@ function coverFacts(raw) {
     facts.type = ["file:", "https:"].includes(url.protocol) ? url.protocol.slice(0, -1) : "other";
     if (facts.type === "file") {
       const home = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
-      const cache = join(home, "ytm-glass", "covers");
+      const cache = join(home, "ytmcp", "covers");
       const file = fileURLToPath(url);
       facts.containedFile = false;
       if (file.startsWith(cache + sep)) {
@@ -82,7 +82,7 @@ async function metadataCheck(app) {
     hasTitle: Boolean(md?.["xesam:title"]?.data),
     lengthUs,
     pageLengthUs: page.d == null ? null : Math.round(page.d * 1e6),
-    identityMatches: identity === "YTM Glass" && desktopEntry === "local.ytmglass.Desktop",
+    identityMatches: identity === "YTMcp" && desktopEntry === "local.ytmcp.Desktop",
     cover,
     coverCachedWithinWait: result.ok,
   };
@@ -260,19 +260,19 @@ let sink;
 let monitor;
 let step = "preflight";
 try {
-  if (!runtimeSha256 || runtimeSha256 !== fileSha256("/opt/ytm-glass/ytm-glass") || !meta.mainSha256 || !meta.daemonSha256) {
+  if (!runtimeSha256 || runtimeSha256 !== fileSha256("/opt/ytmcp/ytmcp-player") || !meta.mainSha256 || !meta.daemonSha256) {
     checks.push(check("R10.target", "installed resources exist and the QA runtime exactly matches the package", {
       pass: false, blocked: "missing installed resources or runtime hash mismatch",
     }));
   } else {
     sink = await ensureNullSink();
     step = "authenticated launch";
-    const workDir = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytm-glass-qa", `v1-desktop-${Date.now()}`);
+    const workDir = join(process.env.XDG_RUNTIME_DIR ?? "/tmp", "ytmcp-qa", `v1-desktop-${Date.now()}`);
     app = await AppInstance.launch({ label: "v1-desktop", workDir, daemonBin: DAEMON, extraEnv: {
-      YTM_GLASS_QA_MAIN: MAIN,
-      YTM_GLASS_UI_DIST_DIR: `${RESOURCES}/ui-dist`,
-      YTM_GLASS_BRIDGE_DIST_DIR: `${RESOURCES}/bridge-dist`,
-      YTM_GLASS_IDENTITY_PATH: `${RESOURCES}/config/app-identity.json`,
+      YTMCP_QA_MAIN: MAIN,
+      YTMCP_UI_DIST_DIR: `${RESOURCES}/ui-dist`,
+      YTMCP_BRIDGE_DIST_DIR: `${RESOURCES}/bridge-dist`,
+      YTMCP_IDENTITY_PATH: `${RESOURCES}/config/app-identity.json`,
     } });
     const ready = await waitAppReady(app, { timeoutMs: 90_000 });
     if (!ready.ok) {

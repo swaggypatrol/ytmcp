@@ -1,4 +1,4 @@
-import type { CoverRef } from "@ytm-glass/protocol";
+import type { CoverRef } from "@ytmcp/protocol";
 import { createSyntheticCoverDataUri } from "../fixtures/synthetic.js";
 
 const ASSET_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;

@@ -4,8 +4,8 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { app, screen } from "electron";
 
-const mainModuleUrl = process.env.YTM_GLASS_G1_MAIN_MODULE
-  ? pathToFileURL(process.env.YTM_GLASS_G1_MAIN_MODULE).href
+const mainModuleUrl = process.env.YTMCP_G1_MAIN_MODULE
+  ? pathToFileURL(process.env.YTMCP_G1_MAIN_MODULE).href
   : new URL("../../../apps/desktop/dist/main.mjs", import.meta.url).href;
 
 const { startDesktopShell, validateRendererIpc } = await import(mainModuleUrl);
@@ -115,11 +115,11 @@ function checkWaylandEvidence() {
 
 async function run() {
   const reportPath = resolve(
-    process.env.YTM_GLASS_G1_REPORT_PATH ?? "artifacts/m0/g1-probe-result.json"
+    process.env.YTMCP_G1_REPORT_PATH ?? "artifacts/m0/g1-probe-result.json"
   );
 
-  process.env.YTM_GLASS_MODE = "mock";
-  process.env.YTM_GLASS_PROBE_HTML = "1";
+  process.env.YTMCP_MODE = "mock";
+  process.env.YTMCP_PROBE_HTML = "1";
 
   const controller = await startDesktopShell({});
   if (!controller) {
@@ -160,12 +160,12 @@ async function run() {
       const heroImg = document.getElementById("probe-hero-img");
       const playerBar = document.querySelector(".player-bar");
       const backdropFilter = playerBar ? getComputedStyle(playerBar).backdropFilter : "";
-      const sandboxStatus = window.ytmGlassUi ? window.ytmGlassUi.getSandboxStatus() : { sandboxed: false };
-      const hostInfo = window.ytmGlassUi ? await window.ytmGlassUi.getHostInfo() : null;
+      const sandboxStatus = window.ytmcpUi ? window.ytmcpUi.getSandboxStatus() : { sandboxed: false };
+      const hostInfo = window.ytmcpUi ? await window.ytmcpUi.getHostInfo() : null;
 
       // Real IPC negative security probes from renderer
-      const crossRoleSecret = window.ytmGlassUi
-        ? await window.ytmGlassUi.sendEnvelope({
+      const crossRoleSecret = window.ytmcpUi
+        ? await window.ytmcpUi.sendEnvelope({
             protocolVersion: 1,
             kind: "host.sessionMaterial",
             seq: 1,
@@ -173,8 +173,8 @@ async function run() {
           })
         : null;
 
-      const crossRoleBridge = window.ytmGlassUi
-        ? await window.ytmGlassUi.sendEnvelope({
+      const crossRoleBridge = window.ytmcpUi
+        ? await window.ytmcpUi.sendEnvelope({
             protocolVersion: 1,
             kind: "bridge.ready",
             bridgeEpoch: "b1",
@@ -183,8 +183,8 @@ async function run() {
           })
         : null;
 
-      const badVersion = window.ytmGlassUi
-        ? await window.ytmGlassUi.sendEnvelope({
+      const badVersion = window.ytmcpUi
+        ? await window.ytmcpUi.sendEnvelope({
             protocolVersion: 99,
             kind: "ui.ping",
             seq: 3,
@@ -192,8 +192,8 @@ async function run() {
           })
         : null;
 
-      const validPing = window.ytmGlassUi
-        ? await window.ytmGlassUi.sendEnvelope({
+      const validPing = window.ytmcpUi
+        ? await window.ytmcpUi.sendEnvelope({
             protocolVersion: 1,
             kind: "ui.ping",
             seq: 4,
@@ -259,14 +259,14 @@ async function run() {
     })
   `);
 
-  // Player window page-world isolation check (about:blank must NOT have ytmGlassBridge)
+  // Player window page-world isolation check (about:blank must NOT have ytmcpBridge)
   const playerRendererProbe = await playerWin.webContents.executeJavaScript(`
     (() => ({
       url: window.location.href,
       origin: window.location.origin,
       pageWorldNoProcess: typeof window.process === "undefined",
       pageWorldNoRequire: typeof window.require === "undefined",
-      bridgeExposedOnNonMusicOrigin: typeof window.ytmGlassBridge !== "undefined",
+      bridgeExposedOnNonMusicOrigin: typeof window.ytmcpBridge !== "undefined",
     }))()
   `);
 

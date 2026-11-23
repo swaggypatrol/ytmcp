@@ -9,10 +9,11 @@ import { LUMA, toneMatrix, type ToneTokens } from "../liquid-glass.js";
  * values in glass.css (parsed here, never copied) and the matrix the runtime puts into the
  * filter (`toneMatrix`).
  *
- * Under a full plate the filter outputs `mean × gain(mean)` (dark) or `1 − (1 − mean) × gain`
- * (light), where `mean` is the blurred backdrop: any colour at all. On top come the CSS tint,
- * the sheen and at most one fill. The audit searches every backdrop colour for the luminance
- * range the result can take and compares each text tone against the nearer end.
+ * Over an even backdrop the frost, the lens and the local mean are all the same colour, so the
+ * filter outputs `colour × gain(colour)` (dark) or `1 − (1 − colour) × gain` (light): any colour
+ * at all. On top come the CSS tint, the sheen and at most one fill. The audit searches every
+ * backdrop colour for the luminance range the result can take and compares each text tone
+ * against the nearer end. Textured backdrops are covered by the screenshot sweep.
  */
 
 type Rgba = readonly [number, number, number, number];
@@ -120,7 +121,7 @@ function tokensFor(scheme: Scheme, variant: Variant): Record<string, string> {
 type Material = "lens" | "plainBlur" | "solid";
 
 /** Luminance range of the surface behind glyphs, over every backdrop colour and fill state. */
-function plateLuminanceRange(tokens: Record<string, string>, material: Material): { min: number; max: number } {
+function glassLuminanceRange(tokens: Record<string, string>, material: Material): { min: number; max: number } {
   const tone: ToneTokens = {
     scheme: tokens["--lg-scheme"] === "light" ? "light" : "dark",
     gain: Number(tokens["--lg-tone-gain"]),
@@ -172,7 +173,7 @@ function worstRatio(y: number, range: { min: number; max: number }): number {
 // so the thresholds asserted on the model carry a 1.5% margin.
 const MODEL_MARGIN = 1.015;
 const BODY_TEXT = ["--lg-text-primary", "--lg-text-secondary", "--lg-status-success", "--lg-status-warning", "--lg-status-danger", "--lg-status-info"];
-const MARKS = ["--lg-accent", "--lg-icon", "--lg-focus-ring"];
+const MARKS = ["--lg-accent", "--lg-agent", "--lg-icon", "--lg-focus-ring"];
 
 describe("liquid glass tone audit", () => {
   it("builds a well-formed feColorMatrix: three identical gain rows and an untouched alpha row", () => {
@@ -202,7 +203,7 @@ describe("liquid glass tone audit", () => {
 
   it.each(cases)("%s %s (%s): body text ≥ 4.5:1 and marks ≥ 3:1 on any backdrop, with the model margin", (scheme, variant, material) => {
     const tokens = tokensFor(scheme, variant);
-    const range = plateLuminanceRange(tokens, material);
+    const range = glassLuminanceRange(tokens, material);
     const report = Object.fromEntries([...BODY_TEXT, ...MARKS].map((name) => [name, +worstRatio(inkLuminance(tokens, name), range).toFixed(2)]));
     if (process.env.LG_AUDIT_PRINT) console.log(scheme, variant, material, JSON.stringify(report));
     for (const name of BODY_TEXT) expect(report[name], `${name} on ${scheme} ${variant} ${material}`).toBeGreaterThanOrEqual(4.5 * MODEL_MARGIN);

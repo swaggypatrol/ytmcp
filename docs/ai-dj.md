@@ -85,10 +85,10 @@ Speech recognition, speech output and the conversation itself belong to the agen
 ## Setup example
 
 ```sh
-ytm-glass-mcp register --principal claude-dj --grant dj
-# Restart YTM Glass once after the first registration. Add --grant rating to let it like songs.
-claude mcp add ytm -s user -- /usr/bin/ytm-glass-mcp \
-  --credential-file ~/.config/ytm-glass/control-credentials/claude-dj.json --allow-background-start
+ytmcp register --principal claude-dj --grant dj
+# Restart YTMcp once after the first registration. Add --grant rating to let it like songs.
+claude mcp add ytmcp -s user -- /usr/bin/ytmcp \
+  --credential-file ~/.config/ytmcp/control-credentials/claude-dj.json --allow-background-start
 ```
 
 Then tell the agent something like "Be my DJ tonight, something jazzy." A typical session:

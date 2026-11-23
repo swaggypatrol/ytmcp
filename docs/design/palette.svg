@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title>The YTMcp palette: eight Pantone pastels, each with one job</title>
+<defs><filter id="s" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#2a2030" flood-opacity="0.12"/></filter></defs>
+<rect width="960" height="420" rx="22" fill="#f7f6f3"/>
+<text x="40" y="54" font-size="20" font-weight="700" fill="#1f1f24">Eight colors, eight jobs</text>
+<text x="40" y="80" font-size="13.5" fill="#4c4c52">The swatch is the soft fill. Text and marks use the same hue, darker by day and lighter at night.</text>
+<g filter="url(#s)"><rect x="40" y="108" width="206" height="138" rx="16" fill="#ffffff"/></g>
+<rect x="50" y="118" width="186" height="58" rx="10" fill="#efeeeb" stroke="#00000010"/>
+<circle cx="220" cy="147" r="7" fill="#1f1f24"/>
+<text x="54" y="198" font-size="14" font-weight="650" fill="#1f1f24">Cloud Dancer</text>
+<text x="54" y="216" font-size="11.5" fill="#636368" letter-spacing="0.3">PANTONE 11-4201</text>
+<text x="54" y="234" font-size="12" fill="#1f1f24">Day canvas; the night's text</text>
+<g filter="url(#s)"><rect x="264" y="108" width="206" height="138" rx="16" fill="#ffffff"/></g>
+<rect x="274" y="118" width="186" height="58" rx="10" fill="#d4d4d6" stroke="#00000010"/>
+<circle cx="444" cy="147" r="7" fill="#4c4c52"/>
+<text x="278" y="198" font-size="14" font-weight="650" fill="#1f1f24">Nimbus Cloud</text>
+<text x="278" y="216" font-size="11.5" fill="#636368" letter-spacing="0.3">PANTONE 13-4108</text>
+<text x="278" y="234" font-size="12" fill="#4c4c52">Neutral text, hairlines, switches</text>
+<g filter="url(#s)"><rect x="488" y="108" width="206" height="138" rx="16" fill="#ffffff"/></g>
+<rect x="498" y="118" width="186" height="58" rx="10" fill="#e9d7dc" stroke="#00000010"/>
+<circle cx="668" cy="147" r="7" fill="#944562"/>
+<text x="502" y="198" font-size="14" font-weight="650" fill="#1f1f24">Raindrops on Roses</text>
+<text x="502" y="216" font-size="11.5" fill="#636368" letter-spacing="0.3">PANTONE 11-1400</text>
+<text x="502" y="234" font-size="12" fill="#944562">What's playing; primary action</text>
+<g filter="url(#s)"><rect x="712" y="108" width="206" height="138" rx="16" fill="#ffffff"/></g>
+<rect x="722" y="118" width="186" height="58" rx="10" fill="#dbd3dd" stroke="#00000010"/>
+<circle cx="892" cy="147" r="7" fill="#6f4b79"/>
+<text x="726" y="198" font-size="14" font-weight="650" fill="#1f1f24">Orchid Tint</text>
+<text x="726" y="216" font-size="11.5" fill="#636368" letter-spacing="0.3">PANTONE 13-3802</text>
+<text x="726" y="234" font-size="12" fill="#6f4b79">The AI DJ</text>
+<g filter="url(#s)"><rect x="40" y="266" width="206" height="138" rx="16" fill="#ffffff"/></g>
+<rect x="50" y="276" width="186" height="58" rx="10" fill="#d6e2ef" stroke="#00000010"/>
+<circle cx="220" cy="305" r="7" fill="#2c6194"/>
+<text x="54" y="356" font-size="14" font-weight="650" fill="#1f1f24">Ice Melt</text>
+<text x="54" y="374" font-size="11.5" fill="#636368" letter-spacing="0.3">PANTONE 13-4306</text>
+<text x="54" y="392" font-size="12" fill="#2c6194">Focus, links, information</text>
+<g filter="url(#s)"><rect x="264" y="266" width="206" height="138" rx="16" fill="#ffffff"/></g>
+<rect x="274" y="276" width="186" height="58" rx="10" fill="#cbd5c1" stroke="#00000010"/>
+<circle cx="444" cy="305" r="7" fill="#4e6334"/>
+<text x="278" y="356" font-size="14" font-weight="650" fill="#1f1f24">Almost Aqua</text>
+<text x="278" y="374" font-size="11.5" fill="#636368" letter-spacing="0.3">PANTONE 13-6006</text>
+<text x="278" y="392" font-size="12" fill="#4e6334">Done and confirmed</text>
+<g filter="url(#s)"><rect x="488" y="266" width="206" height="138" rx="16" fill="#ffffff"/></g>
+<rect x="498" y="276" width="186" height="58" rx="10" fill="#f5ecc9" stroke="#00000010"/>
+<circle cx="668" cy="305" r="7" fill="#7c5e13"/>
+<text x="502" y="356" font-size="14" font-weight="650" fill="#1f1f24">Lemon Icing</text>
+<text x="502" y="374" font-size="11.5" fill="#636368" letter-spacing="0.3">PANTONE 11-0515</text>
+<text x="502" y="392" font-size="12" fill="#7c5e13">Needs a look</text>
+<g filter="url(#s)"><rect x="712" y="266" width="206" height="138" rx="16" fill="#ffffff"/></g>
+<rect x="722" y="276" width="186" height="58" rx="10" fill="#edd9cd" stroke="#00000010"/>
+<circle cx="892" cy="305" r="7" fill="#9a4825"/>
+<text x="726" y="356" font-size="14" font-weight="650" fill="#1f1f24">Peach Dust</text>
+<text x="726" y="374" font-size="11.5" fill="#636368" letter-spacing="0.3">PANTONE 12-1107</text>
+<text x="726" y="392" font-size="12" fill="#9a4825">Failed or refused</text>
+</svg>

@@ -13,7 +13,7 @@ if (!existsSync(electronBin)) {
   process.exit(1);
 }
 
-const tempRoot = mkdtempSync(join(tmpdir(), "ytm-glass-m0-ui-"));
+const tempRoot = mkdtempSync(join(tmpdir(), "ytmcp-m0-ui-"));
 const mainBundle = join(tempRoot, "main.mjs");
 const rustHostBundle = join(tempRoot, "rust-host.mjs");
 const reportPath = join(tempRoot, "m0-ui-report.json");
@@ -44,15 +44,15 @@ try {
       cwd: repoRoot,
       env: {
         ...process.env,
-        YTM_GLASS_NO_AUTOSTART: "1",
-        YTM_GLASS_DATA_DIR: join(tempRoot, "xdg"),
+        YTMCP_NO_AUTOSTART: "1",
+        YTMCP_DATA_DIR: join(tempRoot, "xdg"),
         XDG_CONFIG_HOME: join(tempRoot, "xdg/config"),
         XDG_DATA_HOME: join(tempRoot, "xdg/data"),
         XDG_CACHE_HOME: join(tempRoot, "xdg/cache"),
-        YTM_GLASS_M0_MAIN_MODULE: mainBundle,
-        YTM_GLASS_M0_ENTRY_MODULE: rustHostBundle,
-        YTM_GLASS_M0_REPORT_PATH: reportPath,
-        YTM_GLASS_M0_PROBE_EXIT: probeExit,
+        YTMCP_M0_MAIN_MODULE: mainBundle,
+        YTMCP_M0_ENTRY_MODULE: rustHostBundle,
+        YTMCP_M0_REPORT_PATH: reportPath,
+        YTMCP_M0_PROBE_EXIT: probeExit,
       },
       encoding: "utf8",
       timeout: probeExit === "1" ? 30_000 : 0,

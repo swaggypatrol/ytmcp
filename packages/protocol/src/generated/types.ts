@@ -660,6 +660,10 @@ export interface PlayerObservedState {
   audioMode?: string | null;
   autoplay?: boolean | null;
   bridgeEpoch?: BridgeEpoch | null;
+  /**
+   * How far the current track has loaded, as last reported by the page.
+   */
+  bufferedMs?: number | null;
   codec?: string | null;
   connection: PlayerConnectionState;
   currentQueueEntryId?: QueueEntryId | null;
@@ -809,6 +813,10 @@ export interface BridgePlaybackObservedPayload {
   audioMode?: string | null;
   autoplay?: boolean | null;
   bridgeEpoch: BridgeEpoch;
+  /**
+   * How far the current track has loaded, from its start, in whole seconds (as ms).
+   */
+  bufferedMs?: number | null;
   codec?: string | null;
   currentQueueEntryId?: QueueEntryId | null;
   currentTrack?: Track | null;

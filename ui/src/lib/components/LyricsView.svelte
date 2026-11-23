@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { LyricsResult, Track } from "@ytm-glass/protocol";
+  import type { LyricsResult, Track } from "@ytmcp/protocol";
   import { t } from "../i18n/index.svelte.js";
   import { activeLyricIndex, effectiveLineTimeMs } from "../lyrics.js";
   import type { TrackAccent } from "../theme/accent.js";

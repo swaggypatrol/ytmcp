@@ -5,7 +5,7 @@ import {
   type CatalogResponsePayload,
   type CommandReceipt,
   type LyricsResult,
-} from "@ytm-glass/protocol";
+} from "@ytmcp/protocol";
 import { describe, expect, it } from "vitest";
 import { commandGate, writeGate } from "../capabilities.js";
 import { CatalogStore, catalogAccountKey } from "../catalog/catalog.svelte.js";
@@ -122,14 +122,15 @@ describe("track accent", () => {
 
   it("clamps cover accents into readable bands on both schemes and rejects malformed input", () => {
     const dark = accessibleTrackAccent("oklch(0.2 0.4 240)", "dark")!;
-    expect(lightness(dark.accent)).toBeGreaterThanOrEqual(0.72);
-    expect(dark.accent).toContain(" 0.200 ");
-    expect(contrast(lightness(dark.accent), 0.135)).toBeGreaterThanOrEqual(4.5);
+    expect(lightness(dark.accent)).toBeGreaterThanOrEqual(0.76);
+    // A loud cover lends its hue at the theme's pastel chroma.
+    expect(dark.accent).toContain(" 0.090 ");
+    expect(contrast(lightness(dark.accent), 0.205)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(lightness(dark.accent), lightness(dark.onAccent))).toBeGreaterThanOrEqual(4.5);
 
     const light = accessibleTrackAccent("oklch(92% 0.1 90)", "light")!;
-    expect(lightness(light.accent)).toBeLessThanOrEqual(0.48);
-    expect(contrast(lightness(light.accent), 0.975)).toBeGreaterThanOrEqual(4.5);
+    expect(lightness(light.accent)).toBeLessThanOrEqual(0.5);
+    expect(contrast(lightness(light.accent), 0.925)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(lightness(light.accent), lightness(light.onAccent))).toBeGreaterThanOrEqual(4.5);
 
     expect(accessibleTrackAccent("red", "dark")).toBeNull();

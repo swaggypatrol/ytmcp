@@ -1,9 +1,13 @@
 # Architecture
 
-YTM Glass has four parts: a thin Electron host, a hidden window with the official YouTube Music web player, a Rust daemon that holds all application logic, and a Svelte interface. The page is the authority on what actually plays; the Rust core publishes the one application state that the interface, MPRIS and MCP clients all read.
+YTMcp has four parts: a thin Electron host, a hidden window with the official YouTube Music web player, a Rust daemon that holds all application logic, and a Svelte interface. The page is the authority on what actually plays; the Rust core publishes the one application state that the interface, MPRIS and MCP clients all read.
+
+![The interface, the tray, media keys through MPRIS and an AI agent through ytmcp all send commands into one Rust core, which drives the official player page in a hidden window and reads back what really happened](images/how-it-works.svg)
+
+The window, the tray, the media keys and the agent all go through the same core, so they always agree on what is playing, and a manual action always wins over an agent's pending one.
 
 ```
- MCP client (agent) ── stdio ──▶ ytm-glass-mcp ── control.sock (0600) ──┐
+ MCP client (agent) ── stdio ──▶ ytmcp ── control.sock (0600) ──────────┐
                                                                         ▼
 ┌───────────────────────────── ytm-daemon (Rust) ─────────────────────────────┐
 │ ControlService: grants, operation journal, account writes, DJ prompts       │
@@ -23,11 +27,11 @@ YTM Glass has four parts: a thin Electron host, a hidden window with the officia
 
 | Process | Role |
 | --- | --- |
-| Electron main | Starts and supervises `ytm-daemon`, forwards frames between the daemon, the player page and the interface, manages windows, the tray and the session broker. If the daemon exits unexpectedly it pauses and mutes the page, restarts the daemon and reinjects the bridge. |
+| Electron main | Starts and supervises `ytm-daemon`, forwards frames between the daemon, the player page and the interface, manages windows, the tray and the session broker. If the daemon exits unexpectedly it pauses and mutes the page, restarts the daemon (once per session; a second crash is fatal) and reinjects the bridge. |
 | Player window | Loads `music.youtube.com` in a persistent, isolated session partition. It is hidden by default; closing it only hides it. |
 | Main window | Loads the local interface from the app's own scheme in an ephemeral partition. It makes no external requests and never sees credentials. |
 | `ytm-daemon` | The only business core. Communicates with the host over inherited stdin/stdout. |
-| `ytm-glass-mcp` | One process per MCP client; connects to the daemon's control socket for each tool call. |
+| `ytmcp` | One process per MCP client; connects to the daemon's control socket for each tool call. |
 
 The host and daemon exchange newline-delimited JSON (one frame per line, UTF-8). Stdout carries protocol frames only; diagnostics go to stderr as redacted structured logs. Frames are limited to 1 MiB and checked before parsing; at most 128 requests may be pending and at most 64 playback commands queued, beyond which the daemon answers `BUSY`. Integers stay within the JavaScript safe range, and volume is always 0.0 to 1.0.
 
@@ -94,20 +98,20 @@ Commands from the interface, tray, media keys and MPRIS are manual. Any manual c
 
 ### Control service
 
-`ControlService` (`crates/core/src/control/`) serves the local control socket used by `ytm-glass-mcp`: it checks grants and the registered account scope, journals every write in SQLite before sending it, runs queue and account writes, applies daily account limits, settles interrupted writes after a restart and produces the DJ prompts. See [mcp.md](mcp.md) and [ai-dj.md](ai-dj.md).
+`ControlService` (`crates/core/src/control/`) serves the local control socket used by `ytmcp`: it checks grants and the registered account scope, journals every write in SQLite before sending it, runs queue and account writes, applies daily account limits, settles interrupted writes after a restart and produces the DJ prompts. See [mcp.md](mcp.md) and [ai-dj.md](ai-dj.md).
 
 ### Storage
 
-`crates/storage` uses the XDG directories under the name `ytm-glass`:
+`crates/storage` uses the XDG directories under the name `ytmcp`:
 
 | Location | Contents |
 | --- | --- |
-| `$XDG_CONFIG_HOME/ytm-glass/` | `settings.json`, the MCP registration list and per-client credential files |
-| `$XDG_DATA_HOME/ytm-glass/ytm-glass.db` | SQLite (schema v7): account epochs, operation journal, local history, taste notes, lyric offsets, catalog and lyrics caches |
-| `$XDG_DATA_HOME/ytm-glass/electron-profile/` | the official page's browser profile and sign-in session |
-| `$XDG_CACHE_HOME/ytm-glass/covers/` | the cover cache; clearing the cache never signs you out or touches settings |
+| `$XDG_CONFIG_HOME/ytmcp/` | `settings.json`, the MCP registration list and per-client credential files |
+| `$XDG_DATA_HOME/ytmcp/ytmcp.db` | SQLite (schema v7): account epochs, operation journal, local history, taste notes, lyric offsets, catalog and lyrics caches |
+| `$XDG_DATA_HOME/ytmcp/electron-profile/` | the official page's browser profile and sign-in session |
+| `$XDG_CACHE_HOME/ytmcp/covers/` | the cover cache; clearing the cache never signs you out or touches settings |
 
-Before a migration the daemon backs the database up next to it. `YTM_GLASS_DATA_DIR` moves all of this under one root, which the tests use.
+Before a migration the daemon backs the database up next to it. `YTMCP_DATA_DIR` moves all of this under one root, which the tests use.
 
 ### Catalog and lyrics
 
@@ -115,7 +119,7 @@ Before a migration the daemon backs the database up next to it. `YTM_GLASS_DATA_
 
 ### MPRIS
 
-`crates/mpris` publishes `org.mpris.MediaPlayer2.ytm_glass` with metadata, a local cover URI for the current track, and the standard controls, which enter the engine as manual commands. Without a current track, MPRIS does not offer play.
+`crates/mpris` publishes `org.mpris.MediaPlayer2.ytmcp` with metadata, a local cover URI for the current track, and the standard controls, which enter the engine as manual commands. Without a current track, MPRIS does not offer play.
 
 ## The interface
 
@@ -126,5 +130,24 @@ The sidebar, the floating player bar and popovers use the liquid glass material 
 ## Security boundaries
 
 - Renderers are sandboxed with context isolation. Chromium uses the system's user-namespace sandbox; no security control is disabled.
-- There is no remote debugging port and no network listener. The MCP control socket is a 0600 Unix socket under `$XDG_RUNTIME_DIR/ytm-glass/` and accepts only registered clients.
+- There is no remote debugging port and no network listener. The MCP control socket is a 0600 Unix socket under `$XDG_RUNTIME_DIR/ytmcp/` and accepts only registered clients.
 - Credentials come only from the app's own player session, stay in memory outside the browser profile, and never enter arguments, environment variables, logs or fixtures.
+
+## Project layout
+
+| Path | What it is |
+| --- | --- |
+| `apps/desktop/` | The Electron host: windows, sessions, tray, the daemon process and the IPC guards |
+| `bridge/` | The small shim injected into the official player page. The only code that knows what that page looks like inside. |
+| `crates/core/` | The engine: one actor, every command, the control service for agents and the DJ cues |
+| `crates/daemon/` | `ytm-daemon`: wires the core to stdio, SQLite, the catalog, lyrics, MPRIS and the control socket |
+| `crates/ytm-data/` | YouTube Music catalog reads and writes |
+| `crates/storage/` | SQLite schema, migrations, the operation journal and the cover cache |
+| `crates/lyrics/`, `crates/mpris/` | Lyrics sources and LRC parsing; the MPRIS service |
+| `crates/protocol/`, `crates/control-api/` | The host wire protocol and the local control protocol |
+| `crates/mcp/` | `ytmcp`: the MCP stdio adapter and the `register` command |
+| `ui/` | The Svelte interface and the liquid glass |
+| `packages/protocol/` | Generated JSON Schema and TypeScript types |
+| `packaging/` | PKGBUILD, launcher, desktop entry, icon and license notices |
+| `tools/` | MCP live checks, QA and probe tools (the README screenshots come from the glass probe), packaging and release scripts |
+| `tests/`, `fixtures/` | Process, desktop and end-to-end tests; the synthetic library |

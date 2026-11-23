@@ -3,8 +3,8 @@ import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-if (process.env.YTM_GLASS_ALLOW_LIVE !== "1") {
-  console.error("Refusing to run G3 hidden soak without YTM_GLASS_ALLOW_LIVE=1");
+if (process.env.YTMCP_ALLOW_LIVE !== "1") {
+  console.error("Refusing to run G3 hidden soak without YTMCP_ALLOW_LIVE=1");
   process.exit(1);
 }
 
@@ -12,12 +12,12 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 const electronBin = resolve(repoRoot, "apps/desktop/node_modules/.bin/electron");
 const esbuildBin = resolve(repoRoot, "apps/desktop/node_modules/esbuild/bin/esbuild");
 const entryScript = resolve(import.meta.dirname, "live-g3-soak-entry.mjs");
-const sourceDaemonBin = process.env.YTM_GLASS_DAEMON_BIN || resolve(repoRoot, "target/release/ytm-daemon");
-const soakSeconds = Number.parseInt(process.env.YTM_GLASS_SOAK_SECONDS ?? "1800", 10);
+const sourceDaemonBin = process.env.YTMCP_DAEMON_BIN || resolve(repoRoot, "target/release/ytm-daemon");
+const soakSeconds = Number.parseInt(process.env.YTMCP_SOAK_SECONDS ?? "1800", 10);
 const reportPath =
-  process.env.YTM_GLASS_SOAK_REPORT_PATH || resolve(repoRoot, "artifacts/m0/g3-30m-soak-result.json");
+  process.env.YTMCP_SOAK_REPORT_PATH || resolve(repoRoot, "artifacts/m0/g3-30m-soak-result.json");
 const samplesPath =
-  process.env.YTM_GLASS_SOAK_SAMPLES_PATH ||
+  process.env.YTMCP_SOAK_SAMPLES_PATH ||
   resolve(repoRoot, "artifacts/m0/g3-30m-soak-samples.jsonl");
 
 if (!existsSync(electronBin)) {
@@ -39,7 +39,7 @@ try {
   // Ignore
 }
 
-const tempRoot = mkdtempSync(join(tmpdir(), "ytm-glass-g3-soak-"));
+const tempRoot = mkdtempSync(join(tmpdir(), "ytmcp-g3-soak-"));
 const mainBundle = join(tempRoot, "main.mjs");
 const rustHostBundle = join(tempRoot, "rust-host.mjs");
 const immutableDaemonBin = join(tempRoot, "ytm-daemon");
@@ -67,21 +67,21 @@ try {
   }
 
   const childEnv = { ...process.env };
-  delete childEnv.YTM_GLASS_SHOW_PLAYER;
+  delete childEnv.YTMCP_SHOW_PLAYER;
   const timeoutMs = Math.max(120_000, (soakSeconds + 180) * 1000);
   const res = spawnSync(electronBin, [entryScript], {
     cwd: repoRoot,
     env: {
       ...childEnv,
-      YTM_GLASS_ALLOW_LIVE: "1",
-      YTM_GLASS_NO_AUTOSTART: "1",
-      YTM_GLASS_SOAK_SECONDS: String(soakSeconds),
-      YTM_GLASS_DAEMON_BIN: immutableDaemonBin,
-      YTM_GLASS_M0_MAIN_MODULE: mainBundle,
-      YTM_GLASS_M0_ENTRY_MODULE: rustHostBundle,
-      YTM_GLASS_SOAK_REPORT_PATH: reportPath,
-      YTM_GLASS_SOAK_SAMPLES_PATH: samplesPath,
-      YTM_GLASS_COMMIT_SHA: commitSha,
+      YTMCP_ALLOW_LIVE: "1",
+      YTMCP_NO_AUTOSTART: "1",
+      YTMCP_SOAK_SECONDS: String(soakSeconds),
+      YTMCP_DAEMON_BIN: immutableDaemonBin,
+      YTMCP_M0_MAIN_MODULE: mainBundle,
+      YTMCP_M0_ENTRY_MODULE: rustHostBundle,
+      YTMCP_SOAK_REPORT_PATH: reportPath,
+      YTMCP_SOAK_SAMPLES_PATH: samplesPath,
+      YTMCP_COMMIT_SHA: commitSha,
     },
     encoding: "utf8",
     timeout: timeoutMs,

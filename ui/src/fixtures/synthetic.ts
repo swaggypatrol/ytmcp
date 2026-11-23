@@ -1,5 +1,5 @@
 /** Mock-mode only: scenario presets and synthetic artwork for the explicit mock preview. */
-import type { FakeScenario, Track } from "@ytm-glass/protocol";
+import type { FakeScenario, Track } from "@ytmcp/protocol";
 
 export interface ScenarioPreset {
   id: FakeScenario;
@@ -50,7 +50,7 @@ function escapeXml(value: string): string {
  * Rust-cached `app://covers/` asset or a neutral placeholder, never a fake cover.
  */
 export function createSyntheticCoverDataUri(seed: string, label = "YTM"): string {
-  const hash = hashSeed(seed || "ytm-glass");
+  const hash = hashSeed(seed || "ytmcp");
   const palette = SYNTHETIC_PALETTES[hash % SYNTHETIC_PALETTES.length]!;
   const [c1, c2, c3] = palette;
   const glyph = escapeXml((label.trim().slice(0, 2) || "♪").toUpperCase());

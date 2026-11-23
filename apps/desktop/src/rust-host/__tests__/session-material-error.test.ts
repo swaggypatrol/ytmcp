@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Envelope, HostHelloPayload, QueryError, SessionMaterialPayload } from "@ytm-glass/protocol";
+import type { Envelope, HostHelloPayload, QueryError, SessionMaterialPayload } from "@ytmcp/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { RustHostClient } from "../client.js";
 
