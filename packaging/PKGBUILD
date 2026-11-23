@@ -5,7 +5,7 @@
 # YTMCP_COMMIT (the commit must be clean and committed) and runs makepkg.
 
 pkgname=ytmcp
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Native Wayland music player shell for the official YouTube Music web player (Electron + Rust)"
 arch=('x86_64')

@@ -2,7 +2,7 @@
 
 Versions are `<app version>-<package revision>`; see [docs/building.md](docs/building.md#versioning).
 
-## Unreleased
+## 1.1.0-1
 
 - **Renamed to YTMcp.** The app, the package (`ytmcp`, which replaces `ytm-glass`), the MCP server and registration command (`ytmcp`, formerly `ytm-glass-mcp`), the launcher (`ytmcp-player`), the desktop entry (`local.ytmcp.Desktop`), the MPRIS name (`org.mpris.MediaPlayer2.ytmcp`), the `YTMCP_*` environment variables and the XDG directories (`ytmcp`). On first start the app moves an existing install's config, data (including the browser profile, so you stay signed in) and cache directories to the new name, merging into anything already created under it without overwriting, and renames the database with them. If the old app is still running it asks you to quit it first; mock mode and an explicit `--user-data-dir` never migrate. When installing over `ytm-glass`, answer `y` when pacman asks to remove it. MCP clients registered before need their command changed to `/usr/bin/ytmcp` and their credential path to `~/.config/ytmcp/control-credentials/`. If you re-add the server to Claude Code under the new name `ytmcp`, its tools become `mcp__ytmcp__*`, so update `permissions.allow` too. Entries below this one use the old name.
 - A new palette for both themes from eight Pantone pastels, one job per colour: Cloud Dancer paper by day and a plum-tinted night, Raindrops on Roses for what's playing, Orchid Tint for the AI DJ, Ice Melt for focus and information, Almost Aqua for done, Lemon Icing for attention and Peach Dust for failures. Cover colours keep tinting Now playing and Lyrics, at the same pastel strength. Settings switches use neutral ink.

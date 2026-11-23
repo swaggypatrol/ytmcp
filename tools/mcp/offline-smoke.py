@@ -16,6 +16,9 @@ import tempfile
 import threading
 import time
 
+# The app version the binaries were built with (config/app-identity.json).
+APP_VERSION = json.loads((Path(__file__).resolve().parents[2] / "config" / "app-identity.json").read_text())["version"]
+
 # Writes reply once settled, which can take the adapter up to 12 s.
 TIMEOUT = 20
 
@@ -193,7 +196,7 @@ def init_mcp(binary, config, env, profile="development"):
     init_result = mcp.receive(lambda frame: frame.get("id") == 1)["result"]
     assert init_result["capabilities"]["tools"] is not None
     assert init_result["serverInfo"]["name"] == "ytmcp", init_result["serverInfo"]
-    assert init_result["serverInfo"]["version"] == "1.0.0", init_result["serverInfo"]
+    assert init_result["serverInfo"]["version"] == APP_VERSION, init_result["serverInfo"]
     mcp.send(rpc("notifications/initialized"))
     return mcp
 
@@ -224,7 +227,7 @@ def run(daemon_bin, mcp_bin, root):
     daemon = Process([daemon_bin], env)
     try:
         daemon.send(host("host.hello", 1, {
-            "appVersion": "1.0.0", "electronVersion": "fixture", "chromiumVersion": "fixture",
+            "appVersion": APP_VERSION, "electronVersion": "fixture", "chromiumVersion": "fixture",
             "networkState": "offline", "mockMode": True, "hostHealth": {
                 "waylandNative": None, "gpuAccelerated": None, "sandboxEnabled": True,
                 "secretStoreBackend": "unknown", "safeStorageAvailable": False, "trayAvailable": False,
