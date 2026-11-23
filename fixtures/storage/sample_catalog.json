@@ -1,0 +1,32 @@
+{
+  "accounts": {
+    "alpha": {
+      "accountScope": "scope-alpha-001",
+      "accountEpoch": "epoch-alpha-001",
+      "locale": "zh-CN",
+      "providerVersion": "ytm-mock-1.0",
+      "playlists": [
+        {
+          "playlistId": "PL_ALPHA_FOCUS",
+          "title": "Alpha Deep Focus",
+          "subtitle": "Synthetic fixture",
+          "trackCount": 2
+        }
+      ]
+    },
+    "beta": {
+      "accountScope": "scope-beta-002",
+      "accountEpoch": "epoch-beta-001",
+      "locale": "en-US",
+      "providerVersion": "ytm-mock-1.0",
+      "playlists": [
+        {
+          "playlistId": "PL_BETA_NIGHT",
+          "title": "Beta Night Drive",
+          "subtitle": "Synthetic fixture",
+          "trackCount": 1
+        }
+      ]
+    }
+  }
+}

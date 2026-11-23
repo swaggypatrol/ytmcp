@@ -1,0 +1,13 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+  - "bridge"
+  - "ui"
+
+allowBuilds:
+  electron: true
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - "@tanstack/svelte-virtual@3.13.53"
+  - "@tanstack/virtual-core@3.19.12"

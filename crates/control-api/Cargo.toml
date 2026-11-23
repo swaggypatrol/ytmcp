@@ -1,0 +1,31 @@
+[package]
+name = "ytm-control-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ytm-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+
+[features]
+local = ["dep:tokio", "dep:tokio-util", "dep:futures-util", "dep:rustix"]
+
+[dependencies.tokio]
+workspace = true
+optional = true
+
+[dependencies.tokio-util]
+workspace = true
+features = ["codec"]
+optional = true
+
+[dependencies.futures-util]
+workspace = true
+optional = true
+
+[dependencies.rustix]
+workspace = true
+optional = true

@@ -1,0 +1,92 @@
+{
+  "contents": {
+    "singleColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "gridRenderer": {
+                      "continuations": [
+                        {
+                          "nextContinuationData": {
+                            "continuation": "probe_pl_cont_p2"
+                          }
+                        }
+                      ],
+                      "items": [
+                        {
+                          "musicTwoRowItemRenderer": {
+                            "title": {
+                              "runs": [
+                                {
+                                  "text": "New playlist",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "VL_CREATE" }
+                                  }
+                                }
+                              ]
+                            },
+                            "thumbnailRenderer": {
+                              "musicThumbnailRenderer": {
+                                "thumbnail": { "thumbnails": [] }
+                              }
+                            },
+                            "subtitle": {
+                              "runs": [{ "text": "Create" }, { "text": " • " }, { "text": "0 songs" }]
+                            }
+                          }
+                        },
+                        {
+                          "musicTwoRowItemRenderer": {
+                            "title": {
+                              "runs": [
+                                {
+                                  "text": "Synthetic Focus Mix",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "VLPL_probe_01" }
+                                  }
+                                }
+                              ]
+                            },
+                            "thumbnailRenderer": {
+                              "musicThumbnailRenderer": {
+                                "thumbnail": {
+                                  "thumbnails": [
+                                    {
+                                      "url": "https://lh3.googleusercontent.com/probe-pl-1",
+                                      "width": 512,
+                                      "height": 512
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "subtitle": {
+                              "runs": [
+                                {
+                                  "text": "Probe Channel",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "UC_probe_channel" }
+                                  }
+                                },
+                                { "text": " • " },
+                                { "text": "4 songs" }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

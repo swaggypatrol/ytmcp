@@ -1,0 +1,23 @@
+{
+  "name": "@ytm-glass/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/main.mjs",
+  "scripts": {
+    "build": "node -e \"import('esbuild').then(async e => { await e.build({ entryPoints: ['src/bootstrap/main.ts'], bundle: true, platform: 'node', format: 'esm', external: ['electron'], banner: { js: 'import { createRequire } from \\'node:module\\'; const require = createRequire(import.meta.url);' }, outfile: 'dist/main.mjs' }); await e.build({ entryPoints: ['preload/ui-preload.ts'], bundle: true, platform: 'browser', format: 'cjs', external: ['electron'], outfile: 'dist/ui-preload.cjs' }); await e.build({ entryPoints: ['preload/player-preload.ts'], bundle: true, platform: 'browser', format: 'cjs', external: ['electron'], outfile: 'dist/player-preload.cjs' }); })\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ytm-glass/bridge": "workspace:*",
+    "@ytm-glass/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "electron": "45.4.1",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}

@@ -1,0 +1,6949 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Control V1",
+  "type": "object",
+  "properties": {
+    "request": {
+      "$ref": "#/definitions/RequestFrame"
+    },
+    "server": {
+      "$ref": "#/definitions/ServerFrame"
+    }
+  },
+  "required": [
+    "request",
+    "server"
+  ],
+  "definitions": {
+    "AccountEpoch": {
+      "description": "Unique identifier for one authenticated account session epoch.",
+      "type": "string"
+    },
+    "AccountHandoffGoal": {
+      "description": "The account change a client asks the user to make in the player.",
+      "type": "string",
+      "enum": [
+        "signIn",
+        "reauthenticate",
+        "switchAccount"
+      ]
+    },
+    "AccountHandoffState": {
+      "oneOf": [
+        {
+          "description": "The account already satisfies the goal; nothing was asked of the user.",
+          "type": "string",
+          "const": "notNeeded"
+        },
+        {
+          "description": "Shown in the player's activity view; the user signs in there. No window is opened.",
+          "type": "string",
+          "const": "awaitingUser"
+        },
+        {
+          "description": "The requested account change was observed in the player.",
+          "type": "string",
+          "const": "completed"
+        }
+      ]
+    },
+    "AccountScope": {
+      "description": "Redacted local scope identifier isolating accounts in cache/state.",
+      "type": "string"
+    },
+    "AccountState": {
+      "type": "object",
+      "properties": {
+        "accountEpoch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AccountEpoch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "playerCatalogMatched": {
+          "type": "boolean"
+        },
+        "state": {
+          "$ref": "#/definitions/AuthState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "playerCatalogMatched"
+      ]
+    },
+    "Album": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AlbumId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title"
+      ]
+    },
+    "AlbumId": {
+      "description": "Opaque YouTube Music album identifier.",
+      "type": "string"
+    },
+    "AlbumInput": {
+      "type": "object",
+      "properties": {
+        "albumId": {
+          "$ref": "#/definitions/AlbumId"
+        },
+        "includeMembership": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "albumId"
+      ]
+    },
+    "AlbumPage": {
+      "type": "object",
+      "properties": {
+        "album": {
+          "$ref": "#/definitions/Album"
+        },
+        "artists": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Artist"
+          }
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Freshness"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "membership": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MembershipEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "tracks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Track"
+          }
+        },
+        "year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "album",
+        "artists",
+        "tracks",
+        "source",
+        "complete"
+      ]
+    },
+    "AppSettings": {
+      "type": "object",
+      "properties": {
+        "autoplayOnLaunch": {
+          "type": "boolean"
+        },
+        "closeToTray": {
+          "type": "boolean"
+        },
+        "lrclibEnabled": {
+          "type": "boolean"
+        },
+        "nativeWindowDecorations": {
+          "type": "boolean"
+        },
+        "reduceMotion": {
+          "type": "boolean"
+        },
+        "reduceTransparency": {
+          "type": "boolean"
+        },
+        "theme": {
+          "$ref": "#/definitions/ThemeMode"
+        },
+        "trackNotifications": {
+          "type": "boolean"
+        },
+        "uiLanguage": {
+          "description": "Settings saved before the UI language existed load as English.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/UiLanguage"
+            }
+          ],
+          "default": "en"
+        },
+        "uiScalePercent": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "theme",
+        "reduceMotion",
+        "reduceTransparency",
+        "uiScalePercent",
+        "autoplayOnLaunch",
+        "closeToTray",
+        "lrclibEnabled",
+        "trackNotifications",
+        "nativeWindowDecorations"
+      ]
+    },
+    "Artist": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ArtistId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "ArtistId": {
+      "description": "Opaque YouTube Music artist identifier.",
+      "type": "string"
+    },
+    "ArtistInput": {
+      "type": "object",
+      "properties": {
+        "artistId": {
+          "$ref": "#/definitions/ArtistId"
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 100,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artistId"
+      ]
+    },
+    "ArtistOverview": {
+      "type": "object",
+      "properties": {
+        "albums": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Album"
+          }
+        },
+        "artist": {
+          "$ref": "#/definitions/Artist"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "freshness": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Freshness"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "subscription": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MembershipEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "topSongs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Track"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artist",
+        "topSongs",
+        "albums",
+        "source",
+        "complete"
+      ]
+    },
+    "AudioObservation": {
+      "type": "object",
+      "properties": {
+        "audioMode": {
+          "description": "Song or video variant selected in the official page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "drmProtected": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "qualityLabel": {
+          "description": "Opaque playback-quality label reported by the page, not a measured audio bit rate.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "AuthState": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "signedOut",
+        "signingIn",
+        "authenticated",
+        "expired",
+        "blocked"
+      ]
+    },
+    "BridgeEpoch": {
+      "description": "Unique identifier for one authorized page bridge handshake.",
+      "type": "string"
+    },
+    "BrowseId": {
+      "description": "Opaque YouTube Music browse endpoint identifier.",
+      "type": "string"
+    },
+    "Capability": {
+      "type": "object",
+      "properties": {
+        "area": {
+          "$ref": "#/definitions/CapabilityArea"
+        },
+        "availableNow": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "implemented": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verifiedAtMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "area",
+        "implemented",
+        "availableNow"
+      ]
+    },
+    "CapabilityArea": {
+      "type": "string",
+      "enum": [
+        "catalog",
+        "playback",
+        "queue",
+        "playlists",
+        "library",
+        "lyrics",
+        "dj",
+        "extensions",
+        "account"
+      ]
+    },
+    "CombinedHistory": {
+      "type": "object",
+      "properties": {
+        "local": {
+          "$ref": "#/definitions/LocalHistoryView"
+        },
+        "youtube": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Page9"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "youtubeError": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "local"
+      ]
+    },
+    "ContextInput": {
+      "type": "object",
+      "properties": {
+        "previewLimit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 20,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ContextSnapshot": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/AccountState"
+        },
+        "bridgeEpoch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BridgeEpoch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Capability"
+          }
+        },
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "contextToken": {
+          "type": "string"
+        },
+        "cursor": {
+          "$ref": "#/definitions/EventCursor"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "player": {
+          "$ref": "#/definitions/PlayerState"
+        },
+        "queue": {
+          "$ref": "#/definitions/QueueProjection"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cursor",
+        "capturedAtMs",
+        "contextToken",
+        "freshness",
+        "player",
+        "account",
+        "queue",
+        "capabilities"
+      ]
+    },
+    "ControlError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryAfterMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retryDisposition": {
+          "$ref": "#/definitions/RetryDisposition"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "retryDisposition",
+        "message"
+      ]
+    },
+    "ControlEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/EventCursor"
+            },
+            "event": {
+              "type": "string",
+              "const": "trackChanged"
+            },
+            "videoId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/VideoId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "cursor"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/EventCursor"
+            },
+            "event": {
+              "type": "string",
+              "const": "queueLow"
+            },
+            "queueRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "cursor",
+            "queueRevision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/EventCursor"
+            },
+            "event": {
+              "type": "string",
+              "const": "queueChanged"
+            },
+            "queueRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "cursor",
+            "queueRevision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "account": {
+              "$ref": "#/definitions/AccountState"
+            },
+            "cursor": {
+              "$ref": "#/definitions/EventCursor"
+            },
+            "event": {
+              "type": "string",
+              "const": "authChanged"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "cursor",
+            "account"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/EventCursor"
+            },
+            "event": {
+              "type": "string",
+              "const": "manualTakeover"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "cursor",
+            "generation"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/EventCursor"
+            },
+            "event": {
+              "type": "string",
+              "const": "resourceInvalidated"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "cursor",
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/EventCursor"
+            },
+            "event": {
+              "type": "string",
+              "const": "operationChanged"
+            },
+            "operationId": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "cursor",
+            "operationId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/EventCursor"
+            },
+            "event": {
+              "type": "string",
+              "const": "eventGap"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "cursor"
+          ]
+        }
+      ]
+    },
+    "ControlRequest": {
+      "description": "Application protocol over the local control socket.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getCapabilities"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "area": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/CapabilityArea"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getContext"
+            },
+            "params": {
+              "$ref": "#/definitions/ContextInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getAccount"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getPlayer"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "include": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/PlayerInclude"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getQueue"
+            },
+            "params": {
+              "$ref": "#/definitions/PageInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "search"
+            },
+            "params": {
+              "$ref": "#/definitions/SearchInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "searchEntities"
+            },
+            "params": {
+              "$ref": "#/definitions/EntitySearchInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getPlaylist"
+            },
+            "params": {
+              "$ref": "#/definitions/PlaylistInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getShareLink"
+            },
+            "params": {
+              "$ref": "#/definitions/ShareInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "recommend"
+            },
+            "params": {
+              "$ref": "#/definitions/RecommendationsInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getOperation"
+            },
+            "params": {
+              "$ref": "#/definitions/OperationInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getDjPreferences"
+            },
+            "params": {
+              "$ref": "#/definitions/DjPreferencesInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "description": "Returns the next prompt for a DJ agent, if any; polled by the MCP adapter while it waits.",
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "nextDjCue"
+            },
+            "params": {
+              "$ref": "#/definitions/DjCueInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getSettings"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getAlbum"
+            },
+            "params": {
+              "$ref": "#/definitions/AlbumInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getArtist"
+            },
+            "params": {
+              "$ref": "#/definitions/ArtistInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getLibrary"
+            },
+            "params": {
+              "$ref": "#/definitions/LibraryInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getHistory"
+            },
+            "params": {
+              "$ref": "#/definitions/HistoryInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getHome"
+            },
+            "params": {
+              "$ref": "#/definitions/LimitInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getTrack"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "$ref": "#/definitions/TrackTarget"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "target"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getDiscovery"
+            },
+            "params": {
+              "$ref": "#/definitions/DiscoveryInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getMoodCategory"
+            },
+            "params": {
+              "$ref": "#/definitions/MoodCategoryInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getSearchSuggestions"
+            },
+            "params": {
+              "$ref": "#/definitions/SearchSuggestionsInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getExtendedMedia"
+            },
+            "params": {
+              "$ref": "#/definitions/ExtendedMediaInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getLyrics"
+            },
+            "params": {
+              "$ref": "#/definitions/LyricsInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "submit"
+            },
+            "params": {
+              "$ref": "#/definitions/WriteInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "subscribe"
+            },
+            "params": {
+              "$ref": "#/definitions/ContextInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "ControlResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "capabilities"
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Capability"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "context"
+            },
+            "value": {
+              "$ref": "#/definitions/ContextSnapshot"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "account"
+            },
+            "value": {
+              "$ref": "#/definitions/AccountState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "player"
+            },
+            "value": {
+              "$ref": "#/definitions/PlayerView"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "queue"
+            },
+            "value": {
+              "$ref": "#/definitions/QueueProjection"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "search"
+            },
+            "value": {
+              "$ref": "#/definitions/Page"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "searchEntities"
+            },
+            "value": {
+              "$ref": "#/definitions/Page2"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "searchSuggestions"
+            },
+            "value": {
+              "$ref": "#/definitions/Page3"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "playlist"
+            },
+            "value": {
+              "$ref": "#/definitions/Playlist"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "shareLink"
+            },
+            "value": {
+              "$ref": "#/definitions/ShareLink"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "recommendations"
+            },
+            "value": {
+              "$ref": "#/definitions/RecommendationPage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "album"
+            },
+            "value": {
+              "$ref": "#/definitions/AlbumPage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "artist"
+            },
+            "value": {
+              "$ref": "#/definitions/ArtistOverview"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "library"
+            },
+            "value": {
+              "$ref": "#/definitions/LibraryPage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "history"
+            },
+            "value": {
+              "$ref": "#/definitions/Page"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "historyEntries"
+            },
+            "value": {
+              "$ref": "#/definitions/Page9"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "localHistory"
+            },
+            "value": {
+              "$ref": "#/definitions/LocalHistoryView"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "combinedHistory"
+            },
+            "value": {
+              "$ref": "#/definitions/CombinedHistory"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "home"
+            },
+            "value": {
+              "$ref": "#/definitions/HomeView"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "discovery"
+            },
+            "value": {
+              "$ref": "#/definitions/DiscoveryPage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "extendedMedia"
+            },
+            "value": {
+              "$ref": "#/definitions/ExtendedMediaPage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "track"
+            },
+            "value": {
+              "$ref": "#/definitions/TrackView"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "settings"
+            },
+            "value": {
+              "$ref": "#/definitions/SettingsSnapshot"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "lyrics"
+            },
+            "value": {
+              "$ref": "#/definitions/LyricsPage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "djPreferences"
+            },
+            "value": {
+              "$ref": "#/definitions/Page12"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "djCue"
+            },
+            "value": {
+              "$ref": "#/definitions/DjCueReply"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "operation"
+            },
+            "value": {
+              "$ref": "#/definitions/OperationReceipt"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "error"
+            },
+            "value": {
+              "$ref": "#/definitions/ControlError"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        }
+      ]
+    },
+    "CoreEpoch": {
+      "description": "Unique identifier for one Rust core process instance.",
+      "type": "string"
+    },
+    "DiscoveryInput": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/DiscoveryKind"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ]
+    },
+    "DiscoveryItem": {
+      "type": "object",
+      "properties": {
+        "section": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "$ref": "#/definitions/DiscoveryTarget"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "target"
+      ]
+    },
+    "DiscoveryKind": {
+      "type": "string",
+      "enum": [
+        "home",
+        "explore",
+        "moodsAndGenres",
+        "charts",
+        "newReleases"
+      ]
+    },
+    "DiscoveryPage": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "$ref": "#/definitions/Page11"
+        },
+        "personalized": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items"
+      ]
+    },
+    "DiscoveryTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "track"
+            },
+            "videoId": {
+              "$ref": "#/definitions/VideoId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "videoId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "playlist"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "albumId": {
+              "$ref": "#/definitions/AlbumId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "album"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "albumId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artistId": {
+              "$ref": "#/definitions/ArtistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artist"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artistId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "categoryId": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "moodCategory"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "categoryId"
+          ]
+        }
+      ]
+    },
+    "DjChattiness": {
+      "description": "How often the heartbeat lets the agent check in with the listener.",
+      "type": "string",
+      "enum": [
+        "off",
+        "quiet",
+        "normal",
+        "chatty"
+      ]
+    },
+    "DjCue": {
+      "description": "One prompt for the agent, with the listening context as it is at delivery.",
+      "type": "object",
+      "properties": {
+        "ageMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "chattiness": {
+          "$ref": "#/definitions/DjChattiness"
+        },
+        "kind": {
+          "$ref": "#/definitions/DjCueKind"
+        },
+        "listener": {
+          "$ref": "#/definitions/DjListener"
+        },
+        "moreQueued": {
+          "type": "boolean"
+        },
+        "nowPlaying": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DjNowPlaying"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preferences": {
+          "description": "The recorded tastes, sent on this client's first prompt and whenever they changed since\nits previous one; empty when `preferences_unchanged`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DjPreference"
+          }
+        },
+        "preferencesUnchanged": {
+          "description": "The tastes are the same as in this client's previous prompt.",
+          "type": "boolean"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DjCueReason"
+          }
+        },
+        "recent": {
+          "description": "Newest first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DjRecentTrack"
+          }
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "upNext": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DjTrack"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "kind",
+        "reasons",
+        "ageMs",
+        "prompt",
+        "upNext",
+        "moreQueued",
+        "recent",
+        "listener",
+        "chattiness",
+        "preferences",
+        "preferencesUnchanged"
+      ]
+    },
+    "DjCueInput": {
+      "type": "object",
+      "properties": {
+        "chattiness": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DjChattiness"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spoke": {
+          "description": "The agent said something to the listener since its previous call.",
+          "type": "boolean",
+          "default": false
+        },
+        "userSpoke": {
+          "description": "The listener talked to the agent since its previous call.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "DjCueKind": {
+      "oneOf": [
+        {
+          "description": "The current track is about to end.",
+          "type": "string",
+          "const": "trackEnding"
+        },
+        {
+          "description": "A good moment to ask the listener whether the music still suits them.",
+          "type": "string",
+          "const": "checkIn"
+        }
+      ]
+    },
+    "DjCueReason": {
+      "oneOf": [
+        {
+          "description": "The listener has not done or said anything for a while.",
+          "type": "string",
+          "const": "listenerQuiet"
+        },
+        {
+          "description": "The current track is long.",
+          "type": "string",
+          "const": "longTrack"
+        },
+        {
+          "description": "Nothing in particular; it has simply been a while.",
+          "type": "string",
+          "const": "routine"
+        },
+        {
+          "description": "At most one track is queued after the current one.",
+          "type": "string",
+          "const": "littleQueued"
+        }
+      ]
+    },
+    "DjCueReply": {
+      "type": "object",
+      "properties": {
+        "chattiness": {
+          "$ref": "#/definitions/DjChattiness"
+        },
+        "cue": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DjCue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "chattiness"
+      ]
+    },
+    "DjFeedbackChange": {
+      "oneOf": [
+        {
+          "description": "Kept for the account until cleared; replaces an earlier entry for the same subject.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "record"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 200
+            },
+            "stance": {
+              "$ref": "#/definitions/DjPreferenceStance"
+            },
+            "target": {
+              "$ref": "#/definitions/DjFeedbackTarget"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "target",
+            "stance"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "clear"
+            },
+            "preferenceId": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "preferenceId"
+          ]
+        }
+      ]
+    },
+    "DjFeedbackTarget": {
+      "description": "What a feedback entry is about.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "video"
+            },
+            "videoId": {
+              "$ref": "#/definitions/VideoId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "videoId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artistId": {
+              "$ref": "#/definitions/ArtistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artist"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artistId"
+          ]
+        }
+      ]
+    },
+    "DjInteraction": {
+      "oneOf": [
+        {
+          "description": "A command from the player window, media keys or MPRIS.",
+          "type": "string",
+          "const": "playerControl"
+        },
+        {
+          "description": "The agent reported that the listener talked to it.",
+          "type": "string",
+          "const": "spoke"
+        }
+      ]
+    },
+    "DjListener": {
+      "type": "object",
+      "properties": {
+        "lastInteraction": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DjInteraction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastInteractionAgoMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "lastSpokenToAgoMs": {
+          "description": "When the agent last reported speaking to the listener.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unansweredCheckIns": {
+          "description": "Unanswered check-ins in a row: each check-in that comes with no listener action or words\nsince the previous check-in adds one, and any listener action or words reset it. The\nfirst check-in after a reset counts 0. Above zero, check-ins come less often.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "unansweredCheckIns"
+      ]
+    },
+    "DjNowPlaying": {
+      "type": "object",
+      "properties": {
+        "playback": {
+          "$ref": "#/definitions/PlaybackStatus"
+        },
+        "positionMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "remainingMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "track": {
+          "$ref": "#/definitions/DjTrack"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "track",
+        "playback",
+        "positionMs"
+      ]
+    },
+    "DjPreference": {
+      "description": "One recorded DJ preference of the current account.",
+      "type": "object",
+      "properties": {
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preferenceId": {
+          "type": "string"
+        },
+        "recordedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "recordedBy": {
+          "description": "The registered client that recorded it; not a claim about a human.",
+          "type": "string"
+        },
+        "stance": {
+          "$ref": "#/definitions/DjPreferenceStance"
+        },
+        "subject": {
+          "$ref": "#/definitions/DjPreferenceSubject"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preferenceId",
+        "subject",
+        "stance",
+        "recordedBy",
+        "recordedAtMs"
+      ]
+    },
+    "DjPreferenceStance": {
+      "type": "string",
+      "enum": [
+        "prefer",
+        "avoid"
+      ]
+    },
+    "DjPreferenceSubject": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "video"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "videoId": {
+              "$ref": "#/definitions/VideoId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "videoId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artistId": {
+              "$ref": "#/definitions/ArtistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artist"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artistId"
+          ]
+        }
+      ]
+    },
+    "DjPreferencesInput": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DjRecentTrack": {
+      "type": "object",
+      "properties": {
+        "endedAgoMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "listenedMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outcome": {
+          "$ref": "#/definitions/DjTrackOutcome"
+        },
+        "track": {
+          "$ref": "#/definitions/DjTrack"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "track",
+        "listenedMs",
+        "outcome",
+        "endedAgoMs"
+      ]
+    },
+    "DjTrack": {
+      "description": "The few track facts a DJ prompt needs; the music tools return the full track.",
+      "type": "object",
+      "properties": {
+        "album": {
+          "description": "Album title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artists": {
+          "description": "Artist names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string"
+        },
+        "videoId": {
+          "$ref": "#/definitions/VideoId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "videoId",
+        "title",
+        "artists"
+      ]
+    },
+    "DjTrackOutcome": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "finished",
+            "skippedByListener",
+            "skippedByAgent"
+          ]
+        },
+        {
+          "description": "Ended early without a command the player could attribute.",
+          "type": "string",
+          "const": "skipped"
+        }
+      ]
+    },
+    "EntitySearchInput": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/EntitySearchKind"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "query": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query",
+        "kind"
+      ]
+    },
+    "EntitySearchKind": {
+      "type": "string",
+      "enum": [
+        "album",
+        "artist",
+        "playlist"
+      ]
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "AUTH_REQUIRED",
+        "PERMISSION_DENIED",
+        "NOT_EDITABLE",
+        "CAPABILITY_UNAVAILABLE",
+        "STALE_CONTEXT",
+        "CONTEXT_EXPIRED",
+        "CONTEXT_CHANGED",
+        "CONFLICT",
+        "PARTIAL_QUEUE",
+        "RATE_LIMITED",
+        "IDEMPOTENCY_CONFLICT",
+        "RESULT_UNKNOWN",
+        "INVALID_INPUT",
+        "INCOMPATIBLE_VERSION",
+        "BUSY",
+        "UNAVAILABLE",
+        "STORAGE_ERROR",
+        "LIMIT_REACHED"
+      ]
+    },
+    "EventCursor": {
+      "type": "object",
+      "properties": {
+        "coreEpoch": {
+          "$ref": "#/definitions/CoreEpoch"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "coreEpoch",
+        "revision"
+      ]
+    },
+    "ExtendedMediaInput": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target": {
+          "$ref": "#/definitions/ExtendedMediaTarget"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ]
+    },
+    "ExtendedMediaItem": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "durationLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ExtendedMediaKind"
+        },
+        "publishedLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "relatedId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrowseId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subtitle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "videoId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/VideoId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "title"
+      ]
+    },
+    "ExtendedMediaKind": {
+      "type": "string",
+      "enum": [
+        "uploadedSong",
+        "uploadedAlbum",
+        "uploadedArtist",
+        "podcast",
+        "podcastChannel",
+        "podcastEpisode"
+      ]
+    },
+    "ExtendedMediaPage": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExtendedMediaItem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entries": {
+          "$ref": "#/definitions/Page8"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "entries"
+      ]
+    },
+    "ExtendedMediaTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "uploadSongs"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "uploadAlbums"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "uploadArtists"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "browseId": {
+              "$ref": "#/definitions/BrowseId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "uploadAlbum"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "browseId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "browseId": {
+              "$ref": "#/definitions/BrowseId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "uploadArtist"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "browseId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "libraryPodcasts"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "browseId": {
+              "$ref": "#/definitions/BrowseId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "podcast"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "browseId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "browseId": {
+              "$ref": "#/definitions/BrowseId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "podcastChannel"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "browseId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "browseId": {
+              "$ref": "#/definitions/BrowseId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "podcastChannelEpisodes"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "browseId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "browseId": {
+              "$ref": "#/definitions/BrowseId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "podcastEpisode"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "browseId"
+          ]
+        }
+      ]
+    },
+    "Freshness": {
+      "type": "string",
+      "enum": [
+        "fresh",
+        "stale"
+      ]
+    },
+    "HistoryEntry": {
+      "type": "object",
+      "properties": {
+        "media": {
+          "$ref": "#/definitions/HistoryMedia"
+        },
+        "period": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "media",
+        "period"
+      ]
+    },
+    "HistoryInput": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 100,
+          "minimum": 1
+        },
+        "localCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "range": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LocalHistoryRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HistorySource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "youtubeCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HistoryMedia": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "song"
+            },
+            "track": {
+              "$ref": "#/definitions/Track"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "track"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "episodeId": {
+              "$ref": "#/definitions/BrowseId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "podcastEpisode"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "episodeId",
+            "title"
+          ]
+        }
+      ]
+    },
+    "HistorySource": {
+      "type": "string",
+      "enum": [
+        "local",
+        "youtube",
+        "combined"
+      ]
+    },
+    "HomeView": {
+      "type": "object",
+      "properties": {
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "personalized": {
+          "type": "boolean"
+        },
+        "playlists": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PlaylistSummary"
+          }
+        },
+        "recent": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Track"
+          }
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "personalized",
+        "freshness",
+        "source",
+        "recent",
+        "playlists"
+      ]
+    },
+    "InterruptResumePolicy": {
+      "description": "What follows an immediate interruption once the inserted tracks have played.",
+      "oneOf": [
+        {
+          "description": "Replay the interrupted track from its saved position, then the original upcoming queue.",
+          "type": "string",
+          "const": "resumeInterrupted"
+        },
+        {
+          "description": "Continue with the original upcoming queue; the interrupted track is not replayed.",
+          "type": "string",
+          "const": "continueOriginalQueue"
+        },
+        {
+          "description": "Start a new playback context from the inserted tracks; nothing is restored.",
+          "type": "string",
+          "const": "stayOnInsertedContext"
+        }
+      ]
+    },
+    "InterruptResumeState": {
+      "oneOf": [
+        {
+          "description": "The policy does not restore anything.",
+          "type": "string",
+          "const": "notApplicable"
+        },
+        {
+          "description": "The inserted tracks are playing; the interrupted track has not been resumed yet.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "The replay occurrence started and the saved position was observed.",
+          "type": "string",
+          "const": "resumed"
+        },
+        {
+          "description": "Manual control, a divergent queue, cancellation, expiry or a restart ended the plan.",
+          "type": "string",
+          "const": "abandoned"
+        }
+      ]
+    },
+    "ItemPhase": {
+      "type": "string",
+      "enum": [
+        "notStarted",
+        "submitted",
+        "acknowledged",
+        "verified",
+        "unknown",
+        "rejected",
+        "cancelled"
+      ]
+    },
+    "ItemResult": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputIndex": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "phase": {
+          "$ref": "#/definitions/ItemPhase"
+        },
+        "resourceEntryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "inputIndex",
+        "phase"
+      ]
+    },
+    "LibraryAlbum": {
+      "type": "object",
+      "properties": {
+        "album": {
+          "$ref": "#/definitions/Album"
+        },
+        "artists": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Artist"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "album",
+        "artists"
+      ]
+    },
+    "LibraryArtist": {
+      "type": "object",
+      "properties": {
+        "artist": {
+          "$ref": "#/definitions/Artist"
+        },
+        "byline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artist"
+      ]
+    },
+    "LibraryInput": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/LibraryKind"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ]
+    },
+    "LibraryKind": {
+      "type": "string",
+      "enum": [
+        "playlists",
+        "liked",
+        "songs",
+        "albums",
+        "artists",
+        "subscriptions",
+        "uploads",
+        "podcasts"
+      ]
+    },
+    "LibraryMembershipTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/VideoId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "song"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "playlist"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/AlbumId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "album"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        }
+      ]
+    },
+    "LibraryPage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "playlists"
+            },
+            "page": {
+              "$ref": "#/definitions/Page5"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "page"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "liked"
+            },
+            "page": {
+              "$ref": "#/definitions/Page"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "page"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "songs"
+            },
+            "page": {
+              "$ref": "#/definitions/Page"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "page"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "albums"
+            },
+            "page": {
+              "$ref": "#/definitions/Page6"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "page"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "artists"
+            },
+            "page": {
+              "$ref": "#/definitions/Page7"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "page"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "subscriptions"
+            },
+            "page": {
+              "$ref": "#/definitions/Page7"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "page"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "uploads"
+            },
+            "page": {
+              "$ref": "#/definitions/ExtendedMediaPage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "page"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "podcasts"
+            },
+            "page": {
+              "$ref": "#/definitions/ExtendedMediaPage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "page"
+          ]
+        }
+      ]
+    },
+    "LimitInput": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 100,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "LocalHistoryEdit": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "entryIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 50,
+              "minItems": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "remove"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "entryIds"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "clear"
+            },
+            "range": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LocalHistoryRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "LocalHistoryEntry": {
+      "type": "object",
+      "properties": {
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "playbackRef": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlaybackRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "positionMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "recordedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "track": {
+          "$ref": "#/definitions/Track"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "entryId",
+        "track",
+        "positionMs",
+        "recordedAtMs"
+      ]
+    },
+    "LocalHistoryRange": {
+      "description": "The local recording timestamp is known. YouTube history may only have a period label.",
+      "type": "object",
+      "properties": {
+        "fromMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "untilMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "LocalHistoryView": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "$ref": "#/definitions/Page10"
+        },
+        "retentionLimit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "retentionLimit",
+        "entries"
+      ]
+    },
+    "LyricsInput": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LyricsPageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LyricsSourcePreference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target": {
+          "$ref": "#/definitions/TrackTarget"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ]
+    },
+    "LyricsKind": {
+      "type": "string",
+      "enum": [
+        "synced",
+        "plain",
+        "instrumental",
+        "notFound",
+        "unavailable",
+        "disabled"
+      ]
+    },
+    "LyricsLine": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "timeMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "timeMs",
+        "text"
+      ]
+    },
+    "LyricsOffsetAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "set"
+            },
+            "offsetMs": {
+              "type": "integer",
+              "format": "int64",
+              "maximum": 10000,
+              "minimum": -10000
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "offsetMs"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "reset"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        }
+      ]
+    },
+    "LyricsPage": {
+      "type": "object",
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "fetchedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "fileOffsetMs": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "kind": {
+          "$ref": "#/definitions/LyricsKind"
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LyricsLine"
+          }
+        },
+        "matchBasis": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plainText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "userOffsetMs": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "videoId": {
+          "$ref": "#/definitions/VideoId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "videoId",
+        "kind",
+        "source",
+        "fetchedAtMs",
+        "fileOffsetMs",
+        "userOffsetMs",
+        "lines",
+        "complete"
+      ]
+    },
+    "LyricsPageInput": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 200,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "LyricsSourcePreference": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "lrclib",
+        "youTubeMusic"
+      ]
+    },
+    "MembershipEvidence": {
+      "type": "object",
+      "properties": {
+        "observedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "value": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "observedAtMs"
+      ]
+    },
+    "MoodCategoryInput": {
+      "type": "object",
+      "properties": {
+        "categoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64
+        },
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "categoryId"
+      ]
+    },
+    "OperationInput": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operationId"
+      ]
+    },
+    "OperationPhase": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "submitted",
+        "acknowledged",
+        "verified",
+        "partial",
+        "unknown",
+        "rejected",
+        "cancelled"
+      ]
+    },
+    "OperationReceipt": {
+      "type": "object",
+      "properties": {
+        "accountScope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AccountScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "itemResults": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ItemResult"
+          }
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/definitions/OperationPhase"
+        },
+        "removed": {
+          "description": "What a removal took away, recorded before anything is sent, so it can be restored.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RemovedItem"
+          }
+        },
+        "resource": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OperationResource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryDisposition": {
+          "$ref": "#/definitions/RetryDisposition"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "schedulingStopped": {
+          "type": "boolean"
+        },
+        "settled": {
+          "type": "boolean"
+        },
+        "verification": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Verification"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "revision",
+        "phase",
+        "itemResults",
+        "schedulingStopped",
+        "settled",
+        "retryDisposition"
+      ]
+    },
+    "OperationResource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "player"
+            },
+            "op": {
+              "$ref": "#/definitions/PlayerOp"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "op"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "queue"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "playlist"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/VideoId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "track"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/ArtistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artist"
+            },
+            "subscribed": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "albumPlaylistId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/PlaylistId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "libraryMembership"
+            },
+            "saved": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "target": {
+              "$ref": "#/definitions/LibraryMembershipTarget"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "target"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "localHistory"
+            },
+            "removedCount": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "settings"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "lyricsOffset"
+            },
+            "offsetMs": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "videoId": {
+              "$ref": "#/definitions/VideoId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "videoId",
+            "offsetMs"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "operation"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cleared": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "djPreference"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "cleared"
+          ]
+        },
+        {
+          "description": "A request for the user to sign in, renew or switch the account in the player.",
+          "type": "object",
+          "properties": {
+            "goal": {
+              "$ref": "#/definitions/AccountHandoffGoal"
+            },
+            "kind": {
+              "type": "string",
+              "const": "accountHandoff"
+            },
+            "state": {
+              "$ref": "#/definitions/AccountHandoffState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "goal",
+            "state"
+          ]
+        },
+        {
+          "description": "Saved resume plan of an immediate interruption, updated as playback progresses.",
+          "type": "object",
+          "properties": {
+            "interruptedEntryId": {
+              "$ref": "#/definitions/QueueEntryId"
+            },
+            "interruptedVideoId": {
+              "$ref": "#/definitions/VideoId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "interruption"
+            },
+            "policy": {
+              "$ref": "#/definitions/InterruptResumePolicy"
+            },
+            "resume": {
+              "$ref": "#/definitions/InterruptResumeState"
+            },
+            "resumeEntryId": {
+              "description": "The queued replay occurrence of the interrupted track, once it is verified.",
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/QueueEntryId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "resumePositionMs": {
+              "description": "Playback position captured right before the switch, when the policy resumes it.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "policy",
+            "interruptedEntryId",
+            "interruptedVideoId",
+            "resume"
+          ]
+        }
+      ]
+    },
+    "Page": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Track"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page10": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LocalHistoryEntry"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page11": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DiscoveryItem"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page12": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DjPreference"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page2": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SearchEntity"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page3": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page4": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PlaylistEntry"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page5": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PlaylistSummary"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page6": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LibraryAlbum"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page7": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LibraryArtist"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page8": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ExtendedMediaItem"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "Page9": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HistoryEntry"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "complete",
+        "source",
+        "freshness",
+        "capturedAtMs"
+      ]
+    },
+    "PageInput": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 100,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "PendingPlayback": {
+      "type": "object",
+      "properties": {
+        "activeOp": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlayerOp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commands": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "desiredPlayback": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlaybackStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "desiredPositionMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "desiredVolume": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "commands"
+      ]
+    },
+    "PlayContextTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "video"
+            },
+            "videoId": {
+              "$ref": "#/definitions/VideoId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "videoId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "context"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "albumId": {
+              "$ref": "#/definitions/AlbumId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "album"
+            },
+            "startIndex": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "albumId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "playlist"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            "startEntryId": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 512,
+              "minLength": 1
+            },
+            "startIndex": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "entryId": {
+              "$ref": "#/definitions/QueueEntryId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "queueEntry"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "entryId",
+            "contextToken"
+          ]
+        }
+      ]
+    },
+    "PlaybackContext": {
+      "description": "Playlist identity and index read from the official page's selected native queue item.",
+      "type": "object",
+      "properties": {
+        "playlistEntryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "playlistId": {
+          "$ref": "#/definitions/PlaylistId"
+        },
+        "startIndex": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "playlistId",
+        "startIndex"
+      ]
+    },
+    "PlaybackRef": {
+      "type": "object",
+      "properties": {
+        "browseId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrowseId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "playlistEntryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "playlistId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queueEntryId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/QueueEntryId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startIndex": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "videoId": {
+          "$ref": "#/definitions/VideoId"
+        }
+      },
+      "required": [
+        "videoId"
+      ]
+    },
+    "PlaybackStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "playing",
+        "paused",
+        "buffering",
+        "ended",
+        "error"
+      ]
+    },
+    "PlaybackTimeAnchor": {
+      "type": "object",
+      "properties": {
+        "anchorCoreMonotonicMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "extrapolating": {
+          "type": "boolean"
+        },
+        "playbackRate": {
+          "type": "number",
+          "format": "double"
+        },
+        "positionMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "positionMs",
+        "playbackRate",
+        "anchorCoreMonotonicMs",
+        "extrapolating"
+      ]
+    },
+    "PlayerConnectionState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "ready",
+        "stale",
+        "recovering",
+        "disconnected",
+        "incompatible"
+      ]
+    },
+    "PlayerInclude": {
+      "type": "string",
+      "enum": [
+        "state",
+        "audio",
+        "both"
+      ]
+    },
+    "PlayerOp": {
+      "type": "string",
+      "enum": [
+        "play",
+        "pause",
+        "toggle",
+        "stop",
+        "seek",
+        "setVolume",
+        "setMuted",
+        "next",
+        "previous",
+        "playTarget",
+        "playCollection",
+        "setShuffle",
+        "setRepeat",
+        "setAutoplay",
+        "enqueue",
+        "selectQueueEntry",
+        "removeQueueEntry",
+        "clearUpcoming",
+        "moveQueueEntry"
+      ]
+    },
+    "PlayerState": {
+      "type": "object",
+      "properties": {
+        "activeOp": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlayerOp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "autoplay": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "connection": {
+          "$ref": "#/definitions/PlayerConnectionState"
+        },
+        "muted": {
+          "type": "boolean"
+        },
+        "pendingCommands": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "playback": {
+          "$ref": "#/definitions/PlaybackStatus"
+        },
+        "playbackContext": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlaybackContext"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repeat": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RepeatMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shuffle": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "stoppedConfirmed": {
+          "type": "boolean"
+        },
+        "timeAnchor": {
+          "$ref": "#/definitions/PlaybackTimeAnchor"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Track"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trackInstanceId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TrackInstanceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "volume": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "connection",
+        "playback",
+        "timeAnchor",
+        "volume",
+        "muted",
+        "pendingCommands",
+        "stoppedConfirmed"
+      ]
+    },
+    "PlayerView": {
+      "type": "object",
+      "properties": {
+        "audio": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AudioObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bridgeEpoch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BridgeEpoch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlayerState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pending": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PendingPlayback"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "freshness"
+      ]
+    },
+    "Playlist": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "editable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "entries": {
+          "$ref": "#/definitions/Page4"
+        },
+        "identityConfirmed": {
+          "type": "boolean"
+        },
+        "playlistId": {
+          "$ref": "#/definitions/PlaylistId"
+        },
+        "privacy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlaylistPrivacy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshotFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "playlistId",
+        "title",
+        "entries"
+      ]
+    },
+    "PlaylistEntry": {
+      "type": "object",
+      "properties": {
+        "entryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "track": {
+          "$ref": "#/definitions/Track"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "position",
+        "track"
+      ]
+    },
+    "PlaylistId": {
+      "description": "Opaque YouTube Music playlist identifier.",
+      "type": "string"
+    },
+    "PlaylistInput": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "playlistId": {
+          "$ref": "#/definitions/PlaylistId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "playlistId"
+      ]
+    },
+    "PlaylistPrivacy": {
+      "type": "string",
+      "enum": [
+        "private",
+        "unlisted",
+        "public"
+      ]
+    },
+    "PlaylistSummary": {
+      "type": "object",
+      "properties": {
+        "playlistId": {
+          "$ref": "#/definitions/PlaylistId"
+        },
+        "title": {
+          "type": "string"
+        },
+        "trackCount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "playlistId",
+        "title"
+      ]
+    },
+    "Preconditions": {
+      "type": "object",
+      "properties": {
+        "expectedAccountEpoch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AccountEpoch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedBridgeEpoch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BridgeEpoch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedEntityRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedQueueRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueueCompleteness": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "partial",
+        "complete"
+      ]
+    },
+    "QueueEntryId": {
+      "description": "Occurrence-scoped queue entry identifier within a bridge epoch.",
+      "type": "string"
+    },
+    "QueueMode": {
+      "type": "string",
+      "enum": [
+        "next",
+        "last"
+      ]
+    },
+    "QueueOccurrence": {
+      "type": "object",
+      "properties": {
+        "entryId": {
+          "$ref": "#/definitions/QueueEntryId"
+        },
+        "track": {
+          "$ref": "#/definitions/Track"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "entryId",
+        "track"
+      ]
+    },
+    "QueueProjection": {
+      "type": "object",
+      "properties": {
+        "completeness": {
+          "$ref": "#/definitions/QueueCompleteness"
+        },
+        "currentEntryId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/QueueEntryId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QueueOccurrence"
+          }
+        },
+        "hasMore": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "infinite": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "loadedEndExclusive": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "loadedStart": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "entries",
+        "completeness"
+      ]
+    },
+    "Rating": {
+      "type": "string",
+      "enum": [
+        "liked",
+        "disliked",
+        "neutral",
+        "unknown"
+      ]
+    },
+    "RecommendationPage": {
+      "type": "object",
+      "properties": {
+        "candidates": {
+          "$ref": "#/definitions/Page"
+        },
+        "seed": {
+          "$ref": "#/definitions/VideoId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "candidates"
+      ]
+    },
+    "RecommendationsInput": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seed": {
+          "$ref": "#/definitions/TrackTarget"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "seed"
+      ]
+    },
+    "RemovedItem": {
+      "description": "One entry a removal took (or, while unsettled, may have taken) from the account or device.",
+      "oneOf": [
+        {
+          "description": "A playlist occurrence and its zero-based position in the playlist before the removal.",
+          "type": "object",
+          "properties": {
+            "entryId": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "playlistEntry"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            "position": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "videoId": {
+              "$ref": "#/definitions/VideoId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId",
+            "entryId",
+            "videoId",
+            "position"
+          ]
+        },
+        {
+          "description": "A local playback history entry and when it was recorded.",
+          "type": "object",
+          "properties": {
+            "entryId": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "localHistoryEntry"
+            },
+            "recordedAtMs": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "videoId": {
+              "$ref": "#/definitions/VideoId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "entryId",
+            "videoId",
+            "recordedAtMs"
+          ]
+        }
+      ]
+    },
+    "RepeatMode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "all",
+        "one"
+      ]
+    },
+    "RequestFrame": {
+      "type": "object",
+      "properties": {
+        "controlVersion": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "request": {
+          "$ref": "#/definitions/ControlRequest"
+        },
+        "requestId": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "controlVersion",
+        "requestId",
+        "request"
+      ]
+    },
+    "ResumeAction": {
+      "type": "string",
+      "enum": [
+        "resumeUnsent",
+        "reconcile"
+      ]
+    },
+    "RetryDisposition": {
+      "type": "string",
+      "enum": [
+        "safe_read_retry",
+        "query_operation",
+        "reconcile_first",
+        "new_plan_required",
+        "reauth_required",
+        "not_retryable"
+      ]
+    },
+    "SearchEntity": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "albumId": {
+              "$ref": "#/definitions/AlbumId"
+            },
+            "artist": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "album"
+            },
+            "title": {
+              "type": "string"
+            },
+            "year": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "albumId",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artistId": {
+              "$ref": "#/definitions/ArtistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artist"
+            },
+            "name": {
+              "type": "string"
+            },
+            "subscribers": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artistId",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "byline": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "playlist"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            "title": {
+              "type": "string"
+            },
+            "trackCount": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId",
+            "title"
+          ]
+        }
+      ]
+    },
+    "SearchInput": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PageInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "query": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    },
+    "SearchSuggestionsInput": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 100,
+          "minimum": 1
+        },
+        "query": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    },
+    "ServerFrame": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "response": {
+              "$ref": "#/definitions/ControlResponse"
+            },
+            "type": {
+              "type": "string",
+              "const": "response"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "requestId",
+            "response"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event": {
+              "$ref": "#/definitions/ControlEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "event"
+          ]
+        }
+      ]
+    },
+    "SettingsPatch": {
+      "type": "object",
+      "properties": {
+        "autoplayOnLaunch": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "closeToTray": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "lrclibEnabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reduceMotion": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reduceTransparency": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "theme": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trackNotifications": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "uiLanguage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UiLanguage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uiScalePercent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 150,
+          "minimum": 75
+        }
+      },
+      "additionalProperties": false
+    },
+    "SettingsSnapshot": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "$ref": "#/definitions/AppSettings"
+        },
+        "settingsRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "settings",
+        "settingsRevision"
+      ]
+    },
+    "ShareAccess": {
+      "description": "Access evidence for an individual recipient remains unknown.",
+      "type": "string",
+      "enum": [
+        "unknown",
+        "private",
+        "unlisted"
+      ]
+    },
+    "ShareInput": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "$ref": "#/definitions/ShareTarget"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ]
+    },
+    "ShareLink": {
+      "type": "object",
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/ShareAccess"
+        },
+        "url": {
+          "type": "string"
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PlaylistPrivacy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "access"
+      ]
+    },
+    "ShareTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "track"
+            },
+            "target": {
+              "$ref": "#/definitions/TrackTarget"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "target"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "playlist"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "albumId": {
+              "$ref": "#/definitions/AlbumId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "album"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "albumId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artistId": {
+              "$ref": "#/definitions/ArtistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artist"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artistId"
+          ]
+        }
+      ]
+    },
+    "ThemeMode": {
+      "type": "string",
+      "enum": [
+        "dark",
+        "light",
+        "system"
+      ]
+    },
+    "Track": {
+      "type": "object",
+      "properties": {
+        "album": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Album"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artists": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Artist"
+          }
+        },
+        "availability": {
+          "$ref": "#/definitions/TrackAvailability"
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "rating": {
+          "$ref": "#/definitions/Rating"
+        },
+        "title": {
+          "type": "string"
+        },
+        "versionTag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "videoId": {
+          "$ref": "#/definitions/VideoId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "videoId",
+        "title",
+        "artists",
+        "availability",
+        "rating"
+      ]
+    },
+    "TrackAvailability": {
+      "type": "string",
+      "enum": [
+        "available",
+        "unavailable",
+        "regionBlocked",
+        "ageRestricted",
+        "unknown"
+      ]
+    },
+    "TrackInstanceId": {
+      "description": "Unique playback instance identifier (distinguishes repeated plays).",
+      "type": "string"
+    },
+    "TrackTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "video"
+            },
+            "videoId": {
+              "$ref": "#/definitions/VideoId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "videoId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "context"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken"
+          ]
+        }
+      ]
+    },
+    "TrackView": {
+      "type": "object",
+      "properties": {
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "membership": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MembershipEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ratingObservedAtMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source": {
+          "type": "string"
+        },
+        "track": {
+          "$ref": "#/definitions/Track"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "track",
+        "source",
+        "freshness"
+      ]
+    },
+    "UiLanguage": {
+      "description": "The language the UI is shown in. Values are the UI's BCP 47 locale tags.",
+      "type": "string",
+      "enum": [
+        "en",
+        "zh-CN"
+      ]
+    },
+    "Verification": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "$ref": "#/definitions/VerificationLevel"
+        },
+        "observedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "observedAtMs"
+      ]
+    },
+    "VerificationLevel": {
+      "type": "string",
+      "enum": [
+        "observed",
+        "readBack",
+        "persisted"
+      ]
+    },
+    "VideoId": {
+      "description": "Opaque YouTube Music video identifier.",
+      "type": "string"
+    },
+    "WriteAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "play"
+            },
+            "target": {
+              "$ref": "#/definitions/PlayContextTarget"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "target"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "resume"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pause"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "stop"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "next"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "previous"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "seek"
+            },
+            "positionMs": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken",
+            "positionMs"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "volume"
+            },
+            "volume": {
+              "type": "number",
+              "format": "double",
+              "maximum": 1,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "volume"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "mute"
+            },
+            "muted": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "muted"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "shuffle"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "enabled"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "repeat"
+            },
+            "mode": {
+              "$ref": "#/definitions/RepeatMode"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "autoplay"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "enabled"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "enqueue"
+            },
+            "mode": {
+              "$ref": "#/definitions/QueueMode"
+            },
+            "videoIds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/VideoId"
+              },
+              "maxItems": 50,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken",
+            "mode",
+            "videoIds"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "entryId": {
+              "$ref": "#/definitions/QueueEntryId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "selectQueueEntry"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken",
+            "entryId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "entryId": {
+              "$ref": "#/definitions/QueueEntryId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "removeQueueEntry"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken",
+            "entryId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "beforeEntryId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/QueueEntryId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "contextToken": {
+              "type": "string"
+            },
+            "entryId": {
+              "$ref": "#/definitions/QueueEntryId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "moveQueueEntry"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken",
+            "entryId"
+          ]
+        },
+        {
+          "description": "Remove the nearest loaded upcoming occurrences, at most 50; partial when more may follow.",
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "clearUpcoming"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken"
+          ]
+        },
+        {
+          "description": "Clear the upcoming occurrences best effort, then insert in input order.",
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "replaceUpcoming"
+            },
+            "videoIds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/VideoId"
+              },
+              "maxItems": 50,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken",
+            "videoIds"
+          ]
+        },
+        {
+          "description": "Switch to the inserted tracks now and follow the explicit resume policy afterwards.",
+          "type": "object",
+          "properties": {
+            "contextToken": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "interruptWith"
+            },
+            "resumePolicy": {
+              "$ref": "#/definitions/InterruptResumePolicy"
+            },
+            "videoIds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/VideoId"
+              },
+              "maxItems": 50,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contextToken",
+            "videoIds",
+            "resumePolicy"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "rate"
+            },
+            "rating": {
+              "$ref": "#/definitions/Rating"
+            },
+            "target": {
+              "$ref": "#/definitions/TrackTarget"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "target",
+            "rating"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artistId": {
+              "$ref": "#/definitions/ArtistId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "setArtistSubscription"
+            },
+            "subscribed": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artistId",
+            "subscribed"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "setLibraryMembership"
+            },
+            "saved": {
+              "type": "boolean"
+            },
+            "target": {
+              "$ref": "#/definitions/LibraryMembershipTarget"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "target",
+            "saved"
+          ]
+        },
+        {
+          "description": "A struct variant: the edit carries its own `kind` tag inside `edit`.",
+          "type": "object",
+          "properties": {
+            "edit": {
+              "$ref": "#/definitions/LocalHistoryEdit"
+            },
+            "kind": {
+              "type": "string",
+              "const": "editLocalHistory"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "edit"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 5000
+            },
+            "kind": {
+              "type": "string",
+              "const": "createPrivatePlaylist"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 150,
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "createdByOperationId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "addPlaylistEntries"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            "videoIds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/VideoId"
+              },
+              "maxItems": 50,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId",
+            "videoIds"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "updatePlaylist"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "setPlaylistPrivacy"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            },
+            "privacy": {
+              "$ref": "#/definitions/PlaylistPrivacy"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId",
+            "privacy"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "entryIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 50,
+              "minItems": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "removePlaylistEntries"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId",
+            "entryIds"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "beforeEntryId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "entryId": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "movePlaylistEntry"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId",
+            "entryId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "deletePlaylist"
+            },
+            "playlistId": {
+              "$ref": "#/definitions/PlaylistId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "playlistId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expectedSettingsRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "updateSettings"
+            },
+            "patch": {
+              "$ref": "#/definitions/SettingsPatch"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "expectedSettingsRevision",
+            "patch"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "setLyricsOffset"
+            },
+            "offset": {
+              "$ref": "#/definitions/LyricsOffsetAction"
+            },
+            "target": {
+              "$ref": "#/definitions/TrackTarget"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "target",
+            "offset"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "change": {
+              "$ref": "#/definitions/DjFeedbackChange"
+            },
+            "kind": {
+              "type": "string",
+              "const": "setDjFeedback"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "change"
+          ]
+        },
+        {
+          "description": "Asks the user, without opening or focusing any window, to change the account.",
+          "type": "object",
+          "properties": {
+            "goal": {
+              "$ref": "#/definitions/AccountHandoffGoal"
+            },
+            "kind": {
+              "type": "string",
+              "const": "accountHandoff"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "goal"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cancel"
+            },
+            "targetOperationId": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "targetOperationId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "$ref": "#/definitions/ResumeAction"
+            },
+            "expectedOperationRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "resumeOperation"
+            },
+            "targetOperationId": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "targetOperationId",
+            "expectedOperationRevision",
+            "action"
+          ]
+        }
+      ]
+    },
+    "WriteInput": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/WriteAction"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "preconditions": {
+          "$ref": "#/definitions/Preconditions"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "preconditions",
+        "action"
+      ]
+    }
+  }
+}

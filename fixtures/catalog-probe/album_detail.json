@@ -1,0 +1,134 @@
+{
+  "contents": {
+    "twoColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "musicResponsiveHeaderRenderer": {
+                      "title": { "runs": [{ "text": "Probe Album One" }] },
+                      "subtitle": {
+                        "runs": [
+                          { "text": "Album" },
+                          { "text": " • " },
+                          { "text": "2025" }
+                        ]
+                      },
+                      "straplineTextOne": {
+                        "runs": [
+                          {
+                            "text": "Probe Artist One",
+                            "navigationEndpoint": {
+                              "browseEndpoint": { "browseId": "UC_probe_art1" }
+                            }
+                          }
+                        ]
+                      },
+                      "thumbnail": {
+                        "musicThumbnailRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [
+                              {
+                                "url": "https://lh3.googleusercontent.com/probe-album-1",
+                                "width": 544,
+                                "height": 544
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "secondSubtitle": {
+                        "runs": [
+                          { "text": "1 song" },
+                          { "text": " • " },
+                          { "text": "3 minutes" }
+                        ]
+                      },
+                      "buttons": [
+                        {
+                          "musicPlayButtonRenderer": {
+                            "playNavigationEndpoint": {
+                              "watchEndpoint": { "playlistId": "OLAK5uy_probe" }
+                            }
+                          }
+                        },
+                        {
+                          "toggleButtonRenderer": {
+                            "defaultIcon": { "iconType": "BOOKMARK_BORDER" }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "secondaryContents": {
+        "sectionListRenderer": {
+          "contents": [
+            {
+              "musicShelfRenderer": {
+                "contents": [
+                  {
+                    "musicResponsiveListItemRenderer": {
+                      "index": { "runs": [{ "text": "1" }] },
+                      "flexColumns": [
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": { "runs": [{ "text": "Album Opening" }] }
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": { "runs": [{ "text": "Probe Artist One" }] }
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": { "runs": [{ "text": "120K plays" }] }
+                          }
+                        }
+                      ],
+                      "fixedColumns": [
+                        {
+                          "musicResponsiveListItemFixedColumnRenderer": {
+                            "text": { "simpleText": "3:20" }
+                          }
+                        }
+                      ],
+                      "overlay": {
+                        "musicItemThumbnailOverlayRenderer": {
+                          "content": {
+                            "musicPlayButtonRenderer": {
+                              "playNavigationEndpoint": {
+                                "watchEndpoint": { "videoId": "probeAlbVid1" }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "menu": {
+                        "menuRenderer": {
+                          "topLevelButtons": [
+                            { "likeButtonRenderer": { "likeStatus": "LIKE" } }
+                          ],
+                          "items": []
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

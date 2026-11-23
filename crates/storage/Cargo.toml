@@ -1,0 +1,26 @@
+[package]
+name = "ytm-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ytm-control-api.workspace = true
+ytm-protocol.workspace = true
+ytm-core.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
+image.workspace = true
+sha2.workspace = true
+hex.workspace = true
+url.workspace = true
+directories.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true

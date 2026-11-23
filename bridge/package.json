@@ -1,0 +1,21 @@
+{
+  "name": "@ytm-glass/bridge",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/bridge.ts",
+  "scripts": {
+    "build": "node -e \"import('esbuild').then(async e => { await e.build({ entryPoints: ['src/bridge.ts'], bundle: true, platform: 'browser', format: 'esm', outfile: 'dist/bridge-probe.mjs' }); await e.build({ entryPoints: ['src/page-shim.ts'], bundle: true, platform: 'browser', format: 'iife', outfile: 'dist/page-shim.iife.js' }); })\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ytm-glass/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "jsdom": "31.0.1",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}

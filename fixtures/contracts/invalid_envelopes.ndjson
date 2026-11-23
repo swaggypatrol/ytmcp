@@ -1,0 +1,6 @@
+{"protocolVersion":2,"kind":"ui.ping","seq":1,"payload":{}}
+{"protocolVersion":1,"kind":"ui.playerCommand","seq":2,"payload":{"commandId":"cmd-bad-vol","op":"setVolume","args":{"volume":1.5}}}
+{"protocolVersion":1,"kind":"ui.playerCommand","seq":3,"payload":{"commandId":"cmd-nan","op":"seek","args":{"positionMs":1e309}}}
+{"protocolVersion":1,"kind":"ui.playerCommand","seq":4,"payload":{"commandId":"cmd-unsafe-int","op":"seek","args":{"positionMs":9007199254740992}}}
+{"protocolVersion":1,"kind":"ui.catalogQuery","seq":5,"payload":{"kind":"searchSongs","limit":101}}
+{"protocolVersion":1,"kind":"ui.ping","seq":6,"payload":"not-an-object"

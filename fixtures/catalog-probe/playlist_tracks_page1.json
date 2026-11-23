@@ -1,0 +1,281 @@
+{
+  "contents": {
+    "twoColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "musicResponsiveHeaderRenderer": {
+                      "title": { "runs": [{ "text": "Synthetic Focus Mix" }] },
+                      "facepile": {
+                        "avatarStackViewModel": {
+                          "text": { "content": "Probe Channel" },
+                          "avatars": [
+                            {
+                              "avatarViewModel": {
+                                "image": {
+                                  "sources": [
+                                    { "url": "https://lh3.googleusercontent.com/probe-avatar" }
+                                  ]
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      "thumbnail": {
+                        "musicThumbnailRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [
+                              {
+                                "url": "https://lh3.googleusercontent.com/probe-pl-1",
+                                "width": 512,
+                                "height": 512
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "description": {
+                        "musicDescriptionShelfRenderer": {
+                          "description": {
+                            "runs": [{ "text": "Offline fixture playlist for T04." }]
+                          }
+                        }
+                      },
+                      "subtitle": {
+                        "runs": [
+                          { "text": "Playlist" },
+                          { "text": " • " },
+                          { "text": "2026" }
+                        ]
+                      },
+                      "secondSubtitle": {
+                        "runs": [
+                          { "text": "4 songs" },
+                          { "text": " • " },
+                          { "text": "13 minutes" }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "secondaryContents": {
+        "sectionListRenderer": {
+          "contents": [
+            {
+              "musicPlaylistShelfRenderer": {
+                "playlistId": "PL_probe_01",
+                "contents": [
+                  {
+                    "musicResponsiveListItemRenderer": {
+                      "flexColumns": [
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": { "runs": [{ "text": "Playlist Track One" }] }
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {
+                              "runs": [
+                                {
+                                  "text": "Probe Artist One",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "UC_probe_art1" }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {
+                              "runs": [
+                                {
+                                  "text": "Probe Album One",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "MPREb_probeAlb1" }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "fixedColumns": [
+                        {
+                          "musicResponsiveListItemFixedColumnRenderer": {
+                            "text": { "simpleText": "3:15" }
+                          }
+                        }
+                      ],
+                      "overlay": {
+                        "musicItemThumbnailOverlayRenderer": {
+                          "content": {
+                            "musicPlayButtonRenderer": {
+                              "playNavigationEndpoint": {
+                                "watchEndpoint": {
+                                  "videoId": "probePlVid1",
+                                  "watchEndpointMusicSupportedConfigs": {
+                                    "watchEndpointMusicConfig": {
+                                      "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "menu": {
+                        "menuRenderer": {
+                          "topLevelButtons": [
+                            { "likeButtonRenderer": { "likeStatus": "LIKE" } }
+                          ],
+                          "items": [
+                            {
+                              "menuNavigationItemRenderer": {
+                                "navigationEndpoint": {
+                                  "watchEndpoint": { "playlistId": "PL_probe_01" }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      "thumbnail": {
+                        "musicThumbnailRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [
+                              {
+                                "url": "https://lh3.googleusercontent.com/probe-pt-1",
+                                "width": 226,
+                                "height": 226
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "musicResponsiveListItemRenderer": {
+                      "flexColumns": [
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": { "runs": [{ "text": "Playlist Track Two" }] }
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {
+                              "runs": [
+                                {
+                                  "text": "Probe Artist Two",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "UC_probe_art2" }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "musicResponsiveListItemFlexColumnRenderer": {
+                            "text": {
+                              "runs": [
+                                {
+                                  "text": "Probe Album Two",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "MPREb_probeAlb2" }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "fixedColumns": [
+                        {
+                          "musicResponsiveListItemFixedColumnRenderer": {
+                            "text": { "simpleText": "2:45" }
+                          }
+                        }
+                      ],
+                      "overlay": {
+                        "musicItemThumbnailOverlayRenderer": {
+                          "content": {
+                            "musicPlayButtonRenderer": {
+                              "playNavigationEndpoint": {
+                                "watchEndpoint": {
+                                  "videoId": "probePlVid2",
+                                  "watchEndpointMusicSupportedConfigs": {
+                                    "watchEndpointMusicConfig": {
+                                      "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "menu": {
+                        "menuRenderer": {
+                          "topLevelButtons": [
+                            { "likeButtonRenderer": { "likeStatus": "INDIFFERENT" } }
+                          ],
+                          "items": [
+                            {
+                              "menuNavigationItemRenderer": {
+                                "navigationEndpoint": {
+                                  "watchEndpoint": { "playlistId": "PL_probe_01" }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      "thumbnail": {
+                        "musicThumbnailRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [
+                              {
+                                "url": "https://lh3.googleusercontent.com/probe-pt-2",
+                                "width": 226,
+                                "height": 226
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "continuationItemRenderer": {
+                      "continuationEndpoint": {
+                        "continuationCommand": {
+                          "token": "probe_pt_cont_p2"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

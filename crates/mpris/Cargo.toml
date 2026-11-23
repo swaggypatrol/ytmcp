@@ -1,0 +1,15 @@
+[package]
+name = "ytm-mpris"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ytm-protocol.workspace = true
+ytm-core.workspace = true
+mpris-server.workspace = true
+zbus.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true

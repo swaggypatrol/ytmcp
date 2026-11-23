@@ -1,0 +1,25 @@
+{
+  "name": "ytm-glass",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": "26.13.1"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:process": "vitest run --config tests/process/vitest.config.ts",
+    "test:desktop": "vitest run --config tests/desktop/vitest.config.ts",
+    "test:e2e": "vitest run --config tests/e2e/vitest.config.ts"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "esbuild": "0.28.2",
+    "eslint": "10.15.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.73.0",
+    "vitest": "5.1.1"
+  }
+}

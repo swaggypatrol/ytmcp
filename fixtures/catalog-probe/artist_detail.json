@@ -1,0 +1,167 @@
+{
+  "header": {
+    "musicImmersiveHeaderRenderer": {
+      "title": { "runs": [{ "text": "Probe Artist One" }] },
+      "thumbnail": {
+        "musicThumbnailRenderer": {
+          "thumbnail": {
+            "thumbnails": [
+              {
+                "url": "https://lh3.googleusercontent.com/probe-artist-1",
+                "width": 540,
+                "height": 540
+              }
+            ]
+          }
+        }
+      },
+      "subscriptionButton": {
+        "subscribeButtonRenderer": {
+          "channelId": "UC_probe_art1",
+          "subscribed": false,
+          "subscriberCountText": { "runs": [{ "text": "10K subscribers" }] }
+        }
+      }
+    }
+  },
+  "contents": {
+    "singleColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "musicShelfRenderer": {
+                      "title": {
+                        "runs": [
+                          {
+                            "text": "Top songs",
+                            "navigationEndpoint": {
+                              "browseEndpoint": { "browseId": "VLOLAK_top" }
+                            }
+                          }
+                        ]
+                      },
+                      "contents": [
+                        {
+                          "musicResponsiveListItemRenderer": {
+                            "playlistItemData": { "videoId": "probeArtVid1" },
+                            "flexColumns": [
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": { "runs": [{ "text": "Artist Anthem" }] }
+                                }
+                              },
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": {
+                                    "runs": [
+                                      {
+                                        "text": "Probe Artist One",
+                                        "navigationEndpoint": {
+                                          "browseEndpoint": { "browseId": "UC_probe_art1" }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              },
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": { "runs": [{ "text": "450K plays" }] }
+                                }
+                              },
+                              {
+                                "musicResponsiveListItemFlexColumnRenderer": {
+                                  "text": {
+                                    "runs": [
+                                      {
+                                        "text": "Probe Album One",
+                                        "navigationEndpoint": {
+                                          "browseEndpoint": { "browseId": "MPREb_probeAlb1" }
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            ],
+                            "menu": {
+                              "menuRenderer": {
+                                "topLevelButtons": [
+                                  { "likeButtonRenderer": { "likeStatus": "INDIFFERENT" } }
+                                ],
+                                "items": []
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "musicCarouselShelfRenderer": {
+                      "header": {
+                        "musicCarouselShelfBasicHeaderRenderer": {
+                          "title": { "runs": [{ "text": "Albums" }] }
+                        }
+                      },
+                      "contents": [
+                        {
+                          "musicTwoRowItemRenderer": {
+                            "title": {
+                              "runs": [
+                                {
+                                  "text": "Probe Album One",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "MPREb_probeAlb1" }
+                                  }
+                                }
+                              ]
+                            },
+                            "subtitle": { "runs": [{ "text": "2025" }] },
+                            "thumbnailRenderer": {
+                              "musicThumbnailRenderer": {
+                                "thumbnail": {
+                                  "thumbnails": [
+                                    {
+                                      "url": "https://lh3.googleusercontent.com/probe-album-1",
+                                      "width": 544,
+                                      "height": 544
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            "menu": {
+                              "menuRenderer": {
+                                "items": [
+                                  {
+                                    "toggleMenuServiceItemRenderer": {
+                                      "defaultIcon": { "iconType": "BOOKMARK_BORDER" }
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "musicDescriptionShelfRenderer": {
+                      "description": { "runs": [{ "text": "Synthetic probe artist bio." }] }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

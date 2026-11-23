@@ -1,0 +1,47 @@
+{
+  "continuationContents": {
+    "gridContinuation": {
+      "items": [
+        {
+          "musicTwoRowItemRenderer": {
+            "title": {
+              "runs": [
+                {
+                  "text": "Late Night Synth",
+                  "navigationEndpoint": {
+                    "browseEndpoint": { "browseId": "VLPL_probe_02" }
+                  }
+                }
+              ]
+            },
+            "thumbnailRenderer": {
+              "musicThumbnailRenderer": {
+                "thumbnail": {
+                  "thumbnails": [
+                    {
+                      "url": "https://lh3.googleusercontent.com/probe-pl-2",
+                      "width": 512,
+                      "height": 512
+                    }
+                  ]
+                }
+              }
+            },
+            "subtitle": {
+              "runs": [
+                {
+                  "text": "Probe Channel",
+                  "navigationEndpoint": {
+                    "browseEndpoint": { "browseId": "UC_probe_channel" }
+                  }
+                },
+                { "text": " • " },
+                { "text": "18 songs" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "displayName": "YTM Glass",
+  "codename": "ytm-glass",
+  "appId": "local.ytmglass.Desktop",
+  "desktopEntry": "local.ytmglass.Desktop",
+  "mprisBusName": "org.mpris.MediaPlayer2.ytm_glass",
+  "mprisIdentity": "YTM Glass",
+  "xdgDirName": "ytm-glass",
+  "playerSessionPartition": "persist:player-default",
+  "uiSessionPartition": "ytm-ui-ephemeral",
+  "appScheme": "app",
+  "protocolVersion": 1,
+  "version": "0.1.0",
+  "license": "MIT"
+}

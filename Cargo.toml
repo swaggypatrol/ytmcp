@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/protocol",
+  "crates/control-api",
+  "crates/mcp",
+  "crates/core",
+  "crates/storage",
+  "crates/ytm-data",
+  "crates/lyrics",
+  "crates/mpris",
+  "crates/daemon",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+schemars = { version = "=1.2.3", features = ["derive"] }
+tokio = { version = "=1.54.1", features = ["full"] }
+tokio-util = "=0.7.20"
+thiserror = "=2.0.21"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json", "fmt"] }
+uuid = { version = "=1.29.3", features = ["v4", "serde"] }
+url = { version = "=2.5.9", features = ["serde"] }
+directories = "=6.0.0"
+sha2 = "=0.11.1"
+hex = "=0.4.3"
+rand = "=0.10.4"
+rusqlite = { version = "=0.43.0", features = ["bundled", "backup"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json", "gzip", "deflate", "brotli"] }
+ytmapi-rs = { version = "=0.3.4", default-features = false, features = ["rustls", "reqwest", "serde_json", "simplified-queries"] }
+mpris-server = { version = "=0.11.0", features = ["tokio"] }
+zbus = "=6.5.0"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+tempfile = "=3.27.0"
+wiremock = "=0.6.5"
+futures-util = { version = "=0.3.34", features = ["sink"] }
+rustix = { version = "=1.1.6", features = ["process", "fs"] }
+subtle = "=2.6.1"
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "transport-io", "schemars"] }
+
+ytm-protocol = { path = "crates/protocol" }
+ytm-control-api = { path = "crates/control-api" }
+ytm-core = { path = "crates/core" }
+ytm-storage = { path = "crates/storage" }
+ytm-data = { path = "crates/ytm-data" }
+ytm-lyrics = { path = "crates/lyrics" }
+ytm-mpris = { path = "crates/mpris" }

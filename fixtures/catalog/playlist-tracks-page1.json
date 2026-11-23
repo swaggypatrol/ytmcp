@@ -1,0 +1,49 @@
+{
+  "resultType": "playlistTracks",
+  "playlistId": "PL_synthetic_fixture_01",
+  "title": "Synthetic Fixture Playlist",
+  "author": "Synthetic Curator",
+  "description": null,
+  "cover": null,
+  "tracks": {
+    "items": [
+      {
+        "videoId": "syn_vid_001",
+        "title": "Synthetic Track Alpha",
+        "artists": [
+          {
+            "id": null,
+            "name": "Synthetic Artist"
+          }
+        ],
+        "album": null,
+        "durationMs": 215000,
+        "cover": null,
+        "availability": "available",
+        "versionTag": null,
+        "isLiked": true
+      },
+      {
+        "videoId": "syn_vid_002",
+        "title": "Synthetic Track Beta",
+        "artists": [
+          {
+            "id": null,
+            "name": "Synthetic Artist"
+          }
+        ],
+        "album": null,
+        "durationMs": 182000,
+        "cover": null,
+        "availability": "available",
+        "versionTag": null,
+        "isLiked": false
+      }
+    ],
+    "nextCursor": null,
+    "freshness": "fresh",
+    "fetchedAtMs": 1700000000000,
+    "accountScope": "scope-synthetic",
+    "providerVersion": "ytmapi-rs/0.3.4"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "resultType": "searchSongs",
+  "query": "synthetic query",
+  "songs": {
+    "items": [
+      {
+        "videoId": "syn_vid_001",
+        "title": "Synthetic Track Alpha",
+        "artists": [
+          {
+            "id": null,
+            "name": "Synthetic Artist"
+          }
+        ],
+        "album": {
+          "id": null,
+          "browseId": null,
+          "title": "Synthetic Album"
+        },
+        "durationMs": 215000,
+        "cover": null,
+        "availability": "available",
+        "versionTag": null,
+        "isLiked": null
+      }
+    ],
+    "nextCursor": null,
+    "freshness": "fresh",
+    "fetchedAtMs": 1700000000000,
+    "accountScope": "scope-synthetic",
+    "providerVersion": "ytmapi-rs/0.3.4"
+  },
+  "albums": [],
+  "artists": [],
+  "playlists": []
+}

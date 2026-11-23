@@ -1,0 +1,3 @@
+Verse one without timestamps
+<b>Preserved HTML</b> & entities &amp; <script>alert(1)</script>
+Verse two line

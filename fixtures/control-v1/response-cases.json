@@ -1,0 +1,26 @@
+[
+  {
+    "type":"response","requestId":1,
+    "response":{"result":"operation","value":{
+      "operationId":"fixture-create","accountScope":"scope-fixture","revision":3,
+      "phase":"partial","resource":{"kind":"playlist","id":"PLfixture"},"verification":null,
+      "itemResults":[
+        {"inputIndex":0,"phase":"verified","resourceEntryId":"occurrence-one","error":null},
+        {"inputIndex":1,"phase":"unknown","resourceEntryId":null,"error":"RESULT_UNKNOWN"},
+        {"inputIndex":2,"phase":"notStarted","resourceEntryId":null,"error":null}
+      ],
+      "schedulingStopped":true,"settled":false,"retryDisposition":"reconcile_first","error":null
+    }}
+  },
+  {
+    "type":"response","requestId":2,
+    "response":{"result":"playlist","value":{
+      "playlistId":"PLfixture","title":"Test","description":null,"privacy":"private",
+      "editable":true,"snapshotFingerprint":null,
+      "entries":{"nextCursor":null,"complete":true,"source":"fixture","freshness":"fresh","capturedAtMs":5,"items":[
+        {"entryId":"occurrence-one","position":0,"track":{"videoId":"fixture-one","title":"Same track","artists":[],"album":null,"durationMs":null,"availability":"available","versionTag":null,"rating":"unknown"}},
+        {"entryId":"occurrence-two","position":1,"track":{"videoId":"fixture-one","title":"Same track","artists":[],"album":null,"durationMs":null,"availability":"available","versionTag":null,"rating":"unknown"}}
+      ]}
+    }}
+  }
+]

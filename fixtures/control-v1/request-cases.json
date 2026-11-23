@@ -1,0 +1,14 @@
+{
+  "valid": [
+    {"controlVersion":1,"requestId":1,"request":{"method":"search","params":{"query":"fixture track","page":{"limit":9}}}},
+    {"controlVersion":1,"requestId":2,"request":{"method":"submit","params":{"operationId":"fixture-create-1","preconditions":{"expectedAccountEpoch":"fixture-epoch"},"action":{"kind":"createPrivatePlaylist","title":"Private demo"}}}},
+    {"controlVersion":1,"requestId":3,"request":{"method":"submit","params":{"operationId":"fixture-rate-1","preconditions":{"expectedAccountEpoch":"fixture-epoch"},"action":{"kind":"rate","target":{"kind":"context","contextToken":"fixture-token"},"rating":"neutral"}}}}
+  ],
+  "invalid": [
+    {"controlVersion":1,"requestId":1,"request":{"method":"host.sessionMaterial","params":{}}},
+    {"controlVersion":1,"requestId":2,"request":{"method":"submit","params":{"operationId":"fixture-2","preconditions":{},"action":{"kind":"pause"},"confirmedByUser":true}}},
+    {"controlVersion":1,"requestId":3,"request":{"method":"submit","params":{"operationId":"fixture-3","preconditions":{},"action":{"kind":"pause"},"source":"human"}}},
+    {"controlVersion":1,"requestId":4,"request":{"method":"submit","params":{"operationId":"fixture-4","preconditions":{},"action":{"kind":"createPrivatePlaylist","title":"Demo","privacy":"public"}}}},
+    {"controlVersion":1,"requestId":5,"request":{"method":"submit","params":{"operationId":"fixture-5","preconditions":{"accountScope":"victim"},"action":{"kind":"pause"}}}}
+  ]
+}

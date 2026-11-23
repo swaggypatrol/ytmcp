@@ -1,0 +1,291 @@
+/*
+ * Liquid glass: the app's only translucent material. Used by the sidebar, the floating player
+ * bar and overlays (dialogs, menus), nowhere else.
+ *
+ * liquid-glass.ts reads the --lg-* optics tokens and builds one SVG filter per surface; this
+ * file owns everything that needs no per-element geometry: tint, rim, shadow, the palette for
+ * content placed on glass, the scroll-edge effect, press/morph motion and the opaque fallbacks.
+ *
+ * After changing a colour, tone or fill token run the tone audit (__tests__/tone.test.ts): it
+ * derives the worst-case contrast of everything written on glass from these values.
+ */
+
+@property --lg-light-x { syntax: "<percentage>"; inherits: true; initial-value: 28%; }
+@property --lg-light-y { syntax: "<percentage>"; inherits: true; initial-value: 0%; }
+
+:root {
+  /* Optics (read by liquid-glass.ts). Lengths are CSS px. */
+  --lg-bezel: 20px;            /* width of the curved rim that bends light */
+  --lg-reach: 17px;            /* how far a ray entering at the outline lands inside */
+  --lg-dispersion: 0.06;       /* relative spread of the R/B displacement around G */
+  --lg-frost-clear: 2.4px;     /* blur of the clear body */
+  --lg-frost-plate: 13px;      /* blur behind label plates; also the "local mean" radius */
+  --lg-body-frost: 0.3;        /* 0 = clear body, 1 = the whole body is a plate */
+  --lg-plate-feather: 24px;
+  --lg-saturation: 1.45;
+  --lg-tone-gain: 0.8;         /* brightness kept where the backdrop is at the scheme's own end */
+  --lg-tone-adapt: 0.6;        /* how much is taken away as the local mean moves to the far end */
+
+  /* Surface colours (dark scheme). */
+  --lg-scheme: dark;
+  --lg-tint: oklch(0.3 0.016 265 / 0.3);
+  --lg-tint-plain: oklch(0.2 0.012 265 / 0.86);   /* while only the plain blur is active */
+  --lg-solid: oklch(0.185 0.011 265);              /* reduced transparency */
+  --lg-fill-hover: oklch(1 0 0 / 0.07);
+  --lg-fill-active: oklch(1 0 0 / 0.12);
+  --lg-hairline: oklch(1 0 0 / 0.12);
+  --lg-rim-bright: oklch(1 0 0 / 0.62);
+  --lg-rim-mid: oklch(1 0 0 / 0.3);
+  --lg-rim-dim: oklch(1 0 0 / 0.1);
+  --lg-sheen: oklch(1 0 0 / 0.1);
+  --lg-sheen-strength: 0.25;   /* opacity of the broad sheen; counted by the tone audit */
+  --lg-bezel-light: oklch(1 0 0 / 0.16);
+  --lg-bezel-shade: oklch(0 0 0 / 0.28);
+  --lg-shadow: 0 0 0 0.5px oklch(0 0 0 / 0.35), 0 1px 2px oklch(0 0 0 / 0.3), 0 10px 28px -6px oklch(0 0 0 / 0.5);
+  --lg-shadow-raised: 0 0 0 0.5px oklch(0 0 0 / 0.4), 0 2px 4px oklch(0 0 0 / 0.32), 0 22px 54px -10px oklch(0 0 0 / 0.62);
+  --lg-rim-width: 1px;
+  --lg-fallback-blur: 22px;
+
+  /* Palette for content on glass. Body text needs 4.5:1, icons and marks 3:1, on any backdrop. */
+  --lg-text-primary: oklch(0.97 0.004 265);
+  --lg-text-secondary: oklch(0.88 0.01 265);
+  --lg-accent: oklch(0.8 0.13 18);                 /* icons and marks only, never body text */
+  --lg-icon: oklch(0.95 0.004 265);                /* inactive glyphs: about 92% white, never pure */
+  --lg-icon-lift: drop-shadow(0 1px 1px oklch(0 0 0 / 0.35));
+  --lg-icon-lift-on-accent: drop-shadow(0 1px 2px oklch(0 0 0 / 0.25));
+  --lg-accent-fill: oklch(0.56 0.21 18);           /* opaque fill of the prominent button */
+  --lg-on-accent-fill: oklch(0.99 0.003 20);
+  --lg-status-success: oklch(0.88 0.13 150);
+  --lg-status-warning: oklch(0.89 0.12 85);
+  --lg-status-danger: oklch(0.9 0.07 25);
+  --lg-status-info: oklch(0.89 0.07 240);
+  --lg-focus-ring: oklch(0.8 0.12 230);
+
+  /* Scroll-edge effect */
+  --lg-edge-blur: 5px;
+  --lg-edge-fade: 64px;
+  --lg-edge-dim: 0.22;
+
+  /* Motion */
+  --lg-duration-press: 520ms;   /* spring back after release */
+  --lg-duration-morph: 460ms;   /* overlay settling to full size */
+  --lg-duration-hover: 160ms;
+  --lg-duration-quick: 90ms;    /* press-in, overlay fade-in */
+  --lg-press-scale: 0.94;
+  --lg-morph-from: 0.86;
+  --lg-ease-spring: linear(0, 0.1, 0.336, 0.617, 0.877, 1.073, 1.19, 1.233, 1.217, 1.166, 1.101, 1.039,
+      0.99, 0.959, 0.946, 0.948, 0.959, 0.974, 0.988, 1.001, 1.009, 1.012, 1.012, 1.01, 1.007, 1.003, 1);
+  --lg-ease-settle: linear(0, 0.064, 0.211, 0.388, 0.562, 0.713, 0.835, 0.924, 0.984, 1.021, 1.04, 1.046,
+      1.044, 1.038, 1.03, 1.022, 1.014, 1.009, 1.004, 1.001, 1);
+}
+
+:root[data-theme="light"] {
+  --lg-scheme: light;
+  --lg-tint: oklch(0.985 0.004 260 / 0.36);
+  --lg-tint-plain: oklch(0.975 0.004 260 / 0.86);
+  --lg-solid: oklch(0.975 0.004 260);
+  --lg-fill-hover: oklch(0 0 0 / 0.05);
+  --lg-fill-active: oklch(0 0 0 / 0.08);
+  --lg-hairline: oklch(0 0 0 / 0.1);
+  --lg-rim-bright: oklch(1 0 0 / 0.95);
+  --lg-rim-mid: oklch(1 0 0 / 0.55);
+  --lg-rim-dim: oklch(1 0 0 / 0.3);
+  --lg-sheen: oklch(1 0 0 / 0.3);
+  --lg-bezel-light: oklch(1 0 0 / 0.5);
+  --lg-bezel-shade: oklch(0.3 0.02 265 / 0.14);
+  --lg-shadow: 0 0 0 0.5px oklch(0.2 0.02 265 / 0.14), 0 1px 2px oklch(0.2 0.02 265 / 0.12), 0 10px 28px -6px oklch(0.2 0.02 265 / 0.2);
+  --lg-shadow-raised: 0 0 0 0.5px oklch(0.2 0.02 265 / 0.16), 0 2px 4px oklch(0.2 0.02 265 / 0.14), 0 22px 54px -10px oklch(0.2 0.02 265 / 0.28);
+
+  --lg-text-primary: oklch(0.17 0.012 265);
+  --lg-text-secondary: oklch(0.36 0.014 265);
+  --lg-accent: oklch(0.47 0.2 18);
+  --lg-icon: oklch(0.32 0.012 265);                /* about 84% black on light glass */
+  --lg-icon-lift: drop-shadow(0 0.5px 0 oklch(1 0 0 / 0.55));
+  --lg-accent-fill: oklch(0.52 0.22 18);
+  --lg-status-success: oklch(0.4 0.12 150);
+  --lg-status-warning: oklch(0.42 0.1 70);
+  --lg-status-danger: oklch(0.42 0.17 25);
+  --lg-status-info: oklch(0.4 0.14 250);
+  --lg-focus-ring: oklch(0.45 0.17 250);
+}
+
+/* ---- surface ------------------------------------------------------------------------------ */
+
+.lg {
+  position: relative;
+  isolation: isolate;
+  color: var(--lg-text-primary);
+  /* liquid-glass.ts sets --lg-backdrop to url(#…) and data-lg-lens once the lens filter exists.
+     Until then (or if it never does) the surface is a plain blur under a much heavier tint,
+     because nothing bounds the brightness of what shows through. */
+  background-color: var(--lg-tint-plain);
+  backdrop-filter: var(--lg-backdrop, blur(var(--lg-fallback-blur)) saturate(var(--lg-saturation)));
+  box-shadow:
+    var(--lg-shadow),
+    inset 0 1px 1px -0.5px var(--lg-bezel-light),
+    inset 0 -1px 2px -1px var(--lg-bezel-shade),
+    inset 0 0 calc(var(--lg-bezel) * 0.9) calc(var(--lg-bezel) * -0.45) var(--lg-sheen);
+
+  /* Content on glass uses the app's generic tokens; here they resolve to the glass palette, so
+     a component placed on glass cannot pick a colour the tone audit does not cover. Fills never
+     stack beyond --lg-fill-active: resting cards are transparent, hover and selection share it. */
+  --text-primary: var(--lg-text-primary);
+  --text-secondary: var(--lg-text-secondary);
+  --text-muted: var(--lg-text-secondary);
+  --accent: var(--lg-accent);
+  --accent-hover: var(--lg-accent);
+  --accent-soft: var(--lg-fill-active);
+  --bg-elevated: transparent;
+  --bg-subtle: var(--lg-fill-hover);
+  --bg-elevated-hover: var(--lg-fill-active);
+  --border-subtle: var(--lg-hairline);
+  --border-strong: var(--lg-hairline);
+  --status-success: var(--lg-status-success);
+  --status-warning: var(--lg-status-warning);
+  --status-danger: var(--lg-status-danger);
+  --status-info: var(--lg-status-info);
+  --focus-ring: var(--lg-focus-ring);
+  --icon-ink: var(--lg-icon);
+  scrollbar-color: var(--lg-hairline) transparent;
+}
+
+/* Specular rim: a hairline ring lit from the upper left, with a weaker return on the far corner.
+   The broad sheen follows --lg-light-x/y, which pointer tracking nudges. */
+.lg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  corner-shape: inherit;
+  padding: var(--lg-rim-width);
+  pointer-events: none;
+  background:
+    radial-gradient(60% 140% at var(--lg-light-x) var(--lg-light-y), var(--lg-rim-bright), transparent 70%),
+    linear-gradient(135deg, var(--lg-rim-mid) 0%, var(--lg-rim-dim) 38%, var(--lg-rim-dim) 62%, var(--lg-rim-mid) 100%);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+}
+
+.lg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  corner-shape: inherit;
+  pointer-events: none;
+  background: radial-gradient(90% 120% at var(--lg-light-x) var(--lg-light-y), var(--lg-sheen), transparent 60%);
+  opacity: var(--lg-sheen-strength);
+}
+
+.lg[data-lg-lens] { background-color: var(--lg-tint); }
+
+.lg--sidebar {
+  --lg-body-frost: 1;
+  --lg-bezel: 18px;
+}
+
+.lg--bar {
+  --lg-body-frost: 0.45;
+  --lg-reach: 20px;
+}
+
+.lg--popover {
+  --lg-body-frost: 1;
+  --lg-bezel: 16px;
+  --lg-reach: 13px;
+  --lg-tint: color-mix(in oklch, var(--lg-solid) 46%, transparent);
+  box-shadow:
+    var(--lg-shadow-raised),
+    inset 0 1px 1px -0.5px var(--lg-bezel-light),
+    inset 0 -1px 2px -1px var(--lg-bezel-shade),
+    inset 0 0 calc(var(--lg-bezel) * 0.9) calc(var(--lg-bezel) * -0.45) var(--lg-sheen);
+}
+
+/* Controls on glass are capsules. The accent is not a body-text colour here, and white on the
+   app accent is too weak, so accent chips keep primary text and the prominent button gets its
+   own fill. */
+.lg .btn-icon,
+.lg .btn-secondary,
+.lg .btn-primary { border-radius: 9999px; border-color: transparent; }
+.lg .chip-accent { color: var(--lg-text-primary); }
+.lg .btn-primary,
+.lg .btn-primary:hover:not(:disabled) { background-color: var(--lg-accent-fill); color: var(--lg-on-accent-fill); }
+
+/* Glyphs on glass sit in it rather than on it: a hairline light edge below on light glass, a
+   soft shade on dark glass. */
+.lg .icon { filter: var(--lg-icon-lift); }
+
+/* ---- scroll-edge effect ------------------------------------------------------------------- */
+
+/* Sits between the scrolling content and a floating bar: content softens and sinks towards the
+   canvas colour before it reaches the glass, so nothing sharp ever sits under a label. */
+.lg-scroll-edge {
+  position: absolute;
+  pointer-events: none;
+  backdrop-filter: blur(var(--lg-edge-blur));
+  background: linear-gradient(
+    to top,
+    color-mix(in oklch, var(--bg-canvas) calc(var(--lg-edge-dim) * 100%), transparent) 0,
+    color-mix(in oklch, var(--bg-canvas) calc(var(--lg-edge-dim) * 100%), transparent) calc(100% - var(--lg-edge-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(to top, #000 0, #000 calc(100% - var(--lg-edge-fade)), transparent 100%);
+}
+
+/* ---- interaction -------------------------------------------------------------------------- */
+
+/* A control on glass: fills on hover, sinks while pressed, springs back on release. */
+.lg-press {
+  transition:
+    transform var(--lg-duration-press) var(--lg-ease-spring),
+    background-color var(--lg-duration-hover) ease-out;
+}
+.lg-press:hover:not(:disabled) { background-color: var(--lg-fill-hover); }
+.lg-press:active:not(:disabled) {
+  transform: scale(var(--lg-press-scale));
+  background-color: var(--lg-fill-active);
+  transition-duration: var(--lg-duration-quick), var(--lg-duration-hover);
+  transition-timing-function: ease-out, ease-out;
+}
+.lg-press[aria-current="page"],
+.lg-press[aria-pressed="true"] { background-color: var(--lg-fill-active); }
+
+/* An overlay that grows out of where it was summoned. The fade is kept short: while opacity is
+   below 1 the unfiltered content shows through. */
+.lg-morph {
+  transform-origin: var(--lg-morph-origin, 50% 60%);
+  transition:
+    transform var(--lg-duration-morph) var(--lg-ease-settle),
+    opacity var(--lg-duration-quick) ease-out;
+}
+@starting-style {
+  .lg-morph { opacity: 0; transform: scale(var(--lg-morph-from)); }
+}
+
+/* ---- fallbacks ---------------------------------------------------------------------------- */
+
+@media (prefers-reduced-transparency: reduce) {
+  .lg, .lg[data-lg-lens] { backdrop-filter: none; background-color: var(--lg-solid); }
+  .lg::after { display: none; }
+  .lg-scroll-edge { backdrop-filter: none; mask-image: none; background: linear-gradient(to top, var(--bg-canvas) calc(100% - var(--lg-edge-fade)), transparent); }
+}
+:root[data-reduce-transparency="true"] .lg { backdrop-filter: none; background-color: var(--lg-solid); }
+:root[data-reduce-transparency="true"] .lg::after { display: none; }
+:root[data-reduce-transparency="true"] .lg-scroll-edge { backdrop-filter: none; mask-image: none; background: linear-gradient(to top, var(--bg-canvas) calc(100% - var(--lg-edge-fade)), transparent); }
+
+/* Reduced motion: no scaling at all; colour and opacity changes stay. */
+@media (prefers-reduced-motion: reduce) {
+  .lg-press:active:not(:disabled) { transform: none; }
+  .lg-morph { transition-property: opacity; }
+}
+:root[data-reduce-motion="true"] .lg-press:active:not(:disabled) { transform: none; }
+:root[data-reduce-motion="true"] .lg-morph { transition-property: opacity; }
+
+@media (forced-colors: active) {
+  .lg, .lg[data-lg-lens] { backdrop-filter: none; background-color: Canvas; color: CanvasText; box-shadow: none; border: 1px solid CanvasText; }
+  .lg::before, .lg::after { display: none; }
+  .lg .icon, .lg .btn-play-focal .icon { filter: none; }
+  .lg-scroll-edge { display: none; }
+  .lg-press[aria-current="page"], .lg-press[aria-pressed="true"] { outline: 1px solid Highlight; outline-offset: -1px; }
+}

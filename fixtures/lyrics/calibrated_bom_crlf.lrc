@@ -1,0 +1,17 @@
+﻿[ti:Midnight Glass]
+[ar:The Night Runners]
+[al:Neon City]
+[la:en]
+[offset:+250]
+
+[00:18.500]Second verse arrives before first in raw file
+[00:05.25]First line in centiseconds
+[00:12.00][01:05.50]Chorus repeats twice
+
+[00:25.000]Lead vocal at exact same timestamp
+[00:25.000]Harmony vocal at exact same timestamp
+[99:99.99]Corrupted timestamp seconds >= 60 should be ignored
+[not-a-timestamp]Malformed line without breaking valid lines
+random unbracketed garbage line
+[00:30]Whole seconds without fraction
+[00:35.00]<b>Literal</b> & <script>safe</script>

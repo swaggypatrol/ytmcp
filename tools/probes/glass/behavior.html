@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Glass probe: Chromium backdrop-filter url() behaviour matrix</title>
+<style>
+  html, body { margin: 0; background: #202020; color: #ddd; font: 11px/1.2 monospace; }
+  #grid { display: grid; grid-template-columns: repeat(6, 240px); gap: 8px; padding: 8px; }
+  .cell { position: relative; width: 240px; height: 140px; overflow: hidden; }
+  .cell canvas { position: absolute; inset: 0; width: 240px; height: 140px; }
+  .cell .box { position: absolute; left: 40px; top: 30px; width: 160px; height: 80px; }
+  .cell .tag { position: absolute; left: 2px; top: 126px; color: #fff; text-shadow: 0 0 2px #000; }
+  svg.defs { position: absolute; width: 0; height: 0; }
+</style>
+</head>
+<body>
+<svg class="defs" id="defs" xmlns="http://www.w3.org/2000/svg"></svg>
+<div id="grid"></div>
+<script>
+// Each case paints a known pattern, places a 160x80 box with a backdrop-filter on it, and the
+// Electron side reads pixels back to decide what Chromium really did.
+const SVG_NS = "http://www.w3.org/2000/svg";
+const BOX = { x: 40, y: 30, w: 160, h: 80 };
+const defs = document.getElementById("defs");
+const grid = document.getElementById("grid");
+
+// "ramp" encodes the CSS-pixel coordinate into colour (R = x, G = y) so a displaced sample
+// reveals where it came from. "edge" is a hard black/white step used to measure blur width.
+function paintPattern(canvas, kind) {
+  canvas.width = 240; canvas.height = 140;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(240, 140);
+  for (let y = 0; y < 140; y++) for (let x = 0; x < 240; x++) {
+    const i = (y * 240 + x) * 4;
+    if (kind === "edge") { const v = x < 120 ? 0 : 255; img.data[i] = v; img.data[i+1] = v; img.data[i+2] = v; }
+    else if (kind === "swatch") {
+      const band = Math.floor(x / 40);
+      const cols = [[128,128,128],[255,0,0],[0,255,0],[0,0,255],[64,160,220],[250,250,250]];
+      const c = cols[band]; img.data[i] = c[0]; img.data[i+1] = c[1]; img.data[i+2] = c[2];
+    } else { img.data[i] = x; img.data[i+1] = y; img.data[i+2] = 128; }
+    img.data[i+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function mapDataUrl(w, h, fn) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const ctx = c.getContext("2d"); const img = ctx.createImageData(w, h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const [r, g] = fn(x / w, y / h); const i = (y * w + x) * 4;
+    img.data[i] = r; img.data[i+1] = g; img.data[i+2] = 128; img.data[i+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+function el(name, attrs) { const n = document.createElementNS(SVG_NS, name); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; }
+
+function addFilter(id, opts) {
+  const fattrs = { id };
+  if (opts.region !== "default") Object.assign(fattrs, { x: 0, y: 0, width: BOX.w, height: BOX.h, filterUnits: "userSpaceOnUse" });
+  fattrs.primitiveUnits = "userSpaceOnUse";
+  if (opts.srgb !== false) fattrs["color-interpolation-filters"] = "sRGB";
+  const f = el("filter", fattrs);
+  if (opts.flood) f.appendChild(el("feFlood", { "flood-color": opts.flood, result: "map" }));
+  else f.appendChild(el("feImage", { href: opts.href, x: 0, y: 0, width: BOX.w, height: BOX.h, preserveAspectRatio: "none", result: "map" }));
+  f.appendChild(el("feDisplacementMap", { in: "SourceGraphic", in2: "map", scale: opts.scale ?? 40, xChannelSelector: "R", yChannelSelector: "G" }));
+  defs.appendChild(f);
+}
+
+const cases = [];
+function addCase(id, pattern, boxStyle, extra) {
+  const cell = document.createElement("div"); cell.className = "cell"; cell.id = "case-" + id;
+  const cv = document.createElement("canvas"); paintPattern(cv, pattern); cell.appendChild(cv);
+  const box = document.createElement("div"); box.className = "box"; box.style.cssText += boxStyle; cell.appendChild(box);
+  if (extra) extra(cell, box);
+  const tag = document.createElement("div"); tag.className = "tag"; tag.textContent = id; cell.appendChild(tag);
+  grid.appendChild(cell); cases.push(id);
+}
+
+const constX = mapDataUrl(16, 8, () => [255, 128]).toDataURL();
+const neutral = mapDataUrl(16, 8, () => [128, 128]).toDataURL();
+const half = mapDataUrl(160, 80, (u) => [u < 0.5 ? 128 : 255, 128]).toDataURL();
+const r191 = mapDataUrl(16, 8, () => [191, 128]).toDataURL();
+const lowRamp = mapDataUrl(8, 4, (u) => [128 + Math.round(127 * u), 128]).toDataURL();
+const constXY = mapDataUrl(16, 8, () => [255, 255]).toDataURL();
+
+addFilter("f-flood", { flood: "rgb(255,128,128)" });
+addFilter("f-image", { href: constX });
+addFilter("f-half", { href: half });
+addFilter("f-r191-srgb", { href: r191 });
+addFilter("f-r191-linear", { href: r191, srgb: false });
+addFilter("f-neutral-srgb", { href: neutral });
+addFilter("f-neutral-linear", { href: neutral, srgb: false });
+addFilter("f-lowramp", { href: lowRamp });
+addFilter("f-xy", { href: constXY });
+addFilter("f-dynamic", { href: constX, scale: 40 });
+addFilter("f-default-region", { href: constX, region: "default" });
+addFilter("f-blob", { href: neutral });
+
+addCase("reference", "ramp", "");
+addCase("flood-const", "ramp", "backdrop-filter: url(#f-flood);");
+addCase("image-const", "ramp", "backdrop-filter: url(#f-image);");
+addCase("image-half", "ramp", "backdrop-filter: url(#f-half);");
+addCase("map-srgb", "ramp", "backdrop-filter: url(#f-r191-srgb);");
+addCase("map-linear", "ramp", "backdrop-filter: url(#f-r191-linear);");
+addCase("xy", "ramp", "backdrop-filter: url(#f-xy);");
+addCase("lowres-ramp", "ramp", "backdrop-filter: url(#f-lowramp);");
+addCase("radius", "ramp", "backdrop-filter: url(#f-image); border-radius: 40px;");
+addCase("default-region", "ramp", "backdrop-filter: url(#f-default-region);");
+addCase("dynamic", "ramp", "backdrop-filter: url(#f-dynamic);");
+addCase("blob-url", "ramp", "backdrop-filter: url(#f-blob);");
+addCase("pass-srgb", "swatch", "backdrop-filter: url(#f-neutral-srgb);");
+addCase("pass-linear", "swatch", "backdrop-filter: url(#f-neutral-linear);");
+addCase("edge-none", "edge", "");
+addCase("edge-blur", "edge", "backdrop-filter: blur(6px);");
+addCase("edge-url-then-blur", "edge", "backdrop-filter: url(#f-neutral-srgb) blur(6px);");
+addCase("edge-blur-then-url", "edge", "backdrop-filter: blur(6px) url(#f-neutral-srgb);");
+addCase("ramp-url-then-blur", "ramp", "backdrop-filter: url(#f-image) blur(6px);");
+addCase("ramp-url-saturate", "swatch", "backdrop-filter: url(#f-neutral-srgb) saturate(0);");
+addCase("nested-child", "edge", "backdrop-filter: url(#f-neutral-srgb);", (cell, box) => {
+  const child = document.createElement("div");
+  child.style.cssText = "position:absolute;inset:10px 0;backdrop-filter:blur(6px);";
+  box.appendChild(child);
+});
+addCase("sibling-plate", "edge", "backdrop-filter: url(#f-neutral-srgb);", (cell) => {
+  const plate = document.createElement("div");
+  plate.style.cssText = "position:absolute;left:40px;top:40px;width:160px;height:60px;backdrop-filter:blur(6px);";
+  cell.appendChild(plate);
+});
+// Blur inside the SVG filter: what lies beyond the element box for the blur kernel?
+function addBlurFilter(id, margin, edgeMode) {
+  const f = el("filter", { id, x: -margin, y: -margin, width: BOX.w + margin * 2, height: BOX.h + margin * 2, filterUnits: "userSpaceOnUse", primitiveUnits: "userSpaceOnUse", "color-interpolation-filters": "sRGB" });
+  const attrs = { in: "SourceGraphic", stdDeviation: 10 };
+  if (edgeMode) attrs.edgeMode = edgeMode;
+  f.appendChild(el("feGaussianBlur", attrs));
+  defs.appendChild(f);
+}
+addBlurFilter("f-blur-box", 0);
+addBlurFilter("f-blur-wide", 40);
+addBlurFilter("f-blur-duplicate", 0, "duplicate");
+addCase("svgblur-box", "ramp", "backdrop-filter: url(#f-blur-box);");
+addCase("svgblur-wide", "ramp", "backdrop-filter: url(#f-blur-wide);");
+addCase("svgblur-duplicate", "ramp", "backdrop-filter: url(#f-blur-duplicate);");
+addCase("cssblur", "ramp", "backdrop-filter: blur(10px);");
+// Procedural lens fields: no bitmap. A flood rectangle is blurred into a height map and its
+// gradient becomes the displacement map, either with feConvolveMatrix (Sobel) or with four
+// grazing feDiffuseLighting passes (the normal's x/y components).
+const MARGIN = 30;
+function heightParts(sigma) {
+  return [
+    el("feFlood", { x: 0, y: 0, width: BOX.w, height: BOX.h, "flood-color": "#fff", result: "slab" }),
+    el("feGaussianBlur", { in: "slab", stdDeviation: sigma, result: "soft-slab" }),
+    el("feColorMatrix", { in: "soft-slab", type: "matrix", values: "0 0 0 1 0  0 0 0 1 0  0 0 0 1 0  0 0 0 0 1", result: "height" }),
+  ];
+}
+function proceduralFilter(id, parts, scale) {
+  const f = el("filter", { id, x: -MARGIN, y: -MARGIN, width: BOX.w + MARGIN * 2, height: BOX.h + MARGIN * 2, filterUnits: "userSpaceOnUse", primitiveUnits: "userSpaceOnUse", "color-interpolation-filters": "sRGB" });
+  for (const part of parts) f.appendChild(part);
+  f.appendChild(el("feDisplacementMap", { in: "SourceGraphic", in2: "field", scale, xChannelSelector: "R", yChannelSelector: "G" }));
+  defs.appendChild(f);
+}
+function convolveField(divisor, kernelUnit) {
+  const extra = kernelUnit ? { kernelUnitLength: kernelUnit } : {};
+  return [
+    el("feConvolveMatrix", { in: "height", order: 3, kernelMatrix: "1 0 -1  2 0 -2  1 0 -1", divisor, bias: 0.5, preserveAlpha: "true", edgeMode: "duplicate", result: "gx", ...extra }),
+    el("feConvolveMatrix", { in: "height", order: 3, kernelMatrix: "1 2 1  0 0 0  -1 -2 -1", divisor, bias: 0.5, preserveAlpha: "true", edgeMode: "duplicate", result: "gy", ...extra }),
+    el("feColorMatrix", { in: "gx", type: "matrix", values: "1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 1", result: "fx" }),
+    el("feColorMatrix", { in: "gy", type: "matrix", values: "0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 0 1", result: "fy" }),
+    el("feBlend", { in: "fx", in2: "fy", mode: "screen", result: "field" }),
+  ];
+}
+function light(azimuth, color, result, surfaceScale) {
+  const node = el("feDiffuseLighting", { in: "height", surfaceScale, diffuseConstant: 1, "lighting-color": color, result });
+  node.appendChild(el("feDistantLight", { azimuth, elevation: 0 }));
+  return node;
+}
+function lightingField(surfaceScale) {
+  return [
+    el("feColorMatrix", { in: "soft-slab", type: "matrix", values: "0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1 0", result: "bump" }),
+    ...[[180, "#f00", "xp"], [270, "#0f0", "yp"], [0, "#f00", "xn"], [90, "#0f0", "yn"]].map(([az, c, r]) => { const n = light(az, c, r, surfaceScale); n.setAttribute("in", "bump"); return n; }),
+    el("feComposite", { in: "xp", in2: "yp", operator: "arithmetic", k2: 1, k3: 1, result: "pos" }),
+    el("feComposite", { in: "xn", in2: "yn", operator: "arithmetic", k2: 1, k3: 1, result: "neg" }),
+    // field = 0.5 + 0.5 (pos − neg), written as 0.5 pos + 0.5 (1 − neg) so alpha stays 1.
+    el("feColorMatrix", { in: "neg", type: "matrix", values: "-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 0 1", result: "negInverted" }),
+    el("feComposite", { in: "pos", in2: "negInverted", operator: "arithmetic", k2: 0.5, k3: 0.5, result: "field" }),
+  ];
+}
+proceduralFilter("f-proc-convolve", [...heightParts(8), ...convolveField(8)], 200);
+proceduralFilter("f-proc-convolve-unit", [...heightParts(8), ...convolveField(8, 1)], 200);
+// Same Sobel field with the divisor scaled by 1/devicePixelRatio, as glass.js does.
+proceduralFilter("f-proc-convolve-dpr", [...heightParts(8), ...convolveField(8 / devicePixelRatio)], 200);
+proceduralFilter("f-proc-light", [...heightParts(8), ...lightingField(10)], 40);
+addCase("proc-convolve", "ramp", "backdrop-filter: url(#f-proc-convolve);");
+addCase("proc-convolve-unit", "ramp", "backdrop-filter: url(#f-proc-convolve-unit);");
+addCase("proc-convolve-dpr", "ramp", "backdrop-filter: url(#f-proc-convolve-dpr);");
+addCase("proc-light", "ramp", "backdrop-filter: url(#f-proc-light);");
+addCase("tint-over", "swatch", "backdrop-filter: url(#f-neutral-srgb); background: rgba(0,0,0,0.5);");
+
+window.__behavior = {
+  box: BOX,
+  cases,
+  supports: {
+    cssSupportsUrl: CSS.supports("backdrop-filter", "url(#x)"),
+    cssSupportsBlur: CSS.supports("backdrop-filter", "blur(2px)"),
+    dpr: window.devicePixelRatio,
+    reducedTransparencyQuery: matchMedia("(prefers-reduced-transparency: reduce)").media,
+    forcedColorsQuery: matchMedia("(forced-colors: active)").media,
+    cornerShape: CSS.supports("corner-shape", "squircle"),
+    linearEasing: CSS.supports("transition-timing-function", "linear(0, 1)"),
+    propertyRule: typeof CSS.registerProperty === "function",
+  },
+  rectOf(id) { const r = document.getElementById("case-" + id).getBoundingClientRect(); return { x: r.x, y: r.y }; },
+  setDynamicScale(v) { document.querySelector("#f-dynamic feDisplacementMap").setAttribute("scale", v); },
+  async useBlobUrl() {
+    const blob = await new Promise((res) => mapDataUrl(16, 8, () => [255, 128]).toBlob(res));
+    document.querySelector("#f-blob feImage").setAttribute("href", URL.createObjectURL(blob));
+  },
+};
+</script>
+</body>
+</html>

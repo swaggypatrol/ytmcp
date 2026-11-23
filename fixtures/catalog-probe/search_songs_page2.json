@@ -1,0 +1,99 @@
+{
+  "continuationContents": {
+    "musicShelfContinuation": {
+      "contents": [
+        {
+          "musicResponsiveListItemRenderer": {
+            "flexColumns": [
+              {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                  "text": { "runs": [{ "text": "Wayland Dawn" }] }
+                }
+              },
+              {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                  "text": {
+                    "runs": [
+                      { "text": "Probe Artist Three" },
+                      { "text": " • " },
+                      {
+                        "text": "Probe Album Two",
+                        "navigationEndpoint": {
+                          "browseEndpoint": {
+                            "browseId": "MPREb_probeAlb2"
+                          }
+                        }
+                      },
+                      { "text": " • " },
+                      { "text": "2:58" }
+                    ]
+                  }
+                }
+              },
+              {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                  "text": { "runs": [{ "text": "98K plays" }] }
+                }
+              }
+            ],
+            "playlistItemData": { "videoId": "probeVid003" },
+            "thumbnail": {
+              "musicThumbnailRenderer": {
+                "thumbnail": {
+                  "thumbnails": [
+                    {
+                      "url": "https://lh3.googleusercontent.com/probe-song-3",
+                      "width": 226,
+                      "height": 226
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "musicResponsiveListItemRenderer": {
+            "flexColumns": [
+              {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                  "text": { "runs": [{ "text": "Silver Orbit" }] }
+                }
+              },
+              {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                  "text": {
+                    "runs": [
+                      { "text": "Probe Artist Four" },
+                      { "text": " • " },
+                      { "text": "5:02" }
+                    ]
+                  }
+                }
+              },
+              {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                  "text": { "runs": [{ "text": "41K plays" }] }
+                }
+              }
+            ],
+            "playlistItemData": { "videoId": "probeVid004" },
+            "thumbnail": {
+              "musicThumbnailRenderer": {
+                "thumbnail": {
+                  "thumbnails": [
+                    {
+                      "url": "https://lh3.googleusercontent.com/probe-song-4",
+                      "width": 226,
+                      "height": 226
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

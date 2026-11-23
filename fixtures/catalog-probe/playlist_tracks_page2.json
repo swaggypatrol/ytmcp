@@ -1,0 +1,103 @@
+{
+  "onResponseReceivedActions": [
+    {
+      "appendContinuationItemsAction": {
+        "continuationItems": [
+          {
+            "musicResponsiveListItemRenderer": {
+              "flexColumns": [
+                {
+                  "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": { "runs": [{ "text": "Playlist Track Three" }] }
+                  }
+                },
+                {
+                  "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": {
+                      "runs": [
+                        {
+                          "text": "Probe Artist One",
+                          "navigationEndpoint": {
+                            "browseEndpoint": { "browseId": "UC_probe_art1" }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "musicResponsiveListItemFlexColumnRenderer": {
+                    "text": {
+                      "runs": [
+                        {
+                          "text": "Probe Album One",
+                          "navigationEndpoint": {
+                            "browseEndpoint": { "browseId": "MPREb_probeAlb1" }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "fixedColumns": [
+                {
+                  "musicResponsiveListItemFixedColumnRenderer": {
+                    "text": { "simpleText": "4:01" }
+                  }
+                }
+              ],
+              "overlay": {
+                "musicItemThumbnailOverlayRenderer": {
+                  "content": {
+                    "musicPlayButtonRenderer": {
+                      "playNavigationEndpoint": {
+                        "watchEndpoint": {
+                          "videoId": "probePlVid3",
+                          "watchEndpointMusicSupportedConfigs": {
+                            "watchEndpointMusicConfig": {
+                              "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "menu": {
+                "menuRenderer": {
+                  "topLevelButtons": [
+                    { "likeButtonRenderer": { "likeStatus": "INDIFFERENT" } }
+                  ],
+                  "items": [
+                    {
+                      "menuNavigationItemRenderer": {
+                        "navigationEndpoint": {
+                          "watchEndpoint": { "playlistId": "PL_probe_01" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "thumbnail": {
+                "musicThumbnailRenderer": {
+                  "thumbnail": {
+                    "thumbnails": [
+                      {
+                        "url": "https://lh3.googleusercontent.com/probe-pt-3",
+                        "width": 226,
+                        "height": 226
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
