@@ -1,9 +1,10 @@
-import type { RepeatMode } from "@ytmcp/protocol";
+import type { AudioQualityLevel, QueueFilter, RepeatMode } from "@ytmcp/protocol";
 import {
   isPlaylistEntryId,
   MUSIC_ORIGIN,
   PAGE_SHIM_CHANNEL,
   type PageControls,
+  type PageOfficialUpcoming,
   type PageQueue,
   type PageQueueItem,
   type PageShimErrorCode,
@@ -26,6 +27,12 @@ const ACCOUNT_HINT_DOMAIN = "ytm-glass-account-v1\n";
 const MAX_QUEUE_WINDOW = 200;
 const MAX_CLEAR_UPCOMING = 50;
 const QUEUE_WINDOW_BEFORE_CURRENT = 20;
+const MAX_OFFICIAL_UPCOMING = 50;
+const MAX_QUEUE_FILTERS = 24;
+const MAX_FILTER_LABEL = 64;
+/** The queue's own chip rendering first, then the player page's. */
+const FILTER_CHIP_SELECTORS = ["ytmusic-player-queue ytmusic-chip-cloud-chip-renderer", "ytmusic-player-page ytmusic-chip-cloud-chip-renderer"];
+const DISABLED_SELECTOR = ":disabled, [disabled], [aria-disabled='true']";
 const ENQUEUE_TIMEOUT_MS = 6_000;
 const QUEUE_HANDLER_RETRY_MS = 500;
 const NAVIGATE_SETTLE_MS = 5_000;
@@ -34,8 +41,17 @@ const STUCK_UNSTARTED_MS = 800;
 /** How long after a skip the shim keeps checking that the new track actually started. */
 const SKIP_START_WATCH_MS = 5_000;
 const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
-const AUDIO_CODEC_STATS_RE = /^[a-z0-9.-]{1,40}(?: \(\d{1,4}\))? \/ (mp4a(?:\.[0-9a-f]{1,4}){1,3}|opus)(?: \(\d{1,4}\))?$/i;
+/** The player's own "video (itag) / audio (itag)" statistics line: the audio codec and its stream number. */
+const AUDIO_CODEC_STATS_RE = /^[a-z0-9.-]{1,40}(?: \(\d{1,4}\))? \/ (mp4a(?:\.[0-9a-f]{1,4}){1,3}|opus)(?: \((\d{1,4})\))?$/i;
 const QUALITY_LABEL_RE = /^(?:auto|tiny|small|medium|large|hd[1-9]\d{2,3}|highres)$/;
+/** The player response's own audio stream labels. */
+const AUDIO_QUALITY_LEVELS: ReadonlyMap<unknown, AudioQualityLevel> = new Map([
+  ["AUDIO_QUALITY_LOW", "low"],
+  ["AUDIO_QUALITY_MEDIUM", "standard"],
+  ["AUDIO_QUALITY_HIGH", "high"],
+]);
+/** Far above any audio stream the page offers; anything higher is not a bit rate. */
+const MAX_AUDIO_KBPS = 10_000;
 const PLAYBACK_INPUT_SELECTOR = [
   "ytmusic-player-bar :is(#play-pause-button, .play-pause-button, .next-button, .previous-button)",
   "#movie_player .ytp-play-button",
@@ -55,6 +71,7 @@ const ALLOWED_OPS: ReadonlySet<string> = new Set<PageShimOp>([
   "setShuffle",
   "setRepeat",
   "setAutoplay",
+  "setQueueFilter",
   "navigate",
   "selectQueueItem",
   "removeQueueItem",
@@ -80,9 +97,14 @@ interface PlayerApi {
   getPlaybackRate?: () => number;
   getCpn?: () => string;
   getVideoData?: () => { video_id?: string; title?: string; author?: string };
-  getPlayerResponse?: () => { videoDetails?: VideoDetails } | null;
+  getPlayerResponse?: () => PlayerResponse | null;
   getStatsForNerds?: () => unknown;
   getPlaybackQuality?: () => unknown;
+}
+
+interface PlayerResponse {
+  videoDetails?: VideoDetails;
+  streamingData?: { adaptiveFormats?: unknown };
 }
 
 interface VideoDetails {
@@ -129,6 +151,15 @@ interface QueueState {
   shuffleEnabled?: boolean;
   repeatMode?: string;
   autoplay?: boolean;
+  isGenerating?: unknown;
+  steeringChips?: { chips?: unknown };
+}
+
+interface ChipRenderer {
+  text?: { runs?: TextRun[] };
+  isSelected?: unknown;
+  uniqueId?: unknown;
+  navigationEndpoint?: unknown;
 }
 
 interface WatchNextPanel {
@@ -170,6 +201,7 @@ interface QueueElement extends HTMLElement {
     store?: { store?: { getState?: () => { queue?: QueueState } } };
     continuation?: string;
     autoPlaying?: boolean;
+    pendingFetchAutomixItemsRequest?: unknown;
   };
 }
 
@@ -265,6 +297,30 @@ function selectedRendererOf(state: QueueState | null): VideoRenderer | null {
   const index = state?.selectedItemIndex;
   return Array.isArray(state?.items) && typeof index === "number" && Number.isSafeInteger(index) && index >= 0
     ? rendererOf(state.items[index]) : null;
+}
+
+/** A whole kbit/s value from a bit/s field, or null when it is not a sane positive rate. */
+function kbpsOf(bitsPerSecond: unknown): number | null {
+  if (typeof bitsPerSecond !== "number" || !Number.isFinite(bitsPerSecond)) return null;
+  const kbps = Math.round(bitsPerSecond / 1000);
+  return kbps >= 1 && kbps <= MAX_AUDIO_KBPS ? kbps : null;
+}
+
+/**
+ * How the player response labels the audio stream with this number: its quality and average bit
+ * rate (the declared one when no average is given). Null unless exactly one audio format carries
+ * the number with a known label. Nothing else of the format (URLs, ciphers, ranges) is read.
+ */
+function audioFormatOf(response: PlayerResponse | null, itag: number): { quality: AudioQualityLevel; bitrateKbps: number | null } | null {
+  const formats = response?.streamingData?.adaptiveFormats;
+  if (!Array.isArray(formats)) return null;
+  const matches = formats.filter((f): f is Record<string, unknown> =>
+    isPlainObject(f) && f.itag === itag && typeof f.mimeType === "string" && f.mimeType.startsWith("audio/"));
+  if (matches.length !== 1) return null;
+  const format = matches[0]!;
+  const quality = AUDIO_QUALITY_LEVELS.get(format.audioQuality);
+  if (!quality) return null;
+  return { quality, bitrateKbps: kbpsOf(format.averageBitrate) ?? kbpsOf(format.bitrate) };
 }
 
 function isWatchIndex(value: unknown): value is number {
@@ -384,6 +440,109 @@ function clearableQueueKeys(state: QueueState | null): string[] | null {
   return keys.includes("?") || new Set(keys).size !== keys.length ? null : keys;
 }
 
+/**
+ * The suggestions still ahead of the playing video. While it plays from the suggestions (it is
+ * not the selected explicit row but is one of them) only those after it are ahead; null when it
+ * is listed more than once, so which copy plays is unknown.
+ */
+function suggestionsAhead(state: QueueState, automix: readonly unknown[], playingVideoId: string | null): readonly unknown[] | null {
+  if (playingVideoId === null || selectedRendererOf(state)?.videoId === playingVideoId) return automix;
+  const at = automix.flatMap((raw, i) => (rendererOf(raw)?.videoId === playingVideoId ? [i] : []));
+  if (at.length === 0) return automix;
+  return at.length === 1 ? automix.slice(at[0]! + 1) : null;
+}
+
+/**
+ * What the page plays after the explicit list on its own, read-only; never the playing track or
+ * a suggestion before it. Suggestions kept while autoplay is off never play and are not listed.
+ * Undefined when it cannot be known: a listed suggestion (within the cap) does not parse, so the
+ * play order would be wrong, the playing video is suggested twice, or nothing is loaded and the
+ * queue element that holds the pending fetch is not readable.
+ */
+function officialUpcomingOf(state: QueueState, element: QueueElement | null, playingVideoId: string | null): PageOfficialUpcoming | undefined {
+  if (state.isInfinite === true) return { status: "radio", tracks: [] };
+  if (state.autoplay === false) return { status: "off", tracks: [] };
+  if (!Array.isArray(state.automixItems)) return undefined;
+  const ahead = suggestionsAhead(state, state.automixItems, playingVideoId);
+  if (ahead === null) return undefined;
+  if (ahead.length > 0) {
+    const tracks: PageTrack[] = [];
+    for (const raw of ahead.slice(0, MAX_OFFICIAL_UPCOMING)) {
+      const r = rendererOf(raw);
+      const track = r ? trackFromRenderer(r) : null;
+      if (!track) return undefined;
+      tracks.push(track);
+    }
+    return { status: "observed", tracks };
+  }
+  if (state.isGenerating === true || element?.queue?.pendingFetchAutomixItemsRequest != null) return { status: "loading", tracks: [] };
+  return element ? { status: "none", tracks: [] } : undefined;
+}
+
+/** Short FNV-1a digest, so a filter id never carries page text, params or tokens. */
+function shortHash(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+function isQueueUpdateChip(chip: ChipRenderer): boolean {
+  return isPlainObject(chip.navigationEndpoint) && isPlainObject(chip.navigationEndpoint.queueUpdateCommand);
+}
+
+/** The radio seed a filter chip re-steers: its fetch's playlist, or null when the chip names none. */
+function filterSeedOf(chip: ChipRenderer): string | null {
+  const nav = chip.navigationEndpoint;
+  const update = isPlainObject(nav) ? nav.queueUpdateCommand : undefined;
+  const fetch = isPlainObject(update) ? update.fetchContentsCommand : undefined;
+  const watch = isPlainObject(fetch) ? fetch.watchEndpoint : undefined;
+  const playlistId = isPlainObject(watch) ? watch.playlistId : undefined;
+  return typeof playlistId === "string" && playlistId !== "" ? playlistId : null;
+}
+
+/** A filter with the chip renderer it was read from and its full, untrimmed page label. */
+interface FilterChip {
+  readonly filter: QueueFilter;
+  readonly renderer: ChipRenderer;
+  readonly text: string;
+}
+
+/**
+ * The Up Next filters (steering chips) in page order: only chips that update the queue, so the
+ * header's Save chip is excluded. Ids are deterministic per chip position, identity and seed, so
+ * the same label under another seed's suggestions is a different filter; selection never changes them.
+ */
+function filterChipsOf(state: QueueState | null): FilterChip[] {
+  const chips = isPlainObject(state?.steeringChips) ? state.steeringChips.chips : undefined;
+  if (!Array.isArray(chips)) return [];
+  const filters: FilterChip[] = [];
+  chips.forEach((raw, index) => {
+    const chip = isPlainObject(raw) && isPlainObject(raw.chipCloudChipRenderer) ? raw.chipCloudChipRenderer as ChipRenderer : null;
+    if (filters.length >= MAX_QUEUE_FILTERS || !chip || !isQueueUpdateChip(chip)) return;
+    const text = runsText(chip.text?.runs).trim();
+    const label = Array.from(text).slice(0, MAX_FILTER_LABEL).join("").trim();
+    if (label === "") return;
+    const name = typeof chip.uniqueId === "string" && chip.uniqueId !== "" ? chip.uniqueId : label;
+    const seed = filterSeedOf(chip);
+    const identity = seed === null ? name : `${seed}\n${name}`;
+    filters.push({ filter: { filterId: `qf-${index}-${shortHash(identity)}`, label, selected: chip.isSelected === true }, renderer: chip, text });
+  });
+  return filters;
+}
+
+function filtersOf(state: QueueState): QueueFilter[] | undefined {
+  const filters = filterChipsOf(state).map((chip) => chip.filter);
+  return filters.length > 0 ? filters : undefined;
+}
+
+/**
+ * The explicit list is empty while a track is loaded (seen live with the playing video among the
+ * suggestions). A queue add then replaced the playing track on the live page, so it is refused.
+ */
+function enqueueWouldReplacePlaying(state: QueueState, playingVideoId: string | null): boolean {
+  return playingVideoId !== null && Array.isArray(state.items) && state.items.length === 0;
+}
+
 function hasContinuation(element: QueueElement | null): boolean {
   const continuation = element?.queue?.continuation;
   return typeof continuation === "string" && continuation !== "";
@@ -435,6 +594,12 @@ class PageShim {
     return el && typeof el.getPlayerState === "function" ? el : null;
   }
 
+  /** The video the player has loaded, when its id is well-formed. */
+  private playingVideoId(api = this.api()): string | null {
+    const id = api ? call(api.getVideoData, api)?.video_id : null;
+    return typeof id === "string" && SAFE_ID_RE.test(id) ? id : null;
+  }
+
   private bar(): ReduxElement | null {
     return this.doc.querySelector<ReduxElement>("ytmusic-player-bar");
   }
@@ -462,11 +627,38 @@ class PageShim {
     // layouts placed it inside the queue element.
     const toggle = this.doc.querySelector<HTMLElement & { checked?: boolean }>("ytmusic-player-page ytmusic-tab-renderer #automix")
       ?? queue.querySelector<HTMLElement & { checked?: boolean }>("#automix");
-    if (!toggle || typeof toggle.click !== "function" || toggle.matches(":disabled, [disabled], [aria-disabled='true']")) return null;
+    if (!toggle || typeof toggle.click !== "function" || toggle.matches(DISABLED_SELECTOR)) return null;
     const ariaChecked = toggle.getAttribute("aria-checked");
     if ((typeof toggle.checked === "boolean" && toggle.checked !== state.autoplay)
       || (ariaChecked !== null && ariaChecked !== String(state.autoplay))) return null;
     return toggle;
+  }
+
+  /**
+   * The clickable part of a filter's rendered chip, or null when it is not rendered or disabled.
+   * Readable renderer data decides: the same object or uniqueId matches, a chip that does not
+   * update the queue (Save) or another filter's chip never does. Otherwise a chip matches by its
+   * text, only while no other filter shows the same text.
+   */
+  private filterChipTarget(target: FilterChip, all: readonly FilterChip[]): HTMLElement | null {
+    const uniqueId = typeof target.renderer.uniqueId === "string" && target.renderer.uniqueId !== "" ? target.renderer.uniqueId : null;
+    const textUnique = all.every((other) => other === target || other.text !== target.text);
+    const matches = (el: Element): boolean => {
+      const data = (el as unknown as { data?: unknown }).data;
+      if (data === target.renderer) return true;
+      const rendered = isPlainObject(data) && isPlainObject(data.navigationEndpoint) ? data as ChipRenderer : null;
+      if (rendered && !isQueueUpdateChip(rendered)) return false;
+      if (rendered && uniqueId !== null && typeof rendered.uniqueId === "string" && rendered.uniqueId !== "") return rendered.uniqueId === uniqueId;
+      return textUnique && (el.textContent ?? "").trim() === target.text;
+    };
+    for (const selector of FILTER_CHIP_SELECTORS) {
+      const chip = Array.from(this.doc.querySelectorAll<HTMLElement>(selector)).find(matches);
+      if (!chip) continue;
+      const clickable = chip.querySelector<HTMLElement>("a, button, [role='button'], yt-formatted-string") ?? chip;
+      if (typeof clickable.click !== "function" || chip.matches(DISABLED_SELECTOR) || clickable.matches(DISABLED_SELECTOR)) return null;
+      return clickable;
+    }
+    return null;
   }
 
   private audioMode(): PageSnapshot["audioMode"] {
@@ -525,7 +717,7 @@ class PageShim {
     return this.hintValue;
   }
 
-  private readQueue(state: QueueState | null): PageQueue | null {
+  private readQueue(state: QueueState | null, playingVideoId: string | null): PageQueue | null {
     if (!state || !Array.isArray(state.items)) return null;
     const total = state.items.length;
     const selected =
@@ -544,6 +736,9 @@ class PageShim {
           : { videoId: "unknown", title: "", artists: [], albumTitle: null, durationMs: null, coverUrl: null, available: false, key: "?" }
       );
     }
+    const element = this.queueElement(state);
+    const officialUpcoming = officialUpcomingOf(state, element, playingVideoId);
+    const filters = filtersOf(state);
     return {
       start,
       total,
@@ -551,7 +746,9 @@ class PageShim {
       selectedIndex: selected,
       infinite: state.isInfinite === true,
       hasAutoplayTail: hasActiveAutoplayTail(state),
-      continuation: hasContinuation(this.queueElement(state)),
+      continuation: hasContinuation(element),
+      ...(officialUpcoming ? { officialUpcoming } : {}),
+      ...(filters ? { filters } : {}),
     };
   }
 
@@ -559,15 +756,15 @@ class PageShim {
     const api = this.api();
     const store = this.storeState();
     const state = this.queueState(store);
-    const videoData = api ? call(api.getVideoData, api) : null;
-    const videoId = typeof videoData?.video_id === "string" && SAFE_ID_RE.test(videoData.video_id) ? videoData.video_id : null;
-    const details = api ? call(api.getPlayerResponse, api)?.videoDetails ?? null : null;
+    const videoId = this.playingVideoId(api);
+    const response = api ? call(api.getPlayerResponse, api) : null;
+    const details = response?.videoDetails ?? null;
     const detailsMatch = details?.videoId === videoId && videoId !== null;
 
     const selectedRenderer = selectedRendererOf(state);
     // The official queue can keep selecting a row after the player moved on. A selection the
     // playing video does not corroborate names no current occurrence; the window stays put.
-    const pageQueue = this.readQueue(state);
+    const pageQueue = this.readQueue(state, videoId);
     const queue = pageQueue && pageQueue.selectedIndex !== null && (videoId === null || selectedRenderer?.videoId !== videoId)
       ? { ...pageQueue, selectedIndex: null }
       : pageQueue;
@@ -601,6 +798,10 @@ class PageShim {
       && (playerState === 1 || playerState === 2) && !this.doc.getElementById("movie_player")?.classList.contains("ad-showing");
     const stats = activeDiagnostics ? call(api.getStatsForNerds, api) : null;
     const codecs = isPlainObject(stats) ? stats.codecs : null;
+    const audioStats = typeof codecs === "string" && codecs.length <= 128 ? AUDIO_CODEC_STATS_RE.exec(codecs) : null;
+    const audioItag = audioStats?.[2] ? Number(audioStats[2]) : null;
+    // Only the response for the playing video describes the stream that plays.
+    const audioFormat = audioItag !== null && detailsMatch ? audioFormatOf(response, audioItag) : null;
     const quality = activeDiagnostics ? call(api.getPlaybackQuality, api) : null;
     const loggedIn = this.ytcfgGet("LOGGED_IN") === true;
     const shuffle = typeof state?.shuffleEnabled === "boolean" ? state.shuffleEnabled : null;
@@ -608,6 +809,7 @@ class PageShim {
     const autoplay = typeof state?.autoplay === "boolean" ? state.autoplay : null;
 
     const queueElement = this.queueElement(state);
+    const filterChips = filterChipsOf(state);
     const editQueue = videoId !== null && selectedRenderer?.videoId === videoId
       && instanceKey !== null && editableQueueKeys(queue) !== null
       && typeof queueElement?.dispatch === "function";
@@ -619,12 +821,13 @@ class PageShim {
       volume: typeof api?.setVolume === "function" && typeof api?.getVolume === "function",
       shuffle: this.button(".shuffle") !== null && shuffle !== null,
       repeat: this.button(".repeat") !== null && repeat !== null,
-      enqueue: queue !== null && this.getQueueAddHandler() !== null,
+      enqueue: queue !== null && state !== null && !enqueueWouldReplacePlaying(state, videoId) && this.getQueueAddHandler() !== null,
       editQueue,
       clearUpcoming: videoId !== null && selectedRenderer?.videoId === videoId && instanceKey !== null
         && queue?.selectedIndex != null && typeof queueElement?.dispatch === "function"
         && clearableQueueKeys(state) !== null && canClearUpcoming(state, queueElement),
       setAutoplay: autoplay !== null && this.autoplayToggle(state) !== null,
+      setQueueFilter: filterChips.some((chip) => this.filterChipTarget(chip, filterChips) !== null),
       navigate: this.navigator() !== null,
     };
 
@@ -644,8 +847,10 @@ class PageShim {
       shuffle,
       repeat,
       autoplay,
-      codec: typeof codecs === "string" && codecs.length <= 128
-        ? AUDIO_CODEC_STATS_RE.exec(codecs)?.[1]?.toLowerCase() ?? null : null,
+      codec: audioStats?.[1]?.toLowerCase() ?? null,
+      audioItag,
+      audioQuality: audioFormat?.quality ?? null,
+      audioBitrateKbps: audioFormat?.bitrateKbps ?? null,
       qualityLabel: typeof quality === "string" && QUALITY_LABEL_RE.test(quality) ? quality : null,
       audioMode: activeDiagnostics && selectedRenderer?.videoId === videoId ? this.audioMode() : null,
       loggedIn,
@@ -789,6 +994,18 @@ class PageShim {
         if (state.autoplay !== args.autoplay) toggle.click();
         return { ok: true };
       }
+      case "setQueueFilter": {
+        if (typeof args.filterId !== "string") return invalid("filterId");
+        const chips = filterChipsOf(this.queueState());
+        const target = chips.find((chip) => chip.filter.filterId === args.filterId);
+        if (!target) return { ok: false, error: "STALE", message: "Up Next filter is no longer offered" };
+        // The core confirms an already selected filter itself; a repeat is not clicked again.
+        if (target.filter.selected) return { ok: true };
+        const clickable = this.filterChipTarget(target, chips);
+        if (!clickable) return unavailable("Up Next filter chip");
+        clickable.click();
+        return { ok: true };
+      }
       case "navigate": {
         const { videoId, playlistId, index, requireContext, playlistEntryId } = args;
         if (typeof videoId !== "string" || !SAFE_ID_RE.test(videoId)) return invalid("videoId");
@@ -846,7 +1063,7 @@ class PageShim {
       case "clearUpcoming": {
         const { index, expectedKeys, expectedSelectedIndex, expectedInstanceKey } = args;
         const state = this.queueState();
-        const queue = this.readQueue(state);
+        const queue = this.readQueue(state, this.playingVideoId(api));
         const keys = clearableQueueKeys(state);
         const element = this.queueElement(state);
         const dispatch = element?.dispatch;
@@ -899,7 +1116,7 @@ class PageShim {
       case "moveQueueItem": {
         const { index, beforeIndex, expectedKeys, expectedSelectedIndex, expectedInstanceKey } = args;
         const state = this.queueState();
-        const queue = this.readQueue(state);
+        const queue = this.readQueue(state, this.playingVideoId(api));
         const keys = editableQueueKeys(queue);
         const element = this.queueElement(state);
         const dispatch = element?.dispatch;
@@ -940,6 +1157,7 @@ class PageShim {
         const state = this.queueState();
         const handler = this.getQueueAddHandler();
         if (!state || !handler?.inst?.handleQueueAddEndpoint) return unavailable("queue add");
+        if (enqueueWouldReplacePlaying(state, this.playingVideoId(api))) return unavailable("queue add while the explicit list is empty");
         if (position === "last" && state.isInfinite === true) {
           return { ok: false, error: "INFINITE_QUEUE", message: "cannot append to an endless radio queue" };
         }

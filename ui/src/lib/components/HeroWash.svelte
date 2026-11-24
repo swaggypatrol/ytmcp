@@ -1,24 +1,24 @@
 <script lang="ts">
-  import { artworkSrc, type Artwork } from "../cover.js";
+  import { getAmbient } from "../ambient/ambient.svelte.js";
+  import type { Artwork } from "../cover.js";
 
   interface Props {
-    /** Up to three pieces are blended side by side; none gives a wash in the theme's colours. */
+    /** The page's main cover(s); up to three are blended side by side. None: the playing track's cover lights the window instead. */
     art: readonly Artwork[];
     mockMode: boolean;
+    /** Light the whole window rather than a band along the top (Now playing). */
+    full?: boolean;
   }
 
-  let { art, mockMode }: Props = $props();
+  let { art, mockMode, full = false }: Props = $props();
 
-  const failed = $state<string[]>([]);
-  const sources = $derived(
-    art
-      .slice(0, 3)
-      .map((item) => artworkSrc(item, mockMode))
-      .filter((src): src is string => src !== null && !failed.includes(src))
-  );
+  const ambient = getAmbient();
+  const owner = {};
+
+  $effect(() => {
+    ambient?.report(owner, { art, mockMode, full });
+  });
+  $effect(() => () => ambient?.withdraw(owner));
 </script>
 
-<!-- Decorative colour wash behind a `.page-hero` header; bleeds to the window edge under the sidebar. -->
-<div class="hero-wash" aria-hidden="true" data-testid="hero-wash">
-  <div class="hero-wash-art">{#each sources as src, i (i)}<img {src} alt="" decoding="async" onerror={() => failed.push(src)} />{/each}</div>
-</div>
+<!-- Renders nothing in the page: it reports the page's main cover to the shell's ambient light (L1). -->

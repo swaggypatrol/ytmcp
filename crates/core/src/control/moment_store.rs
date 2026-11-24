@@ -62,12 +62,14 @@ pub trait MomentStore: Send + Sync {
         now_ms: u64,
     ) -> BoxFuture<'_, Result<(StoredListeningIntent, u64), ControlError>>;
 
-    /// Clears a single intent by `intent_key`, honoring `basis` precedence (unless `force_owner`
-    /// is true from the desktop UI). Returns `(Some((cleared_intent_id, new_revision)))` if existed.
+    /// Clears the intent under `intent_key`, honoring `basis` precedence. With `intent_id`, a
+    /// different intent under that key (one that replaced the expected one) is a conflict.
+    /// Returns `Some((cleared_intent_id, new_revision))` if one existed.
     fn clear_intent(
         &self,
         account_scope: AccountScope,
         intent_key: String,
+        intent_id: Option<String>,
         basis: ListeningIntentBasis,
         expected_revision: Option<u64>,
         now_ms: u64,

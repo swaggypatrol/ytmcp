@@ -924,18 +924,18 @@ describe("bridge playback diagnostics", () => {
     toggle.setAttribute("is-video-playback-mode-selected", "false");
     page.doc.body.append(toggle);
     await waitInitial(t);
-    expect(playback(t)).toMatchObject({ codec: "mp4a.40.2", qualityLabel: "auto", audioMode: "song", drmProtected: null });
+    expect(playback(t)).toMatchObject({ codec: "mp4a.40.2", audioItag: 141, qualityLabel: "auto", audioMode: "song", drmProtected: null });
     expect(JSON.stringify(playback(t))).not.toContain("not-projected");
 
     page.api.getStatsForNerds.mockReturnValue({ codecs: "vp09.00.51.08 (248) / opus (251)" });
     page.api.getPlaybackQuality.mockReturnValue("hd720");
     toggle.setAttribute("is-video-playback-mode-selected", "true");
     await requestSnapshot(t);
-    expect(playback(t)).toMatchObject({ codec: "opus", qualityLabel: "hd720", audioMode: "video" });
+    expect(playback(t)).toMatchObject({ codec: "opus", audioItag: 251, qualityLabel: "hd720", audioMode: "video" });
 
     page.loadIndex(1);
     await requestSnapshot(t);
-    expect(playback(t)).toMatchObject({ codec: null, qualityLabel: null, audioMode: null });
+    expect(playback(t)).toMatchObject({ codec: null, audioItag: null, qualityLabel: null, audioMode: null });
   });
 
   it("withholds diagnostics for malformed values and an ad playback window", async () => {
@@ -954,6 +954,84 @@ describe("bridge playback diagnostics", () => {
     page.doc.getElementById("movie_player")!.classList.add("ad-showing");
     await requestSnapshot(t);
     expect(playback(t)).toMatchObject({ codec: null, qualityLabel: null, audioMode: null });
+  });
+
+  // Shaped after bridge/tests/fixtures/live-audio-formats.json, plus fields that must never be projected.
+  const audioFormats = (): Record<string, unknown>[] => [
+    { itag: 140, mimeType: 'audio/mp4; codecs="mp4a.40.2"', bitrate: 131109, averageBitrate: 129705, audioQuality: "AUDIO_QUALITY_MEDIUM" },
+    { itag: 141, mimeType: 'audio/mp4; codecs="mp4a.40.2"', bitrate: 259330, averageBitrate: 257742, audioQuality: "AUDIO_QUALITY_HIGH",
+      url: "https://example.invalid/stream-url-sentinel", signatureCipher: "cipher-sentinel", initRange: { start: "0", end: "631" } },
+    { itag: 249, mimeType: 'audio/webm; codecs="opus"', bitrate: 57441, averageBitrate: 49600, audioQuality: "AUDIO_QUALITY_LOW" },
+    { itag: 251, mimeType: 'audio/webm; codecs="opus"', bitrate: 148693, audioQuality: "AUDIO_QUALITY_MEDIUM" },
+    { itag: 248, mimeType: 'video/webm; codecs="vp9"', bitrate: 2_000_000, averageBitrate: 1_500_000, quality: "hd1080" },
+  ];
+  const withFormats = (page: ReturnType<typeof createFakePage>, formats: unknown, videoId = () => page.player.videoId) =>
+    page.api.getPlayerResponse.mockImplementation(() => ({
+      videoDetails: { videoId: videoId(), title: "From details", lengthSeconds: "180" },
+      streamingData: { adaptiveFormats: formats },
+    }) as ReturnType<typeof page.api.getPlayerResponse>);
+
+  it("labels the playing audio stream as the page's player response does, with its average bit rate", async () => {
+    const { page, t } = setup();
+    Object.assign(page.player, { state: 1, timeSec: 2 });
+    withFormats(page, audioFormats());
+    page.api.getStatsForNerds.mockReturnValue({ codecs: "0 / mp4a.40.2 (141)" });
+    await waitInitial(t);
+    expect(playback(t)).toMatchObject({ audioItag: 141, audioQuality: "high", audioBitrateKbps: 258 });
+    expect(JSON.stringify(playback(t))).not.toMatch(/sentinel|initRange|631/);
+
+    page.api.getStatsForNerds.mockReturnValue({ codecs: "0 / mp4a.40.2 (140)" });
+    await requestSnapshot(t);
+    expect(playback(t)).toMatchObject({ audioItag: 140, audioQuality: "standard", audioBitrateKbps: 130 });
+
+    page.api.getStatsForNerds.mockReturnValue({ codecs: "vp09.00.51.08 (248) / opus (249)" });
+    await requestSnapshot(t);
+    expect(playback(t)).toMatchObject({ audioItag: 249, audioQuality: "low", audioBitrateKbps: 50 });
+
+    // No average: the declared bit rate stands in.
+    page.api.getStatsForNerds.mockReturnValue({ codecs: "0 / opus (251)" });
+    await requestSnapshot(t);
+    expect(playback(t)).toMatchObject({ audioItag: 251, audioQuality: "standard", audioBitrateKbps: 149 });
+
+    // A label without any sane bit rate keeps the label only.
+    withFormats(page, [{ itag: 251, mimeType: "audio/webm", bitrate: -1, averageBitrate: "132215", audioQuality: "AUDIO_QUALITY_MEDIUM" }]);
+    await requestSnapshot(t);
+    expect(playback(t)).toMatchObject({ audioItag: 251, audioQuality: "standard", audioBitrateKbps: null });
+  });
+
+  it("gives no audio label for another video's response, an unknown or ambiguous stream number, or an ad", async () => {
+    const { page, t } = setup();
+    Object.assign(page.player, { state: 1, timeSec: 2 });
+    let responseVideo = "otherVideo1";
+    withFormats(page, audioFormats(), () => responseVideo);
+    page.api.getStatsForNerds.mockReturnValue({ codecs: "0 / mp4a.40.2 (141)" });
+    await waitInitial(t);
+    expect(playback(t)).toMatchObject({ audioItag: 141, audioQuality: null, audioBitrateKbps: null });
+
+    responseVideo = page.player.videoId;
+    const cases: Array<[string, unknown]> = [
+      ["0 / opus (774)", audioFormats()], // not listed
+      ["0 / opus", audioFormats()], // no stream number
+      ["0 / opus (248)", audioFormats()], // only a video stream has that number
+      ["0 / opus (251)", [{ itag: 251, mimeType: "audio/webm", averageBitrate: 132215, audioQuality: "AUDIO_QUALITY_ULTRA" }]],
+      ["0 / opus (251)", [{ itag: 251, mimeType: "audio/webm", averageBitrate: 132215, audioQuality: "AUDIO_QUALITY_MEDIUM" },
+        { itag: 251, mimeType: "audio/webm", averageBitrate: 49600, audioQuality: "AUDIO_QUALITY_LOW" }]],
+      ["0 / opus (251)", { 0: audioFormats()[3] }],
+    ];
+    for (const [codecs, formats] of cases) {
+      page.api.getStatsForNerds.mockReturnValue({ codecs });
+      withFormats(page, formats, () => responseVideo);
+      await requestSnapshot(t);
+      expect(playback(t), codecs).toMatchObject({ audioQuality: null, audioBitrateKbps: null });
+    }
+
+    page.api.getStatsForNerds.mockReturnValue({ codecs: "0 / mp4a.40.2 (141)" });
+    withFormats(page, audioFormats());
+    await requestSnapshot(t);
+    expect(playback(t)).toMatchObject({ audioQuality: "high" });
+    page.doc.getElementById("movie_player")!.classList.add("ad-showing");
+    await requestSnapshot(t);
+    expect(playback(t)).toMatchObject({ audioItag: null, audioQuality: null, audioBitrateKbps: null });
   });
 });
 
@@ -987,6 +1065,241 @@ describe("bridge results after page clicks", () => {
     page.doc.querySelector(".shuffle")!.addEventListener("click", (event) => event.stopImmediatePropagation(), { capture: true });
     const { id } = await dispatchCommand(t, "setShuffle", { shuffle: true });
     expect(ack(t, id)).toMatchObject({ dispatched: true, error: null });
+  });
+});
+
+describe("bridge official continuation", () => {
+  const suggestions = (page: ReturnType<typeof createFakePage>, count: number, prefix = "suggest") =>
+    Array.from({ length: count }, (_, i) => ({ playlistPanelVideoRenderer: page.renderer({ videoId: `${prefix}${String(i).padStart(4, "0")}` }) }));
+  const chip = (label: string, selected: boolean, endpoint: Record<string, unknown>) => ({
+    chipCloudChipRenderer: { text: { runs: [{ text: label }] }, isSelected: selected, uniqueId: label, navigationEndpoint: endpoint },
+  });
+  const filterEndpoint = {
+    queueUpdateCommand: { fetchContentsCommand: { watchEndpoint: { playlistId: "RDsyntheticFilter", params: "synthParamsToken" } } },
+  };
+
+  it("lists the page's suggestions after a single search result without mixing them into entries", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true, songs: [{ videoId: "searchHit01" }] });
+    page.queue.automixItems.push(...suggestions(page, 50), { playlistPanelVideoRenderer: { videoId: "not a video id" } });
+    await waitInitial(t, ["queueMirror"]);
+    const q = queue(t);
+    expect(q.entries!.map((entry) => entry.videoId)).toEqual(["searchHit01"]);
+    expect(q.currentEntryId).toBe(q.entries![0]!.entryId);
+    expect(q).toMatchObject({ completeness: "partial", hasMore: true, explicitComplete: true });
+    expect(q.officialUpcoming!.status).toBe("observed");
+    expect(q.officialUpcoming!.tracks!.map((track) => track.videoId)).toEqual(Array.from({ length: 50 }, (_, i) => `suggest${String(i).padStart(4, "0")}`));
+    expect(q.officialUpcoming!.tracks![0]).toMatchObject({ title: "Title suggest0000", artists: [{ name: "Synthetic Artist" }], durationMs: 180_000 });
+    expect(q.filters).toBeUndefined();
+  });
+
+  it("follows the first suggestion into the explicit list when the track ends on its own", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true, songs: [{ videoId: "searchHit01" }] });
+    page.queue.automixItems.push(...suggestions(page, 50));
+    await waitInitial(t, ["queueMirror"]);
+    const before = queue(t);
+    const from = t.sent.length;
+    page.queue.items.push(page.queue.automixItems.shift() as (typeof page.queue.items)[number]);
+    page.loadIndex(1);
+    page.renderQueue();
+    const after = (await waitQueue(t, from, (q) => q.entries?.length === 2, "queue after the suggestion played")).payload as QueueSnapshot;
+    expect(after.entries!.map((entry) => entry.videoId)).toEqual(["searchHit01", "suggest0000"]);
+    expect(after.entries![0]!.entryId).toBe(before.entries![0]!.entryId);
+    expect(after.currentEntryId).toBe(after.entries![1]!.entryId);
+    expect(after.officialUpcoming!.status).toBe("observed");
+    expect(after.officialUpcoming!.tracks).toHaveLength(49);
+    expect(after.officialUpcoming!.tracks![0]!.videoId).toBe("suggest0001");
+  });
+
+  it("reports a radio, switched-off autoplay and a pending fetch without listing tracks", async () => {
+    const radio = setup({ autoplay: true, queueEdits: true });
+    radio.page.queue.isInfinite = true;
+    await waitInitial(radio.t, ["queueMirror"]);
+    expect(queue(radio.t).officialUpcoming).toEqual({ status: "radio", tracks: [] });
+
+    const off = setup({ autoplay: false, queueEdits: true });
+    off.page.queue.automixItems.push(...suggestions(off.page, 5));
+    await waitInitial(off.t, ["queueMirror"]);
+    expect(queue(off.t).officialUpcoming).toEqual({ status: "off", tracks: [] });
+
+    const fetching = setup({ autoplay: true, queueEdits: true });
+    fetching.page.queueNative.pendingFetchAutomixItemsRequest = {};
+    await waitInitial(fetching.t, ["queueMirror"]);
+    expect(queue(fetching.t).officialUpcoming).toEqual({ status: "loading", tracks: [] });
+    fetching.page.queueNative.pendingFetchAutomixItemsRequest = null;
+    await requestSnapshot(fetching.t);
+    expect(queue(fetching.t).officialUpcoming).toEqual({ status: "none", tracks: [] });
+    fetching.page.queue.isGenerating = true;
+    await requestSnapshot(fetching.t);
+    expect(queue(fetching.t).officialUpcoming).toEqual({ status: "loading", tracks: [] });
+  });
+
+  it("omits the continuation when a listed suggestion cannot be read, instead of shortening or reordering it", async () => {
+    for (const malformed of [
+      (page: ReturnType<typeof createFakePage>) => page.queue.automixItems.push(...suggestions(page, 3).map((row) => ({ unknownWrapperRenderer: row }))),
+      (page: ReturnType<typeof createFakePage>) => page.queue.automixItems.push({ playlistPanelVideoRenderer: { videoId: "not a video id" } }, ...suggestions(page, 3)),
+    ]) {
+      const { page, t } = setup({ autoplay: true, queueEdits: true });
+      malformed(page);
+      await waitInitial(t, ["queueMirror"]);
+      expect(queue(t).officialUpcoming).toBeUndefined();
+      expect(queue(t)).toMatchObject({ hasMore: true, explicitComplete: true });
+    }
+  });
+
+  it("omits an empty continuation when the queue element holding the pending fetch is unreadable", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true });
+    page.queueNative.pendingFetchAutomixItemsRequest = {};
+    await waitInitial(t, ["queueMirror"]);
+    expect(queue(t).officialUpcoming).toEqual({ status: "loading", tracks: [] });
+    page.queueStore.getState = () => ({ queue: { ...page.queue } });
+    await requestSnapshot(t);
+    expect(queue(t).officialUpcoming).toBeUndefined();
+    page.queue.isGenerating = true;
+    await requestSnapshot(t);
+    expect(queue(t).officialUpcoming).toEqual({ status: "loading", tracks: [] });
+  });
+
+  it("reads only queue-updating chips as filters, with their selection and opaque ids", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true });
+    const long = "L".repeat(80);
+    page.queue.steeringChips = {
+      chips: [
+        chip("All", true, filterEndpoint),
+        chip("Save", false, { saveQueueToPlaylistCommand: {} }),
+        chip("Familiar", false, filterEndpoint),
+        chip("   ", false, filterEndpoint),
+        chip(long, false, filterEndpoint),
+      ],
+    };
+    await waitInitial(t, ["queueMirror"]);
+    const filters = queue(t).filters!;
+    expect(filters.map(({ label, selected }) => ({ label, selected }))).toEqual([
+      { label: "All", selected: true }, { label: "Familiar", selected: false }, { label: "L".repeat(64), selected: false },
+    ]);
+    expect(new Set(filters.map((f) => f.filterId)).size).toBe(3);
+    for (const f of filters) {
+      expect(f.filterId).toMatch(/^qf-\d+-[0-9a-f]{8}$/);
+      expect(f.filterId).not.toContain("synth");
+    }
+    await requestSnapshot(t);
+    expect(queue(t).filters!.map((f) => f.filterId)).toEqual(filters.map((f) => f.filterId));
+  });
+
+  it("re-emits a suggestion or filter change under the same revision, so a bound clear stays valid", async () => {
+    const songs = [{ videoId: "songAAAAAAA" }, { videoId: "songBBBBBBB" }, { videoId: "songCCCCCCC" }];
+    const { page, t } = setup({ autoplay: true, queueEdits: true, songs });
+    page.queue.automixItems.push(...suggestions(page, 2));
+    page.queue.steeringChips = { chips: [chip("All", true, filterEndpoint), chip("Popular", false, filterEndpoint)] };
+    page.loadIndex(1);
+    await waitInitial(t, ["queueMirror", "queueClear"]);
+    const before = queue(t);
+    const bound = { queueEntryId: before.currentEntryId, queueRevision: before.queueRevision, trackInstanceId: playback(t).trackInstanceId };
+
+    const from = t.sent.length;
+    page.queue.automixItems.push(...suggestions(page, 1, "another"));
+    page.queue.steeringChips = { chips: [chip("All", false, filterEndpoint), chip("Popular", true, filterEndpoint)] };
+    page.renderQueue(); // A queue DOM change drives an ordinary, unforced refresh.
+    const tail = (await waitQueue(t, from, (q) => q.officialUpcoming?.tracks?.length === 3, "queue after a tail change")).payload as QueueSnapshot;
+    expect(tail.queueRevision).toBe(before.queueRevision);
+    expect(tail.entries).toEqual(before.entries);
+    expect(tail.filters!.map((f) => f.selected)).toEqual([false, true]);
+
+    const emitted = t.of("bridge.queueObserved").length;
+    page.renderQueue();
+    await flush(20);
+    await settle(); // An unchanged refresh emits nothing.
+    expect(t.of("bridge.queueObserved")).toHaveLength(emitted);
+
+    const { id: clear, from: clearFrom } = await dispatchCommand(t, "clearUpcoming", bound);
+    await waitQueue(t, clearFrom, (q) => q.entries?.length === 2, "queue after clearing");
+    expect(ack(t, clear)).toMatchObject({ dispatched: true, error: null });
+    expect(queue(t).officialUpcoming!.tracks).toHaveLength(3);
+  });
+});
+
+/**
+ * Edge state seen live (bridge/tests/fixtures/live-tail-current-observed.json): after a single
+ * search result was played, the explicit list was empty and the playing video was the first of
+ * 51 suggestions.
+ */
+describe("bridge playing from the suggestions", () => {
+  const suggestions = (page: ReturnType<typeof createFakePage>, count: number) =>
+    Array.from({ length: count }, (_, i) => ({ playlistPanelVideoRenderer: page.renderer({ videoId: `suggest${String(i).padStart(4, "0")}` }) }));
+  const ids = (count: number, from = 0) => Array.from({ length: count }, (_, i) => `suggest${String(from + i).padStart(4, "0")}`);
+  /** Empties the explicit list and lists the playing video among the suggestions at `at`. */
+  const playFromTail = (page: ReturnType<typeof createFakePage>, at = 0) => {
+    page.queue.items.splice(0);
+    const tail = suggestions(page, 50);
+    tail.splice(at, 0, { playlistPanelVideoRenderer: page.renderer({ videoId: page.player.videoId }) });
+    page.queue.automixItems.splice(0, page.queue.automixItems.length, ...tail);
+    page.renderQueue();
+  };
+
+  it("lists only the suggestions after the playing track", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true, songs: [{ videoId: "searchHit01" }] });
+    Object.assign(page.player, { state: 1, timeSec: 30 });
+    playFromTail(page);
+    await waitInitial(t, ["queueMirror"]);
+    expect(queue(t)).toMatchObject({ entries: [], currentEntryId: null });
+    expect(queue(t).officialUpcoming!.status).toBe("observed");
+    expect(queue(t).officialUpcoming!.tracks!.map((track) => track.videoId)).toEqual(ids(50));
+
+    playFromTail(page, 3);
+    await requestSnapshot(t);
+    expect(queue(t).officialUpcoming!.tracks!.map((track) => track.videoId)).toEqual(ids(47, 3));
+
+    // Two copies of the playing video: which one plays is unknown, so nothing is listed.
+    page.queue.automixItems.push({ playlistPanelVideoRenderer: page.renderer({ videoId: "searchHit01" }) });
+    await requestSnapshot(t);
+    expect(queue(t).officialUpcoming).toBeUndefined();
+  });
+
+  it("keeps a suggestion that repeats the playing track while that track is the explicit current entry", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true, songs: [{ videoId: "searchHit01" }] });
+    const tail = suggestions(page, 4);
+    tail.splice(2, 0, { playlistPanelVideoRenderer: page.renderer({ videoId: "searchHit01" }) });
+    page.queue.automixItems.push(...tail);
+    await waitInitial(t, ["queueMirror"]);
+    expect(queue(t).officialUpcoming!.tracks!.map((track) => track.videoId))
+      .toEqual(["suggest0000", "suggest0001", "searchHit01", "suggest0002", "suggest0003"]);
+  });
+
+  it("refuses enqueue before the page while the explicit list is empty and a track is loaded", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true, songs: [{ videoId: "searchHit01" }] });
+    Object.assign(page.player, { state: 1, timeSec: 30 });
+    playFromTail(page);
+    await waitInitial(t, ["queueMirror"]);
+    expect(t.last<BridgeReadyPayload>("bridge.ready")!.capabilities.queueEnqueue).toBe("unsupported");
+    for (const enqueuePosition of ["next", "last"]) {
+      const { id } = await dispatchCommand(t, "enqueue", { target: { videoId: "songZZZZZZZ" }, enqueuePosition });
+      expect(ack(t, id)).toMatchObject({ dispatched: false, error: { code: "UNSUPPORTED_CAPABILITY" } });
+    }
+    await settle();
+    expect(page.queueAdd).not.toHaveBeenCalled();
+    expect(page.player.videoId).toBe("searchHit01");
+  });
+
+  it("checks the page again at dispatch, since the explicit list can empty between snapshots", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true, songs: [{ videoId: "searchHit01" }] });
+    Object.assign(page.player, { state: 1, timeSec: 30 });
+    await waitInitial(t, ["queueMirror", "queueEnqueue"]);
+    // The store changes without a DOM mutation, so the bridge still holds the earlier capability.
+    page.queue.items.splice(0);
+    page.queue.automixItems.push({ playlistPanelVideoRenderer: page.renderer({ videoId: "searchHit01" }) }, ...suggestions(page, 3));
+    const { id } = await dispatchCommand(t, "enqueue", { target: { videoId: "songZZZZZZZ" }, enqueuePosition: "next" });
+    expect(ack(t, id)).toMatchObject({ dispatched: false, error: { code: "UNSUPPORTED_CAPABILITY" } });
+    expect(page.queueAdd).not.toHaveBeenCalled();
+  });
+
+  it("still enqueues onto an empty list when no track is loaded", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true, songs: [{ videoId: "searchHit01" }] });
+    page.queue.items.splice(0);
+    page.player.videoId = "";
+    page.renderQueue();
+    await waitInitial(t, ["queueMirror", "queueEnqueue"]);
+    const { id } = await dispatchCommand(t, "enqueue", { target: { videoId: "songZZZZZZZ" }, enqueuePosition: "next" });
+    expect(ack(t, id)).toMatchObject({ dispatched: true, error: null });
+    expect(page.queueAdd).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1066,6 +1379,145 @@ describe("bridge queue autoplay", () => {
     expect(playback(t).autoplay ?? null).toBeNull();
     await settle(); // Nothing else happens: no refused command clicks the switch later.
     expect(page.toggleAutoplay).not.toHaveBeenCalled();
+  });
+});
+
+describe("bridge Up Next filters", () => {
+  const labels = ["All", "Familiar", "Discover"];
+  const filterId = (t: ReturnType<typeof createTransport>, label: string) => queue(t).filters!.find((f) => f.label === label)!.filterId;
+  const selectedFilter = (q: QueueSnapshot) => q.filters?.find((f) => f.selected)?.label;
+  const chipElements = (page: ReturnType<typeof createFakePage>) => Array.from(page.doc.querySelectorAll("ytmusic-chip-cloud-chip-renderer"));
+
+  it("offers selection only while a queue-updating chip is rendered and enabled", async () => {
+    const none = setup({ autoplay: true });
+    await waitInitial(none.t, ["queueMirror"]);
+    expect(none.t.last<BridgeReadyPayload>("bridge.ready")!.capabilities.queueFilter).toBe("unsupported");
+    const { id } = await dispatchCommand(none.t, "setQueueFilter", { queueFilterId: "qf-1-00000000" });
+    expect(ack(none.t, id)).toMatchObject({ dispatched: false, error: { code: "UNSUPPORTED_CAPABILITY" } });
+
+    const unrendered = setup({ autoplay: true });
+    unrendered.page.setFilters(labels, "All");
+    for (const el of chipElements(unrendered.page)) el.remove();
+    await waitInitial(unrendered.t, ["queueMirror"]);
+    expect(queue(unrendered.t).filters).toHaveLength(3);
+    expect(unrendered.t.last<BridgeReadyPayload>("bridge.ready")!.capabilities.queueFilter).toBe("unsupported");
+
+    const disabled = setup({ autoplay: true });
+    disabled.page.setFilters(labels, "All");
+    for (const el of chipElements(disabled.page)) el.setAttribute("aria-disabled", "true");
+    await waitInitial(disabled.t, ["queueMirror"]);
+    expect(disabled.t.last<BridgeReadyPayload>("bridge.ready")!.capabilities.queueFilter).toBe("unsupported");
+
+    const offered = setup({ autoplay: true });
+    offered.page.setFilters(labels, "All");
+    await waitInitial(offered.t, ["queueFilter"]);
+    expect(offered.page.filterClicks).not.toHaveBeenCalled();
+  });
+
+  it("clicks only the requested chip in the queue rendering and reports it selected under the same revision", async () => {
+    const { page, t } = setup({ autoplay: true, queueEdits: true });
+    page.queue.automixItems.push({ playlistPanelVideoRenderer: page.renderer({ videoId: "suggest0000" }) });
+    page.setFilters(labels, "All");
+    await waitInitial(t, ["queueMirror", "queueFilter"]);
+    const before = queue(t);
+
+    const { id, from } = await dispatchCommand(t, "setQueueFilter", { queueFilterId: filterId(t, "Familiar") });
+    const after = (await waitQueue(t, from, (q) => selectedFilter(q) === "Familiar", "Familiar selected")).payload as QueueSnapshot;
+    expect(ack(t, id)).toMatchObject({ dispatched: true, error: null });
+    expect(page.filterClicks.mock.calls).toEqual([["Familiar", "queue", "a"]]);
+    expect(after.queueRevision).toBe(before.queueRevision);
+    expect(after.entries).toEqual(before.entries);
+    expect(after.filters!.map((f) => f.filterId)).toEqual(before.filters!.map((f) => f.filterId));
+    expect(after.officialUpcoming!.tracks!.map((track) => track.videoId)).toEqual(["steer100000", "steer110000"]);
+    // Selecting a filter is a chip click only: no navigation, queue edit or player call.
+    for (const spy of [page.navigate, page.queueAdd, page.queueDispatch, page.toggleAutoplay, page.api.playVideo, page.api.pauseVideo, page.api.seekTo, page.api.nextVideo]) {
+      expect(spy).not.toHaveBeenCalled();
+    }
+
+    // The core confirms an already selected filter itself; the bridge does not click it again.
+    const { id: again } = await dispatchObserved(t, "setQueueFilter", { queueFilterId: filterId(t, "Familiar") });
+    expect(ack(t, again)).toMatchObject({ dispatched: true, error: null });
+    expect(page.filterClicks).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an unknown, unrendered or malformed filter id without clicking anything", async () => {
+    const { page, t } = setup({ autoplay: true });
+    page.setFilters(labels, "All");
+    await waitInitial(t, ["queueFilter"]);
+    const { id: unknown } = await dispatchCommand(t, "setQueueFilter", { queueFilterId: "qf-0-00000000" });
+    expect(ack(t, unknown)).toMatchObject({ dispatched: false, error: { code: "STALE_CONTEXT" } });
+    for (const el of chipElements(page).filter((chip) => chip.textContent === "Discover")) el.remove();
+    const { id: unrendered } = await dispatchCommand(t, "setQueueFilter", { queueFilterId: filterId(t, "Discover") });
+    expect(ack(t, unrendered)).toMatchObject({ dispatched: false, error: { code: "UNSUPPORTED_CAPABILITY" } });
+    const { id: missing } = await dispatchCommand(t, "setQueueFilter", {});
+    expect(ack(t, missing)).toMatchObject({ dispatched: false, error: { code: "INVALID_PAYLOAD" } });
+    const from = t.sent.length;
+    t.command("setQueueFilter", { queueFilterId: "q".repeat(65) }, "oversized-filter");
+    await t.waitFor((e) => e.kind === "bridge.error", "oversized filter id refused", from);
+    expect(t.last<{ code: string }>("bridge.error")?.code).toBe("INVALID_PAYLOAD");
+    await settle();
+    expect(page.filterClicks).not.toHaveBeenCalled();
+  });
+
+  it("names each filter by its seed, so a handle read for another seed is refused without a click", async () => {
+    const { page, t } = setup({ autoplay: true });
+    page.setFilters(labels, "All");
+    await waitInitial(t, ["queueMirror", "queueFilter"]);
+    const before = queue(t).filters!.map((f) => f.filterId);
+    const oldDiscover = filterId(t, "Discover");
+
+    // A selection change keeps every id.
+    const { from } = await dispatchCommand(t, "setQueueFilter", { queueFilterId: filterId(t, "Familiar") });
+    await waitQueue(t, from, (q) => selectedFilter(q) === "Familiar", "Familiar selected");
+    expect(queue(t).filters!.map((f) => f.filterId)).toEqual(before);
+    page.filterClicks.mockClear();
+
+    // The same chips under another song's suggestions carry another seed playlist.
+    const chips = (page.queue.steeringChips as { chips: { chipCloudChipRenderer: Record<string, unknown> }[] }).chips;
+    const otherSeed = { queueUpdateCommand: { fetchContentsCommand: { watchEndpoint: { playlistId: "RDAMVMotherSeed01" } } } };
+    for (const c of chips) c.chipCloudChipRenderer.navigationEndpoint = otherSeed;
+    await requestSnapshot(t);
+    const after = queue(t).filters!;
+    expect(after.map((f) => f.label)).toEqual(labels);
+    for (const [i, f] of after.entries()) expect(f.filterId).not.toBe(before[i]);
+    for (const f of after) expect(f.filterId).toMatch(/^qf-\d+-[0-9a-f]{8}$/);
+
+    const { id } = await dispatchCommand(t, "setQueueFilter", { queueFilterId: oldDiscover });
+    expect(ack(t, id)).toMatchObject({ dispatched: false, error: { code: "STALE_CONTEXT" } });
+    await settle();
+    expect(page.filterClicks).not.toHaveBeenCalled();
+  });
+
+  it("still names and selects filters whose chips carry no seed playlist", async () => {
+    const { page, t } = setup({ autoplay: true });
+    page.setFilters(labels, "All");
+    // Every chip shares one endpoint, and re-rendering after a click keeps it, so all stay seedless.
+    const chips = (page.queue.steeringChips as { chips: { chipCloudChipRenderer: { navigationEndpoint: { queueUpdateCommand: Record<string, unknown> } } }[] }).chips;
+    delete chips[0]!.chipCloudChipRenderer.navigationEndpoint.queueUpdateCommand.fetchContentsCommand;
+    await waitInitial(t, ["queueMirror", "queueFilter"]);
+    const before = queue(t).filters!;
+    expect(before.map((f) => f.label)).toEqual(labels);
+    for (const f of before) expect(f.filterId).toMatch(/^qf-\d+-[0-9a-f]{8}$/);
+    expect(new Set(before.map((f) => f.filterId)).size).toBe(labels.length);
+
+    const { id, from } = await dispatchCommand(t, "setQueueFilter", { queueFilterId: filterId(t, "Discover") });
+    await waitQueue(t, from, (q) => selectedFilter(q) === "Discover", "Discover selected");
+    expect(ack(t, id)).toMatchObject({ dispatched: true, error: null });
+    expect(page.filterClicks.mock.calls).toEqual([["Discover", "queue", "a"]]);
+    expect(queue(t).filters!.map((f) => f.filterId)).toEqual(before.map((f) => f.filterId));
+  });
+
+  it("matches a re-created or data-less chip and falls back to the player page rendering, never Save", async () => {
+    for (const [data, rendering] of [["copy", "queue"], ["opaque", "queue"], ["none", "queue"], ["same", "page"]] as const) {
+      const { page, t } = setup({ autoplay: true });
+      page.setFilters(labels, "All", data);
+      if (rendering === "page") page.doc.getElementById("queue-chips")!.replaceChildren();
+      await waitInitial(t, ["queueFilter"]);
+      const { id, from } = await dispatchCommand(t, "setQueueFilter", { queueFilterId: filterId(t, "Discover") });
+      await waitQueue(t, from, (q) => selectedFilter(q) === "Discover", `Discover selected (${data}, ${rendering})`);
+      expect(ack(t, id)).toMatchObject({ dispatched: true, error: null });
+      expect(page.filterClicks.mock.calls).toEqual([["Discover", rendering, "a"]]);
+    }
   });
 });
 

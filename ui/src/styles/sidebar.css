@@ -1,0 +1,370 @@
+/* The floating sidebar: its column of icons, the labels that make way, the mark, and the collapse
+   transition shared with the player dock and the page column. */
+
+/* ---- Collapse transition -----------------------------------------------------------------
+   --content-inset switches in one step (shell.css), so the page lays out once. What follows the
+   sidebar's edge declares --sidebar-edge from it and glides it over --duration-slow, and uses it
+   only inside transforms (while the shell carries data-sidebar-motion), so no box is resized or
+   moved by layout on any frame of the move. Transitions reverse from where they are, so a second
+   click mid-way turns back. Not inherited, so nothing below these elements restyles per frame.
+   While it runs, every glass surface holds the plain blur (SidebarMotion, liquid-glass.ts
+   holdPlainBlur): a lens rebuilt every frame drops frames, a plain blur follows a moving clip for
+   free. No ancestor of a glass surface gets a filter, opacity, mask or clip-path: each of those
+   would cut the surface's backdrop off.
+
+   Sidebar: the frame is a rounded clip, 240 px wide while moving, slid left by the distance still
+   to go; the panel inside slides back by the same amount, so the glass, the left rim and every
+   icon stay where they are and only the clip's right edge moves. The frame carries the panel's
+   elevation meanwhile (the clip would cut the panel's own).
+   Dock: while moving it keeps the collapsed inset as its layout edge in both directions, so its
+   container (the player bar's breakpoints) cannot change mid-way; it is a rounded clip slid right
+   by the gap between the two edges, its overflow leaving the window. The bar slides back, so the
+   glass and its right rim stay still; its three groups follow the visible edge: the track group
+   all the way, the centre half way, the tail not at all. */
+@property --sidebar-edge {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+.sidebar-frame,
+.app-sidebar,
+.app-shell .app-player-dock,
+.app-shell .app-player-bar,
+.app-shell .player-now,
+.app-shell .player-centre,
+.app-content {
+  --sidebar-edge: var(--content-inset);
+  transition: --sidebar-edge var(--duration-slow) var(--ease-standard);
+}
+/* Entering the plain blur at the start of a move, the glass surfaces cross-fade to its heavier
+   tint instead of stepping. The way back steps, together with the lens itself (which cannot
+   fade): fading the tint over a live lens re-runs its filter on every frame and cost about four
+   dropped frames per expansion in the collapse probe. */
+.app-sidebar:not([data-lg-lens]),
+.app-shell .app-player-bar:not([data-lg-lens]) {
+  transition:
+    --sidebar-edge var(--duration-slow) var(--ease-standard),
+    background-color var(--lg-duration-quick) ease-out;
+}
+
+.app-shell[data-sidebar-motion] {
+  /* The two edges' distance (168 px), and the layout edge of each moving box. */
+  --glide-span: calc(var(--sidebar-width) - var(--sidebar-collapsed-width));
+  --inset-expanded: calc(var(--sidebar-width) + var(--shell-gap) * 2);
+  --inset-collapsed: calc(var(--sidebar-collapsed-width) + var(--shell-gap) * 2);
+}
+.app-shell[data-sidebar-motion] .sidebar-frame {
+  width: var(--sidebar-width);
+  overflow: hidden;
+  transform: translateX(calc(var(--sidebar-edge) - var(--inset-expanded)));
+  box-shadow: var(--lg-shadow);
+  will-change: transform;
+}
+.app-shell[data-sidebar-motion] .app-sidebar {
+  transform: translateX(calc(var(--inset-expanded) - var(--sidebar-edge)));
+  --lg-elevation: 0 0 transparent;
+  will-change: transform;
+}
+.app-shell[data-sidebar-motion] .app-player-dock {
+  left: var(--inset-collapsed);
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  transform: translateX(calc(var(--sidebar-edge) - var(--inset-collapsed)));
+  box-shadow: var(--lg-shadow);
+  will-change: transform;
+}
+.app-shell[data-sidebar-motion] .app-player-bar {
+  transform: translateX(calc(var(--inset-collapsed) - var(--sidebar-edge)));
+  --lg-elevation: 0 0 transparent;
+  will-change: transform;
+}
+.app-shell[data-sidebar-motion] .player-now {
+  transform: translateX(calc(var(--sidebar-edge) - var(--inset-collapsed)));
+  /* The track group moves twice as far as the centre: leave it room so a long title never runs
+     into the transport. */
+  max-width: calc(100% - var(--glide-span) / 2);
+}
+.app-shell[data-sidebar-motion] .player-centre {
+  transform: translateX(calc((var(--sidebar-edge) - var(--inset-collapsed)) / 2));
+}
+@supports (corner-shape: squircle) {
+  .sidebar-frame,
+  .app-shell[data-sidebar-motion] .app-player-dock {
+    corner-shape: squircle;
+  }
+}
+
+/* The page column moves by transform. */
+.app-shell[data-sidebar-motion] .app-content {
+  transform: translateX(calc(var(--sidebar-edge) - var(--content-inset)));
+  will-change: transform;
+}
+/* What spans the window inside the column (.bleed, the sticky collection strip) moves with it, so
+   while moving it reaches one span further past both window edges and its ends never come loose.
+   Its content and scroll positions stay where they were: the extra width is all padding. */
+.app-shell[data-sidebar-motion] .bleed {
+  width: calc(100% + var(--page-left) + var(--page-offset) + var(--glide-span) * 2);
+  margin-left: calc((var(--page-left) + var(--glide-span)) * -1);
+  padding-left: calc(var(--page-left) + var(--glide-span));
+  padding-right: calc(var(--page-margin) + var(--glide-span));
+  scroll-padding-left: calc(var(--page-left) + var(--glide-span));
+}
+.app-shell[data-sidebar-motion] .collection-strip {
+  left: calc((var(--page-left, 0px) + var(--glide-span)) * -1);
+  width: calc(100% + var(--page-left, 0px) + var(--page-offset, 0px) + var(--glide-span) * 2);
+  padding-left: calc(var(--page-left, 0px) + var(--glide-span));
+  padding-right: calc(var(--page-margin, 20px) + var(--glide-span));
+}
+/* Reduced motion: the edge switches at once (the blanket rule in motion-a11y.css) and the shell
+   never carries data-sidebar-motion; the labels cross-fade instead (below and SidebarMotion). */
+
+/* ---- Panel -------------------------------------------------------------------------------- */
+
+.sidebar-frame {
+  position: fixed;
+  top: var(--shell-gap);
+  bottom: var(--shell-gap);
+  left: var(--shell-gap);
+  width: calc(var(--content-inset) - var(--shell-gap) * 2);
+  z-index: var(--z-glass);
+  border-radius: var(--radius-xl);
+}
+.app-sidebar {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-8);
+  overflow: hidden;
+}
+
+/* The icon column is the anchor: the panel's 8 px padding plus each row's 18 px start padding
+   put every 20 px icon's centre 36 px from the panel's left edge, which is the middle of the
+   72 px collapsed panel. So the icons stay exactly where they are in both states. */
+.sidebar-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding-left: var(--space-12);
+}
+.sidebar-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+}
+.sidebar-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 2px;
+}
+/* The hairlines between nav groups, inset to the Sidebar artboard's 6 / 12. */
+.app-sidebar .nav-divider {
+  margin: 6px var(--space-12);
+}
+/* Short windows (the 600 px minimum): a tighter rhythm, so all nine items and the foot fit
+   without the nav column scrolling. */
+@media (max-height: 660px) {
+  .sidebar-nav {
+    padding-block: 2px;
+  }
+  .app-sidebar .nav-divider {
+    margin-block: 3px;
+  }
+}
+
+.app-sidebar .sidebar-item {
+  position: relative;
+  overflow: hidden;
+  height: 40px;
+  gap: 14px;
+  padding: 0 0 0 18px;
+}
+.sidebar-item > .icon,
+.sidebar-glyph {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+.sidebar-glyph {
+  display: grid;
+  place-items: center;
+}
+.sidebar-collapse > .icon {
+  transition: transform var(--duration-slow) var(--ease-standard);
+}
+.sidebar-collapse[aria-expanded="false"] > .icon {
+  transform: rotate(180deg);
+}
+
+/* ---- Labels -------------------------------------------------------------------------------
+   Labels keep the expanded width whatever the panel's, so nothing re-wraps or truncates while
+   the width moves; the row clips them. They leave fast and come back once the panel has made
+   room: out in --lg-duration-quick, in after a short delay. */
+.sidebar-text {
+  flex: none;
+  width: calc(var(--sidebar-width) - var(--space-8) * 2 - 18px - 20px - 14px - var(--space-12));
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  transition:
+    opacity var(--duration-fast) ease-out 140ms,
+    transform var(--duration-normal) var(--ease-standard) 120ms,
+    visibility 0s;
+}
+.is-text-hidden .sidebar-text {
+  opacity: 0;
+  transform: translateX(-6px);
+  visibility: hidden;
+  transition:
+    opacity var(--lg-duration-quick) ease-out,
+    transform var(--duration-fast) ease-out,
+    visibility 0s linear var(--lg-duration-quick);
+}
+.sidebar-label {
+  flex: 1;
+  min-width: 0;
+  /* Switch ink with the glass palette when the theme changes. */
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-base); /* the Sidebar artboard's 15 / 500 */
+  font-weight: 500;
+}
+.sidebar-hint {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.sidebar-brand {
+  width: calc(var(--sidebar-width) - var(--space-8) * 2 - var(--space-12) - 32px - 10px - var(--space-8));
+}
+.sidebar-name {
+  font-size: var(--text-base);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sidebar-brand .chip {
+  flex: none;
+}
+
+/* Reduced motion: no slide, only the fade (at most --duration-fast), without the entrance delay. */
+:root[data-reduce-motion="true"] .sidebar-text {
+  transform: none !important;
+  transition-property: opacity, visibility !important;
+  transition-duration: var(--duration-fast), 0s !important;
+  transition-delay: 0s, 0s !important;
+}
+:root[data-reduce-motion="true"] .is-text-hidden .sidebar-text {
+  transition-duration: var(--lg-duration-quick), 0s !important;
+  transition-delay: 0s, var(--lg-duration-quick) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-text {
+    transform: none !important;
+    transition-property: opacity, visibility !important;
+    transition-duration: var(--duration-fast), 0s !important;
+    transition-delay: 0s, 0s !important;
+  }
+  .is-text-hidden .sidebar-text {
+    transition-duration: var(--lg-duration-quick), 0s !important;
+    transition-delay: 0s, var(--lg-duration-quick) !important;
+  }
+}
+
+/* ---- Mark ---------------------------------------------------------------------------------
+   The app icon, drawn inline. A click turns the ring once and twinkles the star; hovering lifts
+   it slightly. Its colours are the icon's own in both themes. */
+.sidebar-mark {
+  --mark-tile: oklch(0.21 0.006 300);
+  --mark-ring: oklch(0.9 0.02 250);
+  --mark-disc: oklch(0.92 0.035 60);
+  --mark-play: oklch(0.22 0.01 300);
+  --mark-star: oklch(0.94 0.05 95);
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 7.5px; /* the tile's rx 15 of 64 */
+  background: none;
+  cursor: pointer;
+}
+.sidebar-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-color: oklch(1 0 0 / 0.1);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--lg-duration-hover) ease-out;
+}
+.sidebar-mark:hover::after {
+  opacity: 1;
+}
+.brand-mark-art {
+  display: block;
+  width: 32px;
+  height: 32px;
+  overflow: visible;
+}
+.brand-mark-tile {
+  fill: var(--mark-tile);
+}
+.brand-mark-ring {
+  stroke: var(--mark-ring);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform var(--duration-ambient) var(--lg-ease-settle);
+}
+.brand-mark-disc {
+  fill: var(--mark-disc);
+}
+.brand-mark-play {
+  fill: var(--mark-play);
+  stroke: var(--mark-play);
+}
+.brand-mark-star {
+  fill: var(--mark-star);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    transform var(--lg-duration-press) var(--lg-ease-spring),
+    opacity var(--duration-fast) ease-out;
+}
+.is-twinkle .brand-mark-star {
+  transform: scale(1.6) rotate(45deg);
+  transition-duration: var(--duration-fast);
+}
+/* Reduced motion: the ring stays still and the star only dims and returns. */
+:root[data-reduce-motion="true"] .brand-mark-star {
+  transition-property: opacity !important;
+  transition-duration: var(--duration-fast) !important;
+}
+:root[data-reduce-motion="true"] .is-twinkle .brand-mark-star {
+  transform: none;
+  opacity: 0.3;
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-mark-star {
+    transition-property: opacity !important;
+    transition-duration: var(--duration-fast) !important;
+  }
+  .is-twinkle .brand-mark-star {
+    transform: none;
+    opacity: 0.3;
+  }
+}

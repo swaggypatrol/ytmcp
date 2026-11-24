@@ -6,14 +6,14 @@ use tempfile::TempDir;
 use tokio::{sync::mpsc, time::timeout};
 use ytm_control_api::{
     AccountHandoffGoal, AccountHandoffState, ContextInput, ControlError, ControlRequest,
-    ControlResponse, DjChattiness, DjCue, DjCueInput, DjCueKind, DjCueReason, DjFeedbackChange,
-    DjFeedbackTarget, DjInteraction, DjPreference, DjPreferenceStance, DjPreferenceSubject,
-    DjPreferencesInput, DjTrackOutcome, ErrorCode, GrantAction, HistoryEntry, HistoryInput,
-    HistoryMedia, HistorySource, InterruptResumePolicy, InterruptResumeState, ItemPhase,
-    LibraryMembershipTarget, LocalHistoryEdit, LocalHistoryRange, LocalHistoryView,
+    ControlResponse, DjChattiness, DjCue, DjCueAck, DjCueInput, DjCueKind, DjCueReason,
+    DjFeedbackChange, DjFeedbackTarget, DjInteraction, DjPreference, DjPreferenceStance,
+    DjPreferenceSubject, DjPreferencesInput, DjTrackOutcome, ErrorCode, GrantAction, HistoryEntry,
+    HistoryInput, HistoryMedia, HistorySource, InterruptResumePolicy, InterruptResumeState,
+    ItemPhase, LibraryMembershipTarget, LocalHistoryEdit, LocalHistoryRange, LocalHistoryView,
     LyricsOffsetAction, OperationInput, OperationPhase, OperationReceipt, OperationResource, Page,
-    PageInput, Playlist, PlaylistPrivacy, Preconditions, Rating, RecommendationPage, RemovedItem,
-    RetryDisposition, TrackTarget, WriteAction, WriteInput,
+    PageInput, Playlist, PlaylistPrivacy, Preconditions, QueueFilterView, Rating,
+    RecommendationPage, RemovedItem, RetryDisposition, TrackTarget, WriteAction, WriteInput,
 };
 use ytm_core::control::catalog::{
     CatalogReadContext, CatalogWriteError, ControlCatalog, project_track,
@@ -31,11 +31,12 @@ use ytm_core::{
 use ytm_protocol::{
     AccountEpoch, AccountScope, AgentActivityRequest, ArtistId, ArtistRef, BridgeEpoch,
     BridgePlaybackObservedPayload, BridgeReadyPayload, CapabilitySet, CapabilitySupport,
-    CatalogQueryRequest, CatalogResponsePayload, CommandId, CredentialRevision, EnqueuePosition,
-    Freshness, HomeFeed, LyricsMatchMetadata, LyricsResult, MutationRequest, MutationResult,
-    PlaybackStatus, PlayerCommandPayload, PlayerOp, PlaylistId, QueryError, QueueCompleteness,
-    QueueEntry, QueueEntryId, QueueRange, QueueSnapshot, SessionMaterialPayload, StateDelta, Track,
-    TrackAvailability, TrackInstanceId, UiLanguage, VideoId,
+    CatalogQueryRequest, CatalogResponsePayload, CommandId, CoreEpoch, CredentialRevision,
+    EnqueuePosition, Freshness, HomeFeed, LyricsMatchMetadata, LyricsResult, MutationRequest,
+    MutationResult, OfficialUpcoming, OfficialUpcomingStatus, PlaybackStatus, PlayerCommandPayload,
+    PlayerOp, PlaylistId, QueryError, QueueCompleteness, QueueEntry, QueueEntryId, QueueFilter,
+    QueueRange, QueueSnapshot, SessionMaterialPayload, StateDelta, Track, TrackAvailability,
+    TrackInstanceId, UiLanguage, VideoId,
 };
 use ytm_storage::{
     AccountCacheContext, CoverCacheConfig, RecentPlaybackRecord, SqliteStorage, StoragePaths,
@@ -117,17 +118,20 @@ impl CatalogPort for Catalog {
     }
 }
 
-/// Ratings the fixture provider accepted; only the daily-limit test rates.
+/// Ratings of the first fixture song the provider accepted; only the daily-limit test rates it.
 static PROVIDER_RATINGS: AtomicUsize = AtomicUsize::new(0);
 
 impl ControlCatalog for Catalog {
     fn set_rating(
         &self,
         _context: CatalogReadContext,
-        _video: VideoId,
+        video: VideoId,
         _rating: Rating,
     ) -> BoxFuture<'_, Result<(), CatalogWriteError>> {
-        PROVIDER_RATINGS.fetch_add(1, Ordering::SeqCst);
+        // Other tests may rate other songs; the daily-limit test rates only this one.
+        if video.as_str() == FIRST {
+            PROVIDER_RATINGS.fetch_add(1, Ordering::SeqCst);
+        }
         Box::pin(async { Ok(()) })
     }
 
@@ -526,6 +530,571 @@ async fn local_history_preserves_occurrences_and_edits_only_the_observed_revisio
     fixture.engine.shutdown().await.unwrap();
 }
 
+/// A provider of two accounts' libraries for listener profile reads. The account scope follows
+/// the signed-in epoch, so a test can switch accounts; liked pages are counted and can fail or
+/// never answer.
+#[derive(Default)]
+struct ProfileCatalog {
+    liked_reads: AtomicUsize,
+    liked_fails: std::sync::atomic::AtomicBool,
+    liked_hangs: std::sync::atomic::AtomicBool,
+}
+
+const PROFILE_OTHER_EPOCH: &str = "fixture-profile-other-epoch";
+const PROFILE_OTHER_ACCOUNT: &str = "fixture-profile-other-account";
+
+fn profile_scope(epoch: &str) -> AccountScope {
+    AccountScope::new(if epoch == PROFILE_OTHER_EPOCH {
+        PROFILE_OTHER_ACCOUNT
+    } else {
+        ACCOUNT
+    })
+    .unwrap()
+}
+
+fn named_track(id: &str, title: &str, artist: &str) -> Track {
+    Track {
+        title: title.into(),
+        artists: vec![ArtistRef {
+            id: None,
+            name: artist.into(),
+        }],
+        ..track(id, Some(30_000))
+    }
+}
+
+/// 230 liked songs: every fifth in Hangul by one artist, the rest Latin by sixteen artists.
+fn fixture_liked(index: usize) -> Track {
+    if index.is_multiple_of(5) {
+        named_track(&format!("fixture-liked-{index}"), "봄날", "방탄")
+    } else {
+        named_track(
+            &format!("fixture-liked-{index}"),
+            "Song",
+            &format!("Artist {}", index % 20),
+        )
+    }
+}
+
+fn paged<T>(
+    items: Vec<T>,
+    next_cursor: Option<String>,
+    scope: &AccountScope,
+) -> ytm_protocol::PagedResult<T> {
+    ytm_protocol::PagedResult {
+        items,
+        next_cursor,
+        freshness: Freshness::Fresh,
+        fetched_at_ms: 1_000,
+        account_scope: scope.clone(),
+        provider_version: "fixture".into(),
+    }
+}
+
+impl CatalogPort for ProfileCatalog {
+    fn query(
+        &self,
+        epoch: Option<AccountEpoch>,
+        _scope: Option<AccountScope>,
+        request: CatalogQueryRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<CatalogResponsePayload, QueryError>> {
+        Box::pin(async move {
+            let scope = profile_scope(epoch.as_ref().unwrap().as_str());
+            let other = scope.as_str() == PROFILE_OTHER_ACCOUNT;
+            let offset: usize = request
+                .cursor
+                .as_deref()
+                .map_or(0, |cursor| cursor.parse().unwrap());
+            let limit = request.limit.unwrap() as usize;
+            let window = |len: usize| {
+                let end = (offset + limit).min(len);
+                (offset..end, (end < len).then(|| end.to_string()))
+            };
+            match request.kind {
+                ytm_protocol::CatalogQueryKind::LikedSongs => {
+                    self.liked_reads.fetch_add(1, Ordering::SeqCst);
+                    if self.liked_hangs.load(Ordering::SeqCst) {
+                        std::future::pending::<()>().await;
+                    }
+                    if self.liked_fails.load(Ordering::SeqCst) {
+                        return Err(QueryError {
+                            code: ytm_protocol::QueryErrorCode::Timeout,
+                            retriable: true,
+                            retry_after_ms: None,
+                            safe_message: "fixture liked read timed out".into(),
+                            request_id: None,
+                        });
+                    }
+                    let (range, next) = window(if other { 3 } else { 230 });
+                    let items = range
+                        .map(|index| {
+                            if other {
+                                named_track(&format!("fixture-other-{index}"), "Кино", "Группа")
+                            } else {
+                                fixture_liked(index)
+                            }
+                        })
+                        .collect();
+                    Ok(CatalogResponsePayload::LikedSongs(paged(
+                        items, next, &scope,
+                    )))
+                }
+                ytm_protocol::CatalogQueryKind::LibraryPlaylists => {
+                    let (range, next) = window(if other { 2 } else { 35 });
+                    let items = range
+                        .map(|index| ytm_protocol::PlaylistSummary {
+                            playlist_id: PlaylistId::new(format!("PL_fixture_profile_{index}"))
+                                .unwrap(),
+                            browse_id: None,
+                            title: format!("Fixture playlist {index}"),
+                            subtitle: None,
+                            track_count: Some(index as u32),
+                            cover: None,
+                        })
+                        .collect();
+                    Ok(CatalogResponsePayload::LibraryPlaylists(paged(
+                        items, next, &scope,
+                    )))
+                }
+                kind => panic!("a listener profile should not read {kind:?}"),
+            }
+        })
+    }
+
+    fn mutate(
+        &self,
+        _epoch: AccountEpoch,
+        _scope: AccountScope,
+        _request: MutationRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<MutationResult, QueryError>> {
+        Box::pin(async { panic!("a listener profile never writes") })
+    }
+
+    fn apply_session_material(
+        &self,
+        material: SessionMaterialPayload,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<CatalogIdentity, QueryError>> {
+        Box::pin(async move {
+            Ok(CatalogIdentity {
+                account_scope: profile_scope(material.account_epoch.as_str()),
+                account_hint: Some(HINT.into()),
+            })
+        })
+    }
+
+    fn official_lyrics(
+        &self,
+        _epoch: AccountEpoch,
+        _video: VideoId,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<Option<OfficialLyrics>, QueryError>> {
+        Box::pin(async { panic!("a listener profile should not request lyrics") })
+    }
+
+    fn clear_session_material(&self, _epoch: Option<AccountEpoch>) -> Result<(), QueryError> {
+        Ok(())
+    }
+}
+
+impl ControlCatalog for ProfileCatalog {
+    fn fresh_playlist(
+        &self,
+        _context: CatalogReadContext,
+        _playlist: PlaylistId,
+        _page: PageInput,
+    ) -> BoxFuture<'_, Result<Playlist, QueryError>> {
+        Box::pin(async { panic!("a listener profile should not page a playlist") })
+    }
+
+    fn recommend_song_radio(
+        &self,
+        _context: CatalogReadContext,
+        _seed: VideoId,
+        _page: PageInput,
+    ) -> BoxFuture<'_, Result<RecommendationPage, QueryError>> {
+        Box::pin(async { panic!("a listener profile should not ask for recommendations") })
+    }
+}
+
+struct ProfileFixture {
+    _root: TempDir,
+    engine: CoreEngine,
+    catalog: Arc<ProfileCatalog>,
+    storage: Arc<SqliteStorage>,
+    service: ControlService,
+}
+
+impl ProfileFixture {
+    async fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(MockClock::new(1_000));
+        let catalog = Arc::new(ProfileCatalog::default());
+        let (sender, _commands) = mpsc::channel(8);
+        let engine = CoreEngine::start(
+            CoreDeps {
+                clock: clock.clone(),
+                bridge: Arc::new(Bridge(sender)),
+                catalog: Some(catalog.clone()),
+                ..Default::default()
+            },
+            EngineConfig::default(),
+        );
+        assert!(
+            engine
+                .on_bridge_ready(
+                    1,
+                    BridgeReadyPayload {
+                        bridge_epoch: BridgeEpoch::new(BRIDGE).unwrap(),
+                        bridge_version: "1.0.0".into(),
+                        capabilities: CapabilitySet::default(),
+                        account_hint: Some(HINT.into()),
+                        logged_in_observed: true,
+                    }
+                )
+                .await
+                .unwrap()
+        );
+        let storage = open_storage(&root, clock);
+        let service = ControlService::new(engine.clone())
+            .with_catalog(catalog.clone())
+            .with_local_history(storage.clone())
+            .with_dj_store(storage.clone())
+            .with_profile_part_deadline(Duration::from_millis(300));
+        let fixture = Self {
+            _root: root,
+            engine,
+            catalog,
+            storage,
+            service,
+        };
+        fixture.sign_in(EPOCH).await;
+        fixture
+    }
+
+    async fn sign_in(&self, epoch: &str) {
+        self.engine
+            .on_session_material(SessionMaterialPayload {
+                account_epoch: AccountEpoch::new(epoch).unwrap(),
+                credential_revision: CredentialRevision::new(format!("{epoch}-credentials"))
+                    .unwrap(),
+                cookie_pairs: Default::default(),
+                auth_user_index: None,
+                channel_label: None,
+            })
+            .await
+            .unwrap();
+        let auth = self.engine.snapshot().await.unwrap().auth_state;
+        assert_eq!(auth.account_scope, Some(profile_scope(epoch)));
+    }
+
+    async fn profile(&self, scope: &str, refresh: bool) -> ytm_control_api::ListenerProfile {
+        let response = self.profile_response(scope, refresh).await;
+        let ControlResponse::ListenerProfile(profile) = response else {
+            panic!("expected a listener profile: {response:?}");
+        };
+        *profile
+    }
+
+    async fn profile_response(&self, scope: &str, refresh: bool) -> ControlResponse {
+        let grant = ReadGrant::new(
+            "fixture-profile-client".into(),
+            Some(AccountScope::new(scope).unwrap()),
+        );
+        let read = self.service.execute(
+            &grant,
+            ControlRequest::GetListenerProfile(ytm_control_api::ListenerProfileInput { refresh }),
+        );
+        timeout(WAIT, read)
+            .await
+            .expect("the listener profile answers in time")
+    }
+
+    fn liked_reads(&self) -> usize {
+        self.catalog.liked_reads.load(Ordering::SeqCst)
+    }
+}
+
+/// Records local plays for the fixture account: a kana song twice around a liked Latin song.
+async fn record_profile_history(storage: &SqliteStorage) {
+    let scope = AccountScope::new(ACCOUNT).unwrap();
+    let epoch = AccountEpoch::new(EPOCH).unwrap();
+    let kana = named_track("fixture-kana", "夜に駆ける", "ヨル");
+    for (time, track) in [(10, kana.clone()), (20, fixture_liked(1)), (30, kana)] {
+        storage
+            .record_recent_playback(
+                &scope,
+                &epoch,
+                RecentPlaybackRecord {
+                    track,
+                    playback_ref: None,
+                    position_ms: 1_000,
+                    duration_ms: Some(30_000),
+                    recorded_at_ms: time,
+                    source_context: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    storage
+        .put_preference(
+            scope,
+            DjPreference {
+                preference_id: "fixture-profile-taste".into(),
+                subject: DjPreferenceSubject::Video {
+                    video_id: VideoId::new("fixture-kana").unwrap(),
+                    title: None,
+                },
+                stance: DjPreferenceStance::Prefer,
+                note: None,
+                recorded_by: "fixture-profile-client".into(),
+                recorded_at_ms: 40,
+            },
+            500,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_listener_profile_samples_liked_history_and_playlists_within_their_caps() {
+    use ytm_control_api::Script;
+    let fixture = ProfileFixture::new().await;
+    record_profile_history(&fixture.storage).await;
+
+    let profile = fixture.profile(ACCOUNT, false).await;
+    assert!(profile.unavailable.is_empty(), "{:?}", profile.unavailable);
+    // Two pages of a hundred, of 230: the sample is capped and the total is not claimed.
+    assert_eq!(fixture.liked_reads(), 2);
+    assert_eq!((profile.liked.sampled, profile.liked.total), (200, None));
+    let liked_recent: Vec<_> = profile
+        .liked
+        .recent
+        .iter()
+        .map(|track| track.video_id.as_str().to_owned())
+        .collect();
+    assert_eq!(
+        liked_recent,
+        (0..12)
+            .map(|index| format!("fixture-liked-{index}"))
+            .collect::<Vec<_>>()
+    );
+    let artists = &profile.liked.top_artists;
+    assert_eq!(artists.len(), 15);
+    assert_eq!((artists[0].name.as_str(), artists[0].tracks), ("방탄", 40));
+    assert_eq!(
+        (artists[1].name.as_str(), artists[1].tracks),
+        ("Artist 1", 10)
+    );
+    assert_eq!(artists[14].name, "Artist 17");
+
+    // Three plays, two of the same song: one recent entry, both plays count for its artist.
+    assert_eq!(
+        (profile.history.sampled, profile.history.total),
+        (3, Some(3))
+    );
+    let history_recent: Vec<_> = profile
+        .history
+        .recent
+        .iter()
+        .map(|track| track.video_id.as_str())
+        .collect();
+    assert_eq!(history_recent, ["fixture-kana", "fixture-liked-1"]);
+    assert_eq!(
+        (
+            profile.history.top_artists[0].name.as_str(),
+            profile.history.top_artists[0].tracks
+        ),
+        ("ヨル", 2)
+    );
+
+    assert_eq!(profile.playlists.len(), 30);
+    assert!(profile.more_playlists);
+    assert_eq!(profile.playlists[29].title, "Fixture playlist 29");
+    assert_eq!(profile.taste_notes, 1);
+
+    // 200 liked plus one kana song; the liked song that was also played counts once.
+    assert_eq!(profile.scripts_sampled, 201);
+    let scripts: Vec<_> = profile
+        .scripts
+        .iter()
+        .map(|share| (share.script, share.tracks, share.percent))
+        .collect();
+    assert_eq!(
+        scripts,
+        [
+            (Script::Latin, 160, 80),
+            (Script::Hangul, 40, 20),
+            (Script::Kana, 1, 0)
+        ]
+    );
+
+    // The copy is kept for this account session; refresh reads the library again.
+    assert_eq!(fixture.profile(ACCOUNT, false).await, profile);
+    assert_eq!(fixture.liked_reads(), 2);
+    fixture.profile(ACCOUNT, true).await;
+    assert_eq!(fixture.liked_reads(), 4);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failing_liked_read_is_named_unavailable_and_the_rest_is_kept() {
+    let fixture = ProfileFixture::new().await;
+    record_profile_history(&fixture.storage).await;
+    fixture.catalog.liked_fails.store(true, Ordering::SeqCst);
+
+    let profile = fixture.profile(ACCOUNT, false).await;
+    assert_eq!(profile.unavailable, ["liked"]);
+    assert_eq!((profile.liked.sampled, profile.liked.total), (0, None));
+    assert!(profile.liked.recent.is_empty() && profile.liked.top_artists.is_empty());
+    assert_eq!((profile.history.sampled, profile.playlists.len()), (3, 30));
+    assert_eq!(profile.taste_notes, 1);
+    // Scripts are counted over what was read: the two played songs.
+    assert_eq!(profile.scripts_sampled, 2);
+
+    // A failed part is not kept, so the next read tries the liked songs again.
+    fixture.catalog.liked_fails.store(false, Ordering::SeqCst);
+    let profile = fixture.profile(ACCOUNT, false).await;
+    assert!(profile.unavailable.is_empty());
+    assert_eq!(profile.liked.sampled, 200);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn another_account_never_sees_the_kept_listener_profile() {
+    let fixture = ProfileFixture::new().await;
+    let first = fixture.profile(ACCOUNT, false).await;
+    assert_eq!(first.liked.sampled, 200);
+    assert_eq!(fixture.liked_reads(), 2);
+    // The same account signed in again is a new session, as after a logout: no kept copy.
+    fixture.sign_in("fixture-profile-epoch-renewed").await;
+    fixture.profile(ACCOUNT, false).await;
+    assert_eq!(fixture.liked_reads(), 4);
+
+    fixture.sign_in(PROFILE_OTHER_EPOCH).await;
+    let refused = fixture.profile_response(ACCOUNT, false).await;
+    assert!(
+        matches!(refused, ControlResponse::Error(error) if error.code == ErrorCode::PermissionDenied)
+    );
+    let other = fixture.profile(PROFILE_OTHER_ACCOUNT, false).await;
+    assert_eq!(fixture.liked_reads(), 5);
+    assert_eq!((other.liked.sampled, other.liked.total), (3, Some(3)));
+    assert_eq!(other.liked.top_artists[0].name, "Группа");
+    assert_eq!((other.playlists.len(), other.more_playlists), (2, false));
+    assert_eq!(other.history.sampled, 0);
+    assert_eq!(other.scripts[0].script, ytm_control_api::Script::Cyrillic);
+
+    // Back on the first account, the other account's copy is not served either.
+    fixture.sign_in("fixture-profile-epoch-again").await;
+    let again = fixture.profile(ACCOUNT, false).await;
+    assert_eq!(fixture.liked_reads(), 7);
+    assert_eq!(again.liked.sampled, 200);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn local_history_edits_show_in_the_next_listener_profile_without_a_refresh() {
+    use ytm_core::control::history::LocalHistoryStore;
+    let fixture = ProfileFixture::new().await;
+    record_profile_history(&fixture.storage).await;
+    let before = fixture.profile(ACCOUNT, false).await;
+    assert_eq!(before.history.total, Some(3));
+    assert_eq!(before.scripts_sampled, 201);
+
+    let scope = AccountScope::new(ACCOUNT).unwrap();
+    let revision = fixture
+        .storage
+        .snapshot(scope.clone())
+        .await
+        .unwrap()
+        .revision;
+    fixture
+        .storage
+        .edit(
+            scope,
+            AccountEpoch::new(EPOCH).unwrap(),
+            revision,
+            LocalHistoryEdit::Clear { range: None },
+        )
+        .await
+        .unwrap();
+
+    // The cleared plays are gone at once; the liked songs still come from the kept copy.
+    let after = fixture.profile(ACCOUNT, false).await;
+    assert_eq!(fixture.liked_reads(), 2);
+    assert_eq!((after.history.sampled, after.history.total), (0, Some(0)));
+    assert!(after.history.recent.is_empty() && after.history.top_artists.is_empty());
+    assert_eq!(after.scripts_sampled, 200);
+    assert!(
+        after
+            .scripts
+            .iter()
+            .all(|share| share.script != ytm_control_api::Script::Kana)
+    );
+    assert_eq!(after.liked, before.liked);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_liked_read_past_its_deadline_is_unavailable_and_the_rest_arrives() {
+    let fixture = ProfileFixture::new().await;
+    record_profile_history(&fixture.storage).await;
+    fixture.catalog.liked_hangs.store(true, Ordering::SeqCst);
+
+    let profile = fixture.profile(ACCOUNT, false).await;
+    assert_eq!(profile.unavailable, ["liked"]);
+    assert_eq!((profile.history.sampled, profile.playlists.len()), (3, 30));
+    assert_eq!(profile.taste_notes, 1);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_expired_sign_in_still_serves_the_local_parts_of_the_listener_profile() {
+    let fixture = ProfileFixture::new().await;
+    record_profile_history(&fixture.storage).await;
+    fixture.profile(ACCOUNT, false).await;
+    fixture
+        .engine
+        .on_auth_expired(Some(AccountEpoch::new(EPOCH).unwrap()), None)
+        .await
+        .unwrap();
+
+    // The kept catalog parts belong to the expired session and are not served.
+    let profile = fixture.profile(ACCOUNT, false).await;
+    assert_eq!(profile.unavailable, ["liked", "playlists"]);
+    assert_eq!(fixture.liked_reads(), 2);
+    assert_eq!((profile.liked.sampled, profile.playlists.len()), (0, 0));
+    assert_eq!(
+        (profile.history.sampled, profile.history.total),
+        (3, Some(3))
+    );
+    assert_eq!(profile.taste_notes, 1);
+    assert_eq!(profile.scripts_sampled, 2);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_refresh_leaves_no_older_liked_copy_behind() {
+    let fixture = ProfileFixture::new().await;
+    fixture.profile(ACCOUNT, false).await;
+    assert_eq!(fixture.liked_reads(), 2);
+
+    fixture.catalog.liked_fails.store(true, Ordering::SeqCst);
+    let refreshed = fixture.profile(ACCOUNT, true).await;
+    assert_eq!(refreshed.unavailable, ["liked"]);
+    let failed_reads = fixture.liked_reads();
+
+    // The next ordinary read pages the liked songs again instead of the copy from before.
+    fixture.catalog.liked_fails.store(false, Ordering::SeqCst);
+    let profile = fixture.profile(ACCOUNT, false).await;
+    assert!(profile.unavailable.is_empty());
+    assert_eq!(fixture.liked_reads(), failed_reads + 2);
+    fixture.engine.shutdown().await.unwrap();
+}
+
 impl DispatchAuthority for Grant {
     fn authorize(&self, action: GrantAction) -> BoxFuture<'_, Result<DispatchGrant, ControlError>> {
         Box::pin(async move {
@@ -640,6 +1209,8 @@ impl Harness {
                 has_more: Some(false),
                 explicit_complete: None,
                 may_load_more: None,
+                official_upcoming: None,
+                filters: None,
                 entries: vec![QueueEntry {
                     entry_id: QueueEntryId::new("fixture-entry-0").unwrap(),
                     video_id: initial_track.video_id.clone(),
@@ -698,6 +1269,9 @@ impl Harness {
                         codec: None,
                         audio_mode: None,
                         quality_label: None,
+                        audio_itag: None,
+                        audio_quality: None,
+                        audio_bitrate_kbps: None,
                         drm_protected: None,
                     }
                 )
@@ -1821,6 +2395,220 @@ async fn a_bridge_refusal_before_any_page_action_is_rejected() {
     fixture.engine.shutdown().await.unwrap();
 }
 
+impl Harness {
+    /// Offers the fixture filters (`All`, with `Familiar` selected) after two explicit tracks.
+    async fn offer_filters(&mut self) {
+        self.long_queue(&[FIRST, SECOND]).await;
+        self.queue.filters = Some(filters());
+        self.publish_queue().await;
+    }
+
+    async fn select_filter(&self, id: &str, label: &str) -> OperationReceipt {
+        self.submit_queue(
+            id,
+            WriteAction::SetQueueFilter {
+                filter_id: format!("fixture-filter-{label}"),
+            },
+        )
+        .await
+    }
+}
+
+/// Selecting an Up Next filter is observed once a snapshot shows it selected, even when the
+/// explicit queue revision stays the same; a skip meanwhile does not settle it either way.
+#[tokio::test]
+async fn an_up_next_filter_is_verified_when_the_page_shows_it_selected() {
+    let mut fixture = Harness::new().await;
+    fixture.offer_filters().await;
+    fixture.select_filter("filter-all", "All").await;
+    let command = timeout(WAIT, fixture.commands.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(command.op, PlayerOp::SetQueueFilter);
+    let args = command.args.unwrap();
+    assert_eq!(args.queue_filter_id.as_deref(), Some("fixture-filter-All"));
+    assert_eq!((args.queue_revision, args.track_instance_id), (None, None));
+
+    // The listener skips: neither a failure nor the selection.
+    fixture.observe_at(1, PlaybackStatus::Playing, 0).await;
+    let pending = fixture
+        .engine
+        .command_receipt(command.command_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        pending.status,
+        ytm_protocol::CommandLifecycleStatus::Accepted
+            | ytm_protocol::CommandLifecycleStatus::Dispatched
+    ));
+
+    for filter in fixture.queue.filters.iter_mut().flatten() {
+        filter.selected = filter.label == "All";
+    }
+    fixture.seq += 1;
+    assert!(
+        fixture
+            .engine
+            .on_bridge_queue_observed(fixture.seq, fixture.queue.clone())
+            .await
+            .unwrap()
+    );
+    let selected = fixture.finished("filter-all").await;
+    assert_eq!(selected.phase, OperationPhase::Verified);
+    assert_eq!(
+        selected.resource,
+        Some(OperationResource::Player {
+            op: PlayerOp::SetQueueFilter
+        })
+    );
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// A filter the current queue does not offer is refused, and the selected one is already
+/// observed; neither reaches the page.
+#[tokio::test]
+async fn unknown_or_selected_up_next_filters_are_not_sent() {
+    let mut fixture = Harness::new().await;
+    fixture.offer_filters().await;
+    fixture.select_filter("filter-unknown", "Workout").await;
+    let unknown = fixture.finished("filter-unknown").await;
+    assert_eq!(unknown.phase, OperationPhase::Rejected);
+    assert_eq!(unknown.error.unwrap().code, ErrorCode::StaleContext);
+
+    fixture.select_filter("filter-same", "Familiar").await;
+    let same = fixture.finished("filter-same").await;
+    assert_eq!(same.phase, OperationPhase::Verified);
+    assert!(fixture.commands.try_recv().is_err());
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// The page refusing to click a filter is a rejection: nothing changed.
+#[tokio::test]
+async fn a_refused_up_next_filter_is_rejected() {
+    let mut fixture = Harness::new().await;
+    fixture.offer_filters().await;
+    fixture.select_filter("filter-refused", "All").await;
+    let command = timeout(WAIT, fixture.commands.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(command.op, PlayerOp::SetQueueFilter);
+    fixture.seq += 1;
+    fixture
+        .engine
+        .on_bridge_command_ack(
+            fixture.seq,
+            ytm_protocol::BridgeCommandAckPayload {
+                command_id: command.command_id,
+                bridge_epoch: BridgeEpoch::new(BRIDGE).unwrap(),
+                dispatched: false,
+                error: Some(QueryError {
+                    code: ytm_protocol::QueryErrorCode::UnsupportedCapability,
+                    retriable: false,
+                    retry_after_ms: None,
+                    safe_message: "the Up Next filter is not on the page".into(),
+                    request_id: None,
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let refused = fixture.finished("filter-refused").await;
+    assert_eq!(refused.phase, OperationPhase::Rejected);
+    assert!(refused.settled);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// A listener's Up Next filter click does not take over: the agent's insert waiting for its
+/// observation still verifies, and the filter, already selected, settles after it with
+/// nothing left pending.
+#[tokio::test]
+async fn a_manual_up_next_filter_leaves_agent_queue_edits_running() {
+    let mut fixture = Harness::new().await;
+    fixture.offer_filters().await;
+    let context_token = fixture.queue_context().await;
+    let (_, mut deltas) = fixture.engine.subscribe_snapshot().await.unwrap();
+    fixture
+        .submit_queue(
+            "insert-before-filter",
+            WriteAction::Enqueue {
+                context_token,
+                mode: ytm_control_api::QueueMode::Next,
+                video_ids: video_ids(&[THIRD]),
+            },
+        )
+        .await;
+    let command = timeout(WAIT, fixture.commands.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(command.op, PlayerOp::Enqueue);
+    let filter = fixture
+        .engine
+        .submit_player_command(PlayerCommandPayload {
+            command_id: CommandId::new("fixture-ui-filter").unwrap(),
+            op: PlayerOp::SetQueueFilter,
+            args: Some(ytm_protocol::PlayerCommandArgs {
+                track_instance_id: None,
+                position_ms: None,
+                volume: None,
+                muted: None,
+                target: None,
+                shuffle: None,
+                repeat: None,
+                autoplay: None,
+                enqueue_position: None,
+                queue_entry_id: None,
+                before_queue_entry_id: None,
+                queue_revision: None,
+                queue_filter_id: Some("fixture-filter-Familiar".into()),
+            }),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        filter.status,
+        ytm_protocol::CommandLifecycleStatus::Accepted
+    );
+
+    let current = fixture.queue.current_entry_id.clone().unwrap();
+    let index = fixture.position_of(&current) + 1;
+    fixture.add_entry(index, THIRD);
+    fixture.publish_queue().await;
+    assert_eq!(
+        fixture.finished("insert-before-filter").await.phase,
+        OperationPhase::Verified
+    );
+    let settled = fixture
+        .engine
+        .command_receipt(filter.command_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        settled.status,
+        ytm_protocol::CommandLifecycleStatus::Observed
+    );
+    assert!(fixture.commands.try_recv().is_err());
+
+    // A snapshot round trip orders every earlier engine message before the drain.
+    fixture.engine.snapshot().await.unwrap();
+    let mut last_pending = None;
+    while let Ok(delta) = deltas.try_recv() {
+        if let StateDelta::PlayerChanged { pending, .. } = delta {
+            last_pending = Some(pending);
+        }
+    }
+    let last_pending = last_pending.unwrap();
+    assert_eq!(
+        (last_pending.pending_command_count, last_pending.active_op),
+        (0, None)
+    );
+    fixture.engine.shutdown().await.unwrap();
+}
+
 /// The official page keeps autoplay on by default, so the queue reads partial with an autoplay
 /// tail; a DJ session still refills when the explicit list's end is loaded.
 impl Harness {
@@ -1983,6 +2771,36 @@ async fn a_waiting_agent_is_prompted_once_before_each_track_ends() {
     fixture.engine.shutdown().await.unwrap();
 }
 
+/// A prompt taken by a poll whose reply the client never got (its wait was cancelled) is offered
+/// again when the next wait names the last prompt received; one naming another core epoch is
+/// ignored.
+#[tokio::test]
+async fn a_prompt_lost_with_a_cancelled_wait_is_offered_again() {
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND, THIRD]).await;
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    let received = fixture.next_ending(0).await;
+    let lost = fixture.next_ending(1).await;
+    let after = |core_epoch: CoreEpoch, seq| DjCueInput {
+        last_received: Some(DjCueAck { core_epoch, seq }),
+        ..Default::default()
+    };
+    let epoch = received.core_epoch.clone().unwrap();
+    let other = CoreEpoch::new("fixture-other-core").unwrap();
+    assert!(fixture.cue(after(other, received.seq)).await.is_none());
+    let again = fixture
+        .cue(after(epoch.clone(), received.seq))
+        .await
+        .expect("the lost prompt comes again");
+    assert_eq!(again.seq, lost.seq);
+    assert!(fixture.cue(after(epoch, again.seq)).await.is_none());
+    fixture.engine.shutdown().await.unwrap();
+}
+
 /// A check-in comes during long stretches of playback without the listener, at the latest at
 /// the cap, never while paused, and the agent's report of a conversation postpones it.
 #[tokio::test]
@@ -2120,6 +2938,321 @@ async fn an_autoplay_tail_does_not_count_as_queued_music() {
     fixture.engine.shutdown().await.unwrap();
 }
 
+/// When the page's current occurrence is not in the loaded window (a selection lag), the list
+/// is not what follows: no up-next, no "little queued" warning, and the context says unknown.
+#[tokio::test]
+async fn an_unknown_current_occurrence_is_not_reported_as_up_next() {
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND, THIRD]).await;
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    fixture.queue.current_entry_id = None;
+    fixture.publish_queue().await;
+
+    // Two tracks would be "one or two queued" (75 s lead); unknown keeps the normal 45 s lead.
+    fixture.clock.advance(170_000);
+    fixture
+        .observe_at(0, PlaybackStatus::Playing, 170_000)
+        .await;
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    fixture.clock.advance(30_000);
+    fixture
+        .observe_at(0, PlaybackStatus::Playing, 200_000)
+        .await;
+    let cue = fixture.cue(DjCueInput::default()).await.unwrap();
+    assert_eq!(cue.kind, DjCueKind::TrackEnding);
+    assert!(cue.reasons.is_empty(), "{:?}", cue.reasons);
+    assert!(
+        cue.prompt
+            .contains("what is queued after it is not known right now"),
+        "{}",
+        cue.prompt
+    );
+    assert_eq!(cue.upcoming, ytm_control_api::UpcomingStatus::Unknown);
+    assert!(cue.up_next.is_empty() && !cue.more_queued);
+
+    let ControlResponse::Context(context) = fixture
+        .service
+        .execute(
+            &fixture.read,
+            ControlRequest::GetContext(ContextInput {
+                preview_limit: Some(5),
+            }),
+        )
+        .await
+    else {
+        panic!("expected context");
+    };
+    assert_eq!(
+        context.queue.upcoming,
+        ytm_control_api::UpcomingStatus::Unknown
+    );
+    assert!(context.queue.entries.is_empty());
+    assert!(context.queue.next_cursor.is_none());
+
+    // The anchor comes back: what follows it is known again.
+    fixture.play_from(1, 0).await;
+    let ControlResponse::Context(context) = fixture
+        .service
+        .execute(
+            &fixture.read,
+            ControlRequest::GetContext(ContextInput {
+                preview_limit: Some(5),
+            }),
+        )
+        .await
+    else {
+        panic!("expected context");
+    };
+    assert_eq!(
+        context.queue.upcoming,
+        ytm_control_api::UpcomingStatus::Known
+    );
+    assert_eq!(context.queue.entries.len(), 1);
+    assert_eq!(context.queue.entries[0].track.title, THIRD);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+fn official(status: OfficialUpcomingStatus, count: usize) -> OfficialUpcoming {
+    OfficialUpcoming {
+        status,
+        tracks: (0..count)
+            .map(|index| track(&format!("fixture-auto-{index}"), Some(200_000)))
+            .collect(),
+    }
+}
+
+fn filters() -> Vec<QueueFilter> {
+    [("All", false), ("Familiar", true)]
+        .into_iter()
+        .map(|(label, selected)| QueueFilter {
+            filter_id: format!("fixture-filter-{label}"),
+            label: label.into(),
+            selected,
+        })
+        .collect()
+}
+
+impl Harness {
+    /// Plays the last of two explicit tracks after an autoplay tail with the given continuation,
+    /// then returns the track-ending prompt.
+    async fn ending_before(&mut self, continuation: OfficialUpcoming, explicit: bool) -> DjCue {
+        self.long_queue(&[FIRST, SECOND]).await;
+        self.queue.completeness = QueueCompleteness::Partial;
+        self.queue.has_more = Some(true);
+        self.queue.explicit_complete = explicit.then_some(true);
+        self.queue.official_upcoming = Some(continuation);
+        self.queue.filters = Some(filters());
+        self.play_from(1, 0).await;
+        let quiet = DjCueInput {
+            chattiness: Some(DjChattiness::Off),
+            ..Default::default()
+        };
+        assert!(self.cue(quiet).await.is_none());
+        self.clock.advance(200_000);
+        self.observe_at(1, PlaybackStatus::Playing, 200_000).await;
+        let cue = self.cue(DjCueInput::default()).await.unwrap();
+        assert_eq!(cue.kind, DjCueKind::TrackEnding);
+        cue
+    }
+}
+
+/// YouTube Music's observed suggestions after the last explicit track are named in the prompt
+/// with the selected filter, but still do not count as queued music.
+#[tokio::test]
+async fn the_official_continuation_is_described_but_not_queued() {
+    let mut fixture = Harness::new().await;
+    let cue = fixture
+        .ending_before(official(OfficialUpcomingStatus::Observed, 6), true)
+        .await;
+    assert_eq!(cue.reasons, vec![DjCueReason::LittleQueued]);
+    assert!(cue.up_next.is_empty() && !cue.more_queued);
+    assert!(
+        cue.prompt.contains(
+            "nothing is queued after it; then YouTube Music continues on its own with \
+             \"fixture-auto-0\", \"fixture-auto-1\", \"fixture-auto-2\" and more \
+             (filter: Familiar), which you may leave if that fits or steer with an Up Next \
+             filter: All."
+        ),
+        "{}",
+        cue.prompt
+    );
+    let up_next = cue.official_up_next.expect("official continuation");
+    assert_eq!(up_next.status, OfficialUpcomingStatus::Observed);
+    let titles: Vec<_> = up_next.tracks.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "fixture-auto-0",
+            "fixture-auto-1",
+            "fixture-auto-2",
+            "fixture-auto-3",
+            "fixture-auto-4"
+        ]
+    );
+    assert!(up_next.more);
+    assert_eq!(up_next.filter.as_deref(), Some("Familiar"));
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// Autoplay off and a self-refilling radio are stated as such, even when more is queued.
+#[tokio::test]
+async fn an_off_or_radio_continuation_is_stated() {
+    for (status, explicit, text) in [
+        (
+            OfficialUpcomingStatus::Off,
+            true,
+            "nothing is queued after it; YouTube Music autoplay is off, so nothing plays after \
+             the queued tracks.",
+        ),
+        (
+            OfficialUpcomingStatus::Radio,
+            false,
+            "or more tracks are queued after it; this is a YouTube Music radio that refills \
+             itself.",
+        ),
+    ] {
+        let mut fixture = Harness::new().await;
+        let cue = fixture.ending_before(official(status, 0), explicit).await;
+        assert!(cue.prompt.contains(text), "{}", cue.prompt);
+        assert!(!cue.prompt.contains("would continue on its own"));
+        let up_next = cue.official_up_next.expect("official continuation");
+        assert_eq!(up_next.status, status);
+        assert!(up_next.tracks.is_empty() && !up_next.more);
+        fixture.engine.shutdown().await.unwrap();
+    }
+}
+
+/// When what follows the current track is unknown, the page's continuation is stated as following
+/// the queued tracks without naming its suggestions, keeping the advice to read the context.
+#[tokio::test]
+async fn an_unknown_upcoming_keeps_the_official_status_without_naming_suggestions() {
+    for (status, clause) in [
+        (
+            OfficialUpcomingStatus::Observed,
+            "after the queued tracks YouTube Music continues on its own with its suggestions",
+        ),
+        (
+            OfficialUpcomingStatus::Loading,
+            "YouTube Music is still loading what plays after the queued tracks",
+        ),
+        (
+            OfficialUpcomingStatus::None,
+            "YouTube Music has no suggestions loaded to play after the queued tracks",
+        ),
+    ] {
+        let mut fixture = Harness::new().await;
+        fixture.long_queue(&[FIRST, SECOND, THIRD]).await;
+        let quiet = DjCueInput {
+            chattiness: Some(DjChattiness::Off),
+            ..Default::default()
+        };
+        assert!(fixture.cue(quiet).await.is_none());
+        let count = if status == OfficialUpcomingStatus::Observed {
+            3
+        } else {
+            0
+        };
+        fixture.queue.current_entry_id = None;
+        fixture.queue.official_upcoming = Some(official(status, count));
+        fixture.publish_queue().await;
+        fixture.clock.advance(200_000);
+        fixture
+            .observe_at(0, PlaybackStatus::Playing, 200_000)
+            .await;
+        let cue = fixture.cue(DjCueInput::default()).await.unwrap();
+        assert_eq!(cue.kind, DjCueKind::TrackEnding);
+        let expected = format!(
+            "what is queued after it is not known right now (read the context before changing \
+             the queue; {clause})."
+        );
+        assert!(cue.prompt.contains(&expected), "{}", cue.prompt);
+        assert!(!cue.prompt.contains("fixture-auto"), "{}", cue.prompt);
+        assert_eq!(cue.official_up_next.expect("continuation").status, status);
+        fixture.engine.shutdown().await.unwrap();
+    }
+}
+
+/// Context and first queue pages carry the page's continuation, bounded by the call's limit, and
+/// its filters; the continuation is known even when what follows the current track is not.
+#[tokio::test]
+async fn reads_carry_the_official_continuation_and_filters() {
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND, THIRD]).await;
+    fixture.queue.current_entry_id = None;
+    fixture.queue.official_upcoming = Some(official(OfficialUpcomingStatus::Observed, 7));
+    fixture.queue.filters = Some(filters());
+    fixture.publish_queue().await;
+    let filter_views = vec![
+        QueueFilterView {
+            filter_id: "fixture-filter-All".into(),
+            label: "All".into(),
+            selected: false,
+        },
+        QueueFilterView {
+            filter_id: "fixture-filter-Familiar".into(),
+            label: "Familiar".into(),
+            selected: true,
+        },
+    ];
+
+    let ControlResponse::Context(context) = fixture
+        .service
+        .execute(
+            &fixture.read,
+            ControlRequest::GetContext(ContextInput {
+                preview_limit: Some(5),
+            }),
+        )
+        .await
+    else {
+        panic!("expected context");
+    };
+    assert_eq!(
+        context.queue.upcoming,
+        ytm_control_api::UpcomingStatus::Unknown
+    );
+    assert!(context.queue.entries.is_empty());
+    let official_view = context.queue.official_upcoming.expect("continuation");
+    assert_eq!(official_view.status, OfficialUpcomingStatus::Observed);
+    assert_eq!(official_view.tracks.len(), 5);
+    assert_eq!(official_view.tracks[0].title, "fixture-auto-0");
+    assert!(official_view.more);
+    assert_eq!(context.queue.filters, filter_views);
+
+    let queue_page = |cursor: Option<String>, limit: u16| {
+        fixture.service.execute(
+            &fixture.read,
+            ControlRequest::GetQueue(PageInput {
+                cursor,
+                limit: Some(limit),
+            }),
+        )
+    };
+    let ControlResponse::Queue(all) = queue_page(None, 10).await else {
+        panic!("expected queue");
+    };
+    let official_view = all.official_upcoming.expect("continuation");
+    assert_eq!(official_view.tracks.len(), 7);
+    assert!(!official_view.more);
+    let ControlResponse::Queue(first) = queue_page(None, 2).await else {
+        panic!("expected queue");
+    };
+    let official_view = first.official_upcoming.expect("continuation");
+    assert_eq!(official_view.tracks.len(), 2);
+    assert!(official_view.more);
+    assert_eq!(first.filters, filter_views);
+    let ControlResponse::Queue(second) = queue_page(first.next_cursor.clone(), 2).await else {
+        panic!("expected queue");
+    };
+    assert_eq!(second.entries.len(), 1);
+    assert!(second.official_upcoming.is_none());
+    fixture.engine.shutdown().await.unwrap();
+}
+
 /// A track that played while no agent waited is not reported when the DJ comes back on, since
 /// nobody saw how it ended.
 #[tokio::test]
@@ -2151,6 +3284,818 @@ async fn tracks_played_while_the_dj_was_off_are_not_reported() {
     let cue = fixture.cue(quiet()).await.unwrap();
     assert_eq!(cue.kind, DjCueKind::TrackEnding);
     assert!(cue.recent.is_empty(), "{:?}", cue.recent);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+fn no_args() -> ytm_protocol::PlayerCommandArgs {
+    ytm_protocol::PlayerCommandArgs {
+        track_instance_id: None,
+        position_ms: None,
+        volume: None,
+        muted: None,
+        target: None,
+        shuffle: None,
+        repeat: None,
+        autoplay: None,
+        enqueue_position: None,
+        queue_entry_id: None,
+        before_queue_entry_id: None,
+        queue_revision: None,
+        queue_filter_id: None,
+    }
+}
+
+fn action_kinds(
+    actions: &[ytm_control_api::ListenerAction],
+) -> Vec<ytm_control_api::ListenerActionKind> {
+    actions.iter().map(|action| action.action).collect()
+}
+
+impl Harness {
+    /// Sends a command the way the player window, media keys or MPRIS do.
+    async fn by_hand(&self, id: &str, op: PlayerOp, args: Option<ytm_protocol::PlayerCommandArgs>) {
+        let receipt = self
+            .engine
+            .submit_player_command(PlayerCommandPayload {
+                command_id: CommandId::new(id).unwrap(),
+                op,
+                args,
+            })
+            .await
+            .unwrap();
+        assert!(receipt.error.is_none(), "{receipt:?}");
+    }
+
+    async fn context_actions(&self) -> Vec<ytm_control_api::ListenerAction> {
+        let ControlResponse::Context(context) = self
+            .service
+            .execute(
+                &self.read,
+                ControlRequest::GetContext(ContextInput {
+                    preview_limit: Some(0),
+                }),
+            )
+            .await
+        else {
+            panic!("expected a context")
+        };
+        context.listener_actions
+    }
+}
+
+/// A volume drag is one action from its first to its last value; the agent's own skip and like
+/// are not the listener's doing and are never listed.
+#[tokio::test]
+async fn a_volume_drag_is_one_listener_action_and_agent_commands_are_not_listed() {
+    use ytm_control_api::ListenerActionKind as Kind;
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND, THIRD]).await;
+    fixture
+        .submit_queue("fixture-agent-next", WriteAction::Next)
+        .await;
+    let command = timeout(WAIT, fixture.commands.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(command.op, PlayerOp::Next);
+    fixture.clock.advance(1_000);
+    fixture.play_from(1, 0).await;
+    fixture.finished("fixture-agent-next").await;
+    fixture
+        .service
+        .submit(
+            fixture.read.clone(),
+            Arc::new(Actions(ACCOUNT_TIERS)),
+            account_write(
+                "fixture-agent-like",
+                WriteAction::Rate {
+                    target: TrackTarget::Video {
+                        video_id: VideoId::new(SECOND).unwrap(),
+                    },
+                    rating: Rating::Liked,
+                },
+            ),
+        )
+        .await
+        .unwrap();
+    fixture.finished("fixture-agent-like").await;
+    assert!(fixture.context_actions().await.is_empty());
+
+    for (step, volume) in [0.6, 0.7, 0.8].into_iter().enumerate() {
+        fixture.clock.advance(500);
+        let args = ytm_protocol::PlayerCommandArgs {
+            volume: Some(volume),
+            ..no_args()
+        };
+        fixture
+            .by_hand(
+                &format!("fixture-drag-{step}"),
+                PlayerOp::SetVolume,
+                Some(args),
+            )
+            .await;
+    }
+    fixture.clock.advance(5_000);
+    let later = ytm_protocol::PlayerCommandArgs {
+        volume: Some(0.4),
+        ..no_args()
+    };
+    fixture
+        .by_hand("fixture-later-volume", PlayerOp::SetVolume, Some(later))
+        .await;
+    fixture
+        .by_hand("fixture-pause", PlayerOp::Pause, None)
+        .await;
+
+    let actions = fixture.context_actions().await;
+    assert_eq!(
+        action_kinds(&actions),
+        [Kind::Pause, Kind::Volume, Kind::Volume]
+    );
+    assert_eq!(actions[1].volume_to, Some(40));
+    let drag = &actions[2];
+    assert_eq!((drag.volume_from, drag.volume_to), (Some(50), Some(80)));
+    assert_eq!(drag.during.as_ref().unwrap().title, SECOND);
+    assert!(
+        drag.ago_ms >= 5_000 && drag.ago_ms < 6_000,
+        "{}",
+        drag.ago_ms
+    );
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// A prompt lists what the listener did since this client's previous prompt, once; a prompt lost
+/// with a cancelled wait brings its actions again, another client gets them too, and reading the
+/// context does not use them up.
+#[tokio::test]
+async fn listener_actions_reach_each_client_once_even_after_a_cancelled_wait() {
+    use ytm_control_api::ListenerActionKind as Kind;
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND, THIRD, FOURTH]).await;
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    fixture.clock.advance(1_000);
+    let quieter = ytm_protocol::PlayerCommandArgs {
+        volume: Some(0.3),
+        ..no_args()
+    };
+    fixture
+        .by_hand("fixture-volume", PlayerOp::SetVolume, Some(quieter))
+        .await;
+    assert_eq!(
+        action_kinds(&fixture.context_actions().await),
+        [Kind::Volume]
+    );
+
+    let first = fixture.next_ending(0).await;
+    assert_eq!(action_kinds(&first.listener.recent_actions), [Kind::Volume]);
+    assert_eq!(first.listener.recent_actions[0].volume_to, Some(30));
+    assert_eq!(first.listener.actions_omitted, 0);
+    let other = ReadGrant::new(
+        "fixture-other-agent".into(),
+        Some(AccountScope::new(ACCOUNT).unwrap()),
+    );
+    let ControlResponse::DjCue(reply) = fixture
+        .service
+        .execute(&other, ControlRequest::NextDjCue(DjCueInput::default()))
+        .await
+    else {
+        panic!("expected a cue reply");
+    };
+    let shared = reply.cue.unwrap();
+    assert_eq!(shared.seq, first.seq);
+    assert_eq!(
+        action_kinds(&shared.listener.recent_actions),
+        [Kind::Volume]
+    );
+
+    let mute = ytm_protocol::PlayerCommandArgs {
+        muted: Some(true),
+        ..no_args()
+    };
+    fixture
+        .by_hand("fixture-mute", PlayerOp::SetMuted, Some(mute))
+        .await;
+    let lost = fixture.next_ending(1).await;
+    assert_eq!(action_kinds(&lost.listener.recent_actions), [Kind::Mute]);
+    assert_eq!(lost.listener.recent_actions[0].value.as_deref(), Some("on"));
+
+    let after = |cue: &DjCue| DjCueInput {
+        last_received: Some(DjCueAck {
+            core_epoch: cue.core_epoch.clone().unwrap(),
+            seq: cue.seq,
+        }),
+        ..Default::default()
+    };
+    let again = fixture.cue(after(&first)).await.unwrap();
+    assert_eq!(again.seq, lost.seq);
+    assert_eq!(action_kinds(&again.listener.recent_actions), [Kind::Mute]);
+    assert!(fixture.cue(after(&again)).await.is_none());
+    let third = fixture.next_ending(2).await;
+    assert!(third.listener.recent_actions.is_empty());
+    assert_eq!(third.listener.actions_omitted, 0);
+    // The context still lists the mute; the volume change is over ten minutes old by now.
+    assert_eq!(action_kinds(&fixture.context_actions().await), [Kind::Mute]);
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// Two tracks skipped by hand in a row bring one prompt a few seconds later, at any chattiness;
+/// a pause and a resume bring none and are only listed.
+#[tokio::test]
+async fn two_listener_skips_bring_one_skip_streak_prompt_and_a_pause_none() {
+    use ytm_control_api::ListenerActionKind as Kind;
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND, THIRD, FOURTH]).await;
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    fixture.clock.advance(30_000);
+    fixture.observe_at(0, PlaybackStatus::Playing, 30_000).await;
+
+    fixture
+        .by_hand("fixture-pause", PlayerOp::Pause, None)
+        .await;
+    fixture.observe_at(0, PlaybackStatus::Paused, 30_000).await;
+    fixture.clock.advance(10_000);
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    fixture.by_hand("fixture-play", PlayerOp::Play, None).await;
+    fixture.observe_at(0, PlaybackStatus::Playing, 30_000).await;
+    fixture.clock.advance(10_000);
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+
+    fixture
+        .by_hand("fixture-skip-1", PlayerOp::Next, None)
+        .await;
+    fixture.clock.advance(1_000);
+    fixture.play_from(1, 0).await;
+    fixture.clock.advance(20_000);
+    fixture.observe_at(1, PlaybackStatus::Playing, 20_000).await;
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    fixture
+        .by_hand("fixture-skip-2", PlayerOp::Next, None)
+        .await;
+    fixture.clock.advance(1_000);
+    fixture.play_from(2, 0).await;
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    // A third skip within the same burst makes the streak longer, not a new one.
+    fixture.clock.advance(2_000);
+    fixture.observe_at(2, PlaybackStatus::Playing, 2_000).await;
+    fixture
+        .by_hand("fixture-skip-3", PlayerOp::Next, None)
+        .await;
+    fixture.clock.advance(1_000);
+    fixture.play_from(3, 0).await;
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    fixture.clock.advance(5_000);
+    fixture.observe_at(3, PlaybackStatus::Playing, 5_000).await;
+
+    let signal = fixture.cue(DjCueInput::default()).await.unwrap();
+    assert_eq!(signal.kind, DjCueKind::ListenerSignal);
+    assert_eq!(signal.reasons, [DjCueReason::SkipStreak]);
+    assert!(
+        signal.prompt.contains(&format!(
+            "skipped 3 tracks in a row without finishing them (\"{FIRST}\", \"{SECOND}\", \
+             \"{THIRD}\")."
+        )),
+        "{}",
+        signal.prompt
+    );
+    assert!(signal.prompt.contains("do not undo"), "{}", signal.prompt);
+    assert_eq!(
+        action_kinds(&signal.listener.recent_actions),
+        [Kind::Next, Kind::Next, Kind::Next, Kind::Play, Kind::Pause]
+    );
+    assert_eq!(signal.listener.unanswered_check_ins, 0);
+    fixture.clock.advance(10_000);
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// Nothing the listener did before a DJ waited brings a prompt, and listener-signal prompts come
+/// at most once every two minutes.
+#[tokio::test]
+async fn listener_signals_need_a_waiting_dj_and_come_at_most_every_two_minutes() {
+    use ytm_control_api::ListenerActionKind as Kind;
+    let repeat = |mode| ytm_protocol::PlayerCommandArgs {
+        repeat: Some(mode),
+        ..no_args()
+    };
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND, THIRD, FOURTH]).await;
+    fixture
+        .by_hand(
+            "fixture-repeat-early",
+            PlayerOp::SetRepeat,
+            Some(repeat(ytm_protocol::RepeatMode::One)),
+        )
+        .await;
+    fixture.clock.advance(6_000);
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    fixture.clock.advance(6_000);
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+
+    fixture
+        .by_hand(
+            "fixture-repeat-off",
+            PlayerOp::SetRepeat,
+            Some(repeat(ytm_protocol::RepeatMode::Off)),
+        )
+        .await;
+    fixture
+        .by_hand(
+            "fixture-repeat-one",
+            PlayerOp::SetRepeat,
+            Some(repeat(ytm_protocol::RepeatMode::One)),
+        )
+        .await;
+    fixture.clock.advance(6_000);
+    let replay = fixture.cue(DjCueInput::default()).await.unwrap();
+    assert_eq!(replay.kind, DjCueKind::ListenerSignal);
+    assert_eq!(replay.reasons, [DjCueReason::Replay]);
+
+    fixture.clock.advance(30_000);
+    let pick = ytm_protocol::PlayerCommandArgs {
+        queue_entry_id: Some(fixture.queue.entries[2].entry_id.clone()),
+        ..no_args()
+    };
+    fixture
+        .by_hand("fixture-pick", PlayerOp::SelectQueueEntry, Some(pick))
+        .await;
+    fixture.clock.advance(6_000);
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+
+    // The pick inside the gap is held, not dropped, and comes once the gap has passed.
+    fixture.clock.advance(84_000);
+    let picked = fixture.cue(DjCueInput::default()).await.unwrap();
+    assert_eq!(picked.kind, DjCueKind::ListenerSignal);
+    assert_eq!(picked.reasons, [DjCueReason::ManualPick]);
+    assert!(
+        picked.prompt.contains(&format!(
+            "In the last 2 minutes, by hand, the listener jumped to \"{THIRD}\" in the queue."
+        )),
+        "{}",
+        picked.prompt
+    );
+    let actions = &picked.listener.recent_actions;
+    assert_eq!(action_kinds(actions), [Kind::PickFromQueue]);
+    assert_eq!(actions[0].subject.as_ref().unwrap().title, THIRD);
+    fixture.clock.advance(10_000);
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    fixture.engine.shutdown().await.unwrap();
+}
+/// A listener signal still settling when the agent stopped waiting does not come when a DJ
+/// waits again minutes later.
+#[tokio::test]
+async fn a_signal_left_settling_when_the_dj_went_off_never_comes() {
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND, THIRD]).await;
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    let one = ytm_protocol::PlayerCommandArgs {
+        repeat: Some(ytm_protocol::RepeatMode::One),
+        ..no_args()
+    };
+    fixture
+        .by_hand("fixture-repeat-one", PlayerOp::SetRepeat, Some(one))
+        .await;
+    fixture.clock.advance(1_000);
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    // Paused, so the track's own ending prompt stays out of the way.
+    fixture.observe_at(0, PlaybackStatus::Paused, 1_000).await;
+    fixture.clock.advance(200_000);
+    let back = fixture.cue(DjCueInput::default()).await;
+    assert!(back.is_none(), "{back:?}");
+    fixture.engine.shutdown().await.unwrap();
+}
+
+impl Harness {
+    async fn cue_as(&self, grant: &ReadGrant, input: DjCueInput) -> Option<DjCue> {
+        match self
+            .service
+            .execute(grant, ControlRequest::NextDjCue(input))
+            .await
+        {
+            ControlResponse::DjCue(reply) => reply.cue,
+            other => panic!("unexpected cue reply: {other:?}"),
+        }
+    }
+}
+
+/// The player bar turns repeat off by stepping through repeat-one; with repeat off in the end
+/// the burst says nothing about hearing the track again.
+#[tokio::test]
+async fn stepping_through_repeat_one_to_off_brings_no_replay_signal() {
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND]).await;
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    use ytm_protocol::RepeatMode;
+    for (step, mode) in [RepeatMode::All, RepeatMode::One, RepeatMode::Off]
+        .into_iter()
+        .enumerate()
+    {
+        fixture.clock.advance(1_000);
+        let args = ytm_protocol::PlayerCommandArgs {
+            repeat: Some(mode),
+            ..no_args()
+        };
+        fixture
+            .by_hand(
+                &format!("fixture-repeat-{step}"),
+                PlayerOp::SetRepeat,
+                Some(args),
+            )
+            .await;
+        assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    }
+    fixture.clock.advance(6_000);
+    let cue = fixture.cue(DjCueInput::default()).await;
+    assert!(cue.is_none(), "{cue:?}");
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// A track started from search is named in its signal, although the player learns what it is
+/// only once it plays.
+#[tokio::test]
+async fn a_track_started_from_search_is_named_in_its_signal() {
+    const SEARCHED: &str = "fixture-searched";
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND]).await;
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    fixture.clock.advance(1_000);
+    let target = ytm_protocol::PlayerCommandArgs {
+        target: Some(ytm_protocol::PlaybackRef {
+            video_id: VideoId::new(SEARCHED).unwrap(),
+            playlist_id: None,
+            playlist_entry_id: None,
+            browse_id: None,
+            queue_entry_id: None,
+            start_index: None,
+        }),
+        ..no_args()
+    };
+    fixture
+        .by_hand("fixture-play-searched", PlayerOp::PlayTarget, Some(target))
+        .await;
+    assert!(fixture.cue(DjCueInput::default()).await.is_none());
+    // The page plays it as a queue of its own.
+    fixture.queue.entries = vec![QueueEntry {
+        entry_id: QueueEntryId::new("fixture-searched-entry").unwrap(),
+        video_id: VideoId::new(SEARCHED).unwrap(),
+        track: track(SEARCHED, Some(240_000)),
+        availability: TrackAvailability::Available,
+    }];
+    fixture.clock.advance(1_000);
+    fixture.play_from(0, 0).await;
+    fixture.clock.advance(5_000);
+    fixture.observe_at(0, PlaybackStatus::Playing, 5_000).await;
+    let signal = fixture.cue(DjCueInput::default()).await.unwrap();
+    assert_eq!(signal.kind, DjCueKind::ListenerSignal);
+    assert_eq!(signal.reasons, [DjCueReason::ManualPick]);
+    assert!(
+        signal.prompt.contains(&format!(
+            "By hand, the listener just started \"{SEARCHED}\"."
+        )),
+        "{}",
+        signal.prompt
+    );
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// Two quick play/pause presses while paused run as a play and then a pause, and are logged so.
+#[tokio::test]
+async fn two_quick_play_pause_presses_are_logged_as_they_run() {
+    use ytm_control_api::ListenerActionKind as Kind;
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND]).await;
+    fixture.observe_at(0, PlaybackStatus::Paused, 10_000).await;
+    fixture
+        .by_hand("fixture-toggle-1", PlayerOp::Toggle, None)
+        .await;
+    fixture
+        .by_hand("fixture-toggle-2", PlayerOp::Toggle, None)
+        .await;
+    assert_eq!(
+        action_kinds(&fixture.context_actions().await),
+        [Kind::Pause, Kind::Play]
+    );
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// A prompt taken in the middle of a volume drag leaves the drag out; a later prompt lists it
+/// once, from its first value to its last.
+#[tokio::test]
+async fn a_volume_drag_under_way_reaches_a_client_once_when_it_ends() {
+    use ytm_control_api::ListenerActionKind as Kind;
+    let mut fixture = Harness::new().await;
+    fixture.long_queue(&[FIRST, SECOND]).await;
+    let quiet = DjCueInput {
+        chattiness: Some(DjChattiness::Off),
+        ..Default::default()
+    };
+    assert!(fixture.cue(quiet).await.is_none());
+    let other = ReadGrant::new(
+        "fixture-other-agent".into(),
+        Some(AccountScope::new(ACCOUNT).unwrap()),
+    );
+    let one = ytm_protocol::PlayerCommandArgs {
+        repeat: Some(ytm_protocol::RepeatMode::One),
+        ..no_args()
+    };
+    fixture
+        .by_hand("fixture-repeat-one", PlayerOp::SetRepeat, Some(one))
+        .await;
+    fixture.clock.advance(6_000);
+    let signal = fixture.cue(DjCueInput::default()).await.unwrap();
+    assert_eq!(signal.kind, DjCueKind::ListenerSignal);
+
+    let volume = |to| ytm_protocol::PlayerCommandArgs {
+        volume: Some(to),
+        ..no_args()
+    };
+    fixture
+        .by_hand("fixture-drag-0", PlayerOp::SetVolume, Some(volume(0.6)))
+        .await;
+    fixture.clock.advance(1_000);
+    let mid_drag = fixture.cue_as(&other, DjCueInput::default()).await.unwrap();
+    assert_eq!(mid_drag.seq, signal.seq);
+    assert_eq!(
+        action_kinds(&mid_drag.listener.recent_actions),
+        [Kind::Repeat]
+    );
+    fixture.clock.advance(1_000);
+    fixture
+        .by_hand("fixture-drag-1", PlayerOp::SetVolume, Some(volume(0.8)))
+        .await;
+
+    let mut ending = None;
+    for position in [100_000, 200_000] {
+        fixture.clock.advance(100_000);
+        fixture
+            .observe_at(0, PlaybackStatus::Playing, position)
+            .await;
+        ending = fixture.cue_as(&other, DjCueInput::default()).await;
+        if ending.is_some() {
+            break;
+        }
+    }
+    let ending = ending.expect("expected the track-ending prompt");
+    assert_eq!(ending.kind, DjCueKind::TrackEnding);
+    let actions = &ending.listener.recent_actions;
+    assert_eq!(action_kinds(actions), [Kind::Volume]);
+    assert_eq!(
+        (actions[0].volume_from, actions[0].volume_to),
+        (Some(50), Some(80))
+    );
+    fixture.engine.shutdown().await.unwrap();
+}
+
+/// Holds each account write until the test lets it finish, with a scripted outcome.
+struct GatedCatalog {
+    outcome: std::sync::Mutex<ytm_protocol::MutationOutcome>,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+const GATED_OTHER_EPOCH: &str = "fixture-gated-other-epoch";
+const GATED_OTHER_ACCOUNT: &str = "fixture-gated-other-account";
+
+impl CatalogPort for GatedCatalog {
+    fn query(
+        &self,
+        _epoch: Option<AccountEpoch>,
+        _scope: Option<AccountScope>,
+        _request: CatalogQueryRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<CatalogResponsePayload, QueryError>> {
+        Box::pin(async { panic!("an account write test reads no catalog") })
+    }
+
+    fn mutate(
+        &self,
+        _epoch: AccountEpoch,
+        _scope: AccountScope,
+        request: MutationRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<MutationResult, QueryError>> {
+        Box::pin(async move {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(MutationResult {
+                kind: request.kind,
+                outcome: *self.outcome.lock().unwrap(),
+                error: None,
+            })
+        })
+    }
+
+    fn apply_session_material(
+        &self,
+        material: SessionMaterialPayload,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<CatalogIdentity, QueryError>> {
+        let account = if material.account_epoch.as_str() == EPOCH {
+            ACCOUNT
+        } else {
+            GATED_OTHER_ACCOUNT
+        };
+        Box::pin(async move {
+            Ok(CatalogIdentity {
+                account_scope: AccountScope::new(account).unwrap(),
+                account_hint: Some(HINT.into()),
+            })
+        })
+    }
+
+    fn official_lyrics(
+        &self,
+        _epoch: AccountEpoch,
+        _video: VideoId,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<Option<OfficialLyrics>, QueryError>> {
+        Box::pin(async { panic!("an account write test requests no lyrics") })
+    }
+
+    fn clear_session_material(&self, _epoch: Option<AccountEpoch>) -> Result<(), QueryError> {
+        Ok(())
+    }
+}
+
+fn gated_session(epoch: &str) -> SessionMaterialPayload {
+    SessionMaterialPayload {
+        account_epoch: AccountEpoch::new(epoch).unwrap(),
+        credential_revision: CredentialRevision::new("fixture-gated-credentials").unwrap(),
+        cookie_pairs: Default::default(),
+        auth_user_index: None,
+        channel_label: None,
+    }
+}
+
+impl Harness {
+    /// A signed-in player whose account writes go through `catalog`.
+    async fn with_gated_catalog(catalog: Arc<GatedCatalog>) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(MockClock::new(1_000));
+        let (sender, commands) = mpsc::channel(8);
+        let engine = CoreEngine::start(
+            CoreDeps {
+                clock: clock.clone(),
+                bridge: Arc::new(Bridge(sender)),
+                catalog: Some(catalog),
+                ..Default::default()
+            },
+            EngineConfig::default(),
+        );
+        engine
+            .on_bridge_ready(
+                1,
+                BridgeReadyPayload {
+                    bridge_epoch: BridgeEpoch::new(BRIDGE).unwrap(),
+                    bridge_version: "0.1.0".into(),
+                    capabilities: CapabilitySet {
+                        play_pause: CapabilitySupport::Supported,
+                        queue_mirror: CapabilitySupport::Supported,
+                        ..Default::default()
+                    },
+                    account_hint: Some(HINT.into()),
+                    logged_in_observed: true,
+                },
+            )
+            .await
+            .unwrap();
+        engine
+            .on_session_material(gated_session(EPOCH))
+            .await
+            .unwrap();
+        let service = Arc::new(ControlService::new(engine.clone()));
+        let read = ReadGrant::new(
+            "fixture-dj-client".into(),
+            Some(AccountScope::new(ACCOUNT).unwrap()),
+        );
+        Self {
+            root,
+            clock,
+            engine,
+            service,
+            read,
+            write: Arc::new(Grant { queue: false }),
+            commands,
+            seq: 1,
+            queue: QueueSnapshot {
+                bridge_epoch: Some(BridgeEpoch::new(BRIDGE).unwrap()),
+                queue_revision: 0,
+                current_entry_id: None,
+                loaded_range: None,
+                completeness: QueueCompleteness::Complete,
+                has_more: Some(false),
+                explicit_complete: None,
+                may_load_more: None,
+                official_upcoming: None,
+                filters: None,
+                entries: Vec::new(),
+            },
+        }
+    }
+
+    /// Starts a like in the app without waiting for the catalog to answer.
+    async fn start_like(
+        &self,
+        catalog: &GatedCatalog,
+        video: &str,
+    ) -> tokio::task::JoinHandle<Result<MutationResult, QueryError>> {
+        let engine = self.engine.clone();
+        let request = MutationRequest {
+            kind: ytm_protocol::MutationKind::SetLike,
+            video_id: VideoId::new(video).unwrap(),
+            liked: Some(true),
+            playlist_id: None,
+            confirmed_by_user: true,
+        };
+        let running = tokio::spawn(async move {
+            engine
+                .mutate(request, Some(AccountEpoch::new(EPOCH).unwrap()))
+                .await
+        });
+        timeout(WAIT, catalog.started.notified())
+            .await
+            .expect("the like did not reach the catalog");
+        running
+    }
+}
+
+/// A like made in the app is logged as of the click, with the track playing and the position
+/// then, even when the next track started while the account answered. A refused like, or one
+/// whose account changed meanwhile, is not logged.
+#[tokio::test]
+async fn a_like_in_the_app_is_logged_as_of_the_click_and_only_when_it_holds() {
+    use ytm_control_api::ListenerActionKind as Kind;
+    use ytm_protocol::MutationOutcome;
+    let catalog = Arc::new(GatedCatalog {
+        outcome: std::sync::Mutex::new(MutationOutcome::Confirmed),
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let mut fixture = Harness::with_gated_catalog(catalog.clone()).await;
+    fixture.long_queue(&[FIRST, SECOND]).await;
+    fixture.clock.advance(30_000);
+    fixture.observe_at(0, PlaybackStatus::Playing, 30_000).await;
+
+    let like = fixture.start_like(&catalog, FIRST).await;
+    fixture.clock.advance(3_000);
+    fixture.play_from(1, 0).await;
+    catalog.release.notify_one();
+    let result = like.await.unwrap().unwrap();
+    assert_eq!(result.outcome, MutationOutcome::Confirmed);
+    let actions = fixture.context_actions().await;
+    assert_eq!(action_kinds(&actions), [Kind::Rate]);
+    let liked = &actions[0];
+    assert_eq!(liked.value.as_deref(), Some("liked"));
+    assert_eq!(liked.during.as_ref().unwrap().title, FIRST);
+    assert_eq!(liked.subject.as_ref().unwrap().title, FIRST, "{liked:?}");
+    assert_eq!(liked.position_ms, Some(30_000));
+    assert!(liked.ago_ms >= 3_000, "{}", liked.ago_ms);
+
+    *catalog.outcome.lock().unwrap() = MutationOutcome::Rejected;
+    let refused = fixture.start_like(&catalog, SECOND).await;
+    catalog.release.notify_one();
+    let result = refused.await.unwrap().unwrap();
+    assert_eq!(result.outcome, MutationOutcome::Rejected);
+    assert_eq!(action_kinds(&fixture.context_actions().await), [Kind::Rate]);
+
+    *catalog.outcome.lock().unwrap() = MutationOutcome::Confirmed;
+    let switched = fixture.start_like(&catalog, SECOND).await;
+    fixture
+        .engine
+        .on_session_material(gated_session(GATED_OTHER_EPOCH))
+        .await
+        .unwrap();
+    catalog.release.notify_one();
+    let _ = switched.await.unwrap();
+    fixture.read = ReadGrant::new(
+        "fixture-dj-client".into(),
+        Some(AccountScope::new(GATED_OTHER_ACCOUNT).unwrap()),
+    );
+    let actions = fixture.context_actions().await;
+    assert!(actions.is_empty(), "{actions:?}");
     fixture.engine.shutdown().await.unwrap();
 }
 
@@ -3117,8 +5062,9 @@ async fn f1_redaction_f5_replay_and_moment_dj_contract() {
                 action: WriteAction::SetListeningIntent {
                     change: ListeningIntentChange::Clear {
                         intent_key: "dismissTheme:occasion:us:christmas-day".into(),
+                        intent_id: None,
                         basis: ReportedIntentBasis::Inference,
-                        expected_moment_revision: None,
+                        expected_moment_revision: Some(after_moment.revision),
                     },
                 },
             },
@@ -3195,6 +5141,186 @@ async fn f1_redaction_f5_replay_and_moment_dj_contract() {
     })
     .await
     .unwrap();
+
+    // Races on a decision: an inference must say which Moment it was decided on, and a clear of
+    // an intent read earlier leaves the one that replaced it.
+    let intent_write = |id: &str, change: ListeningIntentChange| WriteInput {
+        operation_id: id.into(),
+        preconditions: Preconditions {
+            expected_account_epoch: Some(AccountEpoch::new(EPOCH).unwrap()),
+            expected_bridge_epoch: None,
+            expected_queue_revision: None,
+            expected_entity_revision: None,
+        },
+        action: WriteAction::SetListeningIntent { change },
+    };
+    let settle = |id: &'static str| {
+        let service = &service;
+        let agent = &agent;
+        async move {
+            timeout(WAIT, async {
+                loop {
+                    let op = operation(service, agent, id).await;
+                    if op.settled {
+                        return op;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            })
+            .await
+            .unwrap()
+        }
+    };
+    let energy = |level| ListeningIntentChange::Set {
+        instruction: ListeningIntentInstruction::Energy { level },
+        duration: ListeningIntentDuration::Session,
+        basis: ReportedIntentBasis::UserRequest,
+        expected_moment_revision: None,
+    };
+    let read_intents = || async {
+        let ControlResponse::Context(ctx) = service
+            .execute(
+                &agent,
+                ControlRequest::GetContext(ContextInput {
+                    preview_limit: Some(0),
+                }),
+            )
+            .await
+        else {
+            panic!("expected context");
+        };
+        ctx.moment.unwrap()
+    };
+    let before_inference = read_intents().await;
+    service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            intent_write(
+                "op-inference-no-revision",
+                ListeningIntentChange::Set {
+                    instruction: ListeningIntentInstruction::Energy {
+                        level: ytm_control_api::EnergyLevel::Gentle,
+                    },
+                    duration: ListeningIntentDuration::Session,
+                    basis: ReportedIntentBasis::Inference,
+                    expected_moment_revision: None,
+                },
+            ),
+        )
+        .await
+        .unwrap();
+    let op = settle("op-inference-no-revision").await;
+    assert_eq!(op.phase, OperationPhase::Rejected);
+    assert_eq!(op.error.unwrap().code, ErrorCode::InvalidInput);
+    // Decided on a Moment the listener changed since: stale, not applied. The inference names
+    // another dimension than the listener's change, so only the revision can refuse it.
+    service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            intent_write(
+                "op-energy-steady",
+                energy(ytm_control_api::EnergyLevel::Steady),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        settle("op-energy-steady").await.phase,
+        OperationPhase::Verified
+    );
+    service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            intent_write(
+                "op-inference-stale",
+                ListeningIntentChange::Set {
+                    instruction: ListeningIntentInstruction::Activity {
+                        kind: ytm_control_api::ActivityKind::Focus,
+                    },
+                    duration: ListeningIntentDuration::Session,
+                    basis: ReportedIntentBasis::Inference,
+                    expected_moment_revision: Some(before_inference.revision),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+    let op = settle("op-inference-stale").await;
+    assert_eq!(op.phase, OperationPhase::Rejected);
+    let error = op.error.unwrap();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(error.message.contains("read again"), "{error:?}");
+
+    let steady = read_intents().await;
+    let first_energy = steady
+        .listening_intents
+        .items
+        .iter()
+        .find(|item| matches!(item.instruction, ListeningIntentInstruction::Energy { .. }))
+        .unwrap()
+        .clone();
+    service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            intent_write(
+                "op-energy-high",
+                energy(ytm_control_api::EnergyLevel::Driving),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        settle("op-energy-high").await.phase,
+        OperationPhase::Verified
+    );
+    // Clearing the energy read before the replacement keeps the new one.
+    service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            intent_write(
+                "op-clear-old-energy",
+                ListeningIntentChange::Clear {
+                    intent_key: first_energy.intent_key.clone(),
+                    intent_id: Some(first_energy.intent_id.clone()),
+                    basis: ReportedIntentBasis::UserRequest,
+                    expected_moment_revision: None,
+                },
+            ),
+        )
+        .await
+        .unwrap();
+    let op = settle("op-clear-old-energy").await;
+    assert_eq!(op.phase, OperationPhase::Rejected);
+    assert_eq!(op.error.unwrap().code, ErrorCode::Conflict);
+    let owner_clear = service
+        .desktop_activity(
+            Some(AccountEpoch::new(EPOCH).unwrap()),
+            AgentActivityRequest::ClearListeningIntent {
+                intent_key: first_energy.intent_key.clone(),
+                intent_id: Some(first_energy.intent_id.clone()),
+            },
+        )
+        .await;
+    assert!(owner_clear.is_err(), "{owner_clear:?}");
+    let replaced = read_intents().await;
+    let kept = replaced
+        .listening_intents
+        .items
+        .iter()
+        .find(|item| item.intent_key == first_energy.intent_key)
+        .expect("the replacement stays");
+    assert_ne!(kept.intent_id, first_energy.intent_id);
+    assert_eq!(
+        kept.instruction,
+        ListeningIntentInstruction::Energy {
+            level: ytm_control_api::EnergyLevel::Driving
+        }
+    );
 
     // The owner stops sharing intents: the theme dismissed for today stays out of the occasions.
     let cfg_rev = service

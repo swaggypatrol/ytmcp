@@ -1,6 +1,8 @@
 <script lang="ts">
   import {
     createSyntheticTracks,
+    type AgentOperationSummary,
+    type AppSnapshot,
     type CapabilitySet,
     type CapabilitySupport,
     type CommandReceipt,
@@ -11,6 +13,7 @@
     type PlayerCommandPayload,
     type PlayerOp,
     type PlaylistSummary,
+    type QueryError,
     type Track,
   } from "@ytmcp/protocol";
   import { onDestroy, onMount, tick, untrack } from "svelte";
@@ -24,9 +27,11 @@
     type CatalogRoute,
   } from "../lib/catalog/catalog.svelte.js";
   import { isSignedOut, resolvePageView, type PageView } from "../lib/catalog/page-state.js";
+  import { AmbientStore, setAmbient } from "../lib/ambient/ambient.svelte.js";
   import AccessibleDialog from "../lib/components/AccessibleDialog.svelte";
   import AgentActivity from "../lib/components/AgentActivity.svelte";
   import AlbumView from "../lib/components/AlbumView.svelte";
+  import AmbientLayer from "../lib/components/AmbientLayer.svelte";
   import ArtistView from "../lib/components/ArtistView.svelte";
   import HomeView from "../lib/components/HomeView.svelte";
   import LibraryView from "../lib/components/LibraryView.svelte";
@@ -35,16 +40,26 @@
   import PlayerBar from "../lib/components/PlayerBar.svelte";
   import QueueView from "../lib/components/QueueView.svelte";
   import SearchView from "../lib/components/SearchView.svelte";
+  import { recentSearches } from "../lib/recent-searches.svelte.js";
   import SettingsView from "../lib/components/SettingsView.svelte";
   import Sidebar from "../lib/components/Sidebar.svelte";
-  import StatusBanners, { type MutationNotice } from "../lib/components/StatusBanners.svelte";
+  import { SidebarMotion } from "../lib/components/sidebar-motion.svelte.js";
+  import ToastHost from "../lib/components/ToastHost.svelte";
   import TrackActions from "../lib/components/TrackActions.svelte";
   import TrackCollectionView from "../lib/components/TrackCollectionView.svelte";
+  import { ToastStore, currentProblem, type ProblemKind, type Toast } from "../lib/feedback/toasts.svelte.js";
+  import {
+    operationKey,
+    pendingAccountHandoff,
+    settledAgentChange,
+  } from "../lib/feedback/agent-news.js";
   import { getLocale, setLocale, t, type NavView } from "../lib/i18n/index.svelte.js";
+  import { queryErrorDetail } from "../lib/i18n/query-errors.js";
   import { createUiClient, type UiClientState, type YtmUiClient } from "../lib/ipc/client.js";
   import { stepUserOffsetMs } from "../lib/lyrics.js";
   import { shouldRunDecorativeAnimation } from "../lib/motion/preferences.js";
   import { SeekControl } from "../lib/seek-control.svelte.js";
+  import { ReturnFrames, setReturnFrames, type ListPosition } from "../lib/return-frame.js";
   import { resolveShortcut } from "../lib/shortcuts.js";
   import { accessibleTrackAccent } from "../lib/theme/accent.js";
 
@@ -88,27 +103,50 @@
   const client: YtmUiClient = untrack(() => providedClient ?? createUiClient());
   const store = new CatalogStore(client);
   const MAX_HISTORY = 50;
+  const frames = new ReturnFrames();
+  setReturnFrames(frames);
+  /** Pages report their main cover here; the shell's ambient light follows it. */
+  const ambient = new AmbientStore();
+  setAmbient(ambient);
+  /** The one transient toast; account and connection problems are derived below. */
+  const toasts = new ToastStore();
 
   let clientState = $state<UiClientState>(client.getState());
   let route = $state<Route>({ view: untrack(() => initialView) });
   let history = $state.raw<Route[]>([]);
-  let sidebarCollapsed = $state(false);
+  /** Collapse state of the sidebar and its transition (the shell's data-sidebar and data-sidebar-motion). */
+  const sidebar = new SidebarMotion();
   let activeScenario = $state<FakeScenario>("normal");
   let diagnosticsOpen = $state(false);
+  let lastContentError = $state.raw<QueryError | null>(null);
   let imeComposing = $state(false);
   let documentHidden = $state(false);
   let prefersReducedMotion = $state(false);
   let prefersLight = $state(false);
   let interpolatedPositionMs = $state(0);
+  let mainEl = $state<HTMLElement | null>(null);
+
+  /** Where lyrics was opened from with the toggle, and how that page looked when it was left. */
+  interface LyricsReturn {
+    readonly identity: string;
+    readonly mainScrollTop: number;
+    readonly list: ListPosition | null;
+  }
+  let lyricsReturn: LyricsReturn | null = null;
+  /** The Queue page's Played section, kept open across leaving the page so its scroll position still fits. */
+  let queuePlayedOpen = $state(false);
 
   let lyrics = $state<LyricsResult | null>(null);
   let lyricsLoading = $state(false);
   let lyricsSeq = 0;
   let requestedLyricsKey: string | null = null;
 
-  let actionsFor = $state<{ track: Track } | null>(null);
-  let pickerRequested = false;
-  let mutationNotice = $state<MutationNotice | null>(null);
+  let trackActionsSequence = 0;
+  let trackActionsRequest = $state<{ key: number; track: Track; startAt?: "pick" } | null>(null);
+  let trackActionsOpen = $state(false);
+  const actionsFor = $derived(trackActionsOpen ? trackActionsRequest : null);
+  /** The actions dialog's playlist picker has asked for the library (it shows the library's state). */
+  let pickerRequested = $state(false);
   const pendingWrites = new SvelteMap<string, symbol>();
   const likeOverrides = new SvelteMap<string, boolean>();
   const invalidatedRatings = new SvelteMap<string, number>();
@@ -138,6 +176,8 @@
       playbackStatus: snapshot?.player.playback ?? "idle",
     })
   );
+  /** The ambient light breathes only while a track is actually playing: not while buffering, paused or hidden. */
+  const ambientBreathing = $derived(snapshot?.player.playback === "playing" && !documentHidden && !motionReduced);
   const trackAccent = $derived(accessibleTrackAccent(currentTrack?.cover?.accentOklch, colorScheme));
 
   const playGate = $derived(playPauseGate(caps?.playPause, connection, snapshot?.player.playback, currentTrack !== null));
@@ -146,6 +186,17 @@
   const prevGate = $derived(commandGate(caps?.previous, connection));
   const enqueueGate = $derived(commandGate(caps?.queueEnqueue, connection));
   const likeGate = $derived(writeGate(caps?.likeMutation, auth));
+  // Track list rows: a like toggle only while likes can be written, and the playing row's indicator.
+  const rowLike = $derived(
+    likeGate.enabled
+      ? {
+          liked: (track: Track) => likedState(track),
+          pending: (track: Track) => pendingWrites.has(`setLike:${track.videoId}`),
+          toggle: (track: Track) => setLike(track, likedState(track) !== true),
+        }
+      : undefined
+  );
+  const rowPlayback = $derived({ playback: snapshot?.player.playback ?? null, connection, motion: decorativeMotion });
   const playlistGate = $derived(writeGate(caps?.playlistAddMutation, auth));
   const canOpenAlbum = $derived(caps?.albumDetail !== "unsupported");
   const canOpenArtist = $derived(caps?.artistDetail !== "unsupported");
@@ -263,12 +314,18 @@
     const r = route;
     void routeCap;
     untrack(() => {
+      // Recent searches belong to one account: wiped as soon as a sign-out or another account is seen.
+      recentSearches.sync(key);
       if (store.syncAccount(key)) {
         likeOverrides.clear();
         invalidatedRatings.clear();
         pendingWrites.clear();
-        mutationNotice = null;
+        sentEnqueues.clear();
+        toasts.dismiss();
+        lastContentError = null;
         closeTrackActions();
+        lyricsReturn = null;
+        frames.clear();
       }
       loadRoute(r);
     });
@@ -278,23 +335,46 @@
     return a.view === b.view && ("id" in a ? a.id : null) === ("id" in b ? b.id : null);
   }
 
+  /**
+   * After a page change, focus goes to the new page's title (made focusable with tabindex -1),
+   * not to the nav item that was used. Focus that survived the change on purpose stays: the
+   * player bar, a dialog, or a row a return frame put back.
+   */
+  function focusPageTitle() {
+    const active = document.activeElement as HTMLElement | null;
+    const lost = !active || active === document.body || !active.isConnected;
+    if (!lost && !active.closest(".app-sidebar")) return;
+    // A page still loading may have no title yet: the main region takes focus instead.
+    const target = mainEl?.querySelector<HTMLElement>("h1") ?? mainEl;
+    if (!target) return;
+    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+  }
+
+  /** Resolves once the new page is in the DOM and focused, before callers move focus themselves. */
   function setRoute(next: Route): Promise<void> {
-    if (typeof document !== "undefined" && typeof document.startViewTransition === "function" && !motionReduced) {
-      const transition = document.startViewTransition(async () => {
-        route = next;
-        await tick();
-      });
+    const show = async () => {
+      route = next;
+      await tick();
+      focusPageTitle();
+    };
+    // Only the scroll region cross-fades (a transition scoped to it, transitions.css): the glass
+    // above it keeps refracting the live page and ambient light on every frame.
+    const scope = mainEl as (HTMLElement & Pick<Document, "startViewTransition">) | undefined;
+    if (typeof scope?.startViewTransition === "function" && !motionReduced) {
+      const transition = scope.startViewTransition(show);
       return Promise.resolve(transition?.updateCallbackDone).then(
         () => undefined,
         () => undefined
       );
     }
-    route = next;
-    return tick();
+    return show();
   }
 
   function navigate(next: Route): Promise<void> {
     if (sameRoute(next, route)) return Promise.resolve();
+    lyricsReturn = null;
+    frames.clear();
     history = [...history.slice(-(MAX_HISTORY - 1)), route];
     return setRoute(next);
   }
@@ -302,8 +382,50 @@
   function back(): Promise<void> {
     const prev = history.at(-1);
     if (!prev) return Promise.resolve();
+    lyricsReturn = null;
+    frames.clear();
     history = history.slice(0, -1);
     return setRoute(prev);
+  }
+
+  /** Account and page identity of a route; a search page includes its query. */
+  function pageIdentity(r: Route): string {
+    const id = "id" in r ? r.id : "";
+    return `${accountKey}|${r.view}|${id}|${r.view === "search" ? (store.search.key ?? "") : ""}`;
+  }
+
+  /**
+   * The dock button and Ctrl+L: open lyrics remembering the page, or close it again. Closing
+   * goes back through the history (never pushes lyrics onto it) and puts the page back as it
+   * was. With nothing to go back to, it shows Now Playing when a track is loaded, else Home.
+   */
+  function toggleLyrics(): Promise<void> {
+    if (route.view === "lyrics") return closeLyrics();
+    const left: LyricsReturn = {
+      identity: pageIdentity(route),
+      mainScrollTop: mainEl?.scrollTop ?? 0,
+      list: frames.capture(),
+    };
+    const opened = navigate({ view: "lyrics" });
+    lyricsReturn = left;
+    return opened;
+  }
+
+  function closeLyrics(): Promise<void> {
+    const left = lyricsReturn;
+    const target = history.at(-1);
+    if (!target) {
+      lyricsReturn = null;
+      return setRoute(currentTrack ? { view: "now-playing" } : { view: "home" });
+    }
+    const frame = left && left.identity === pageIdentity(target) ? left : null;
+    const restoreMain = () => {
+      if (frame && mainEl && sameRoute(route, target)) mainEl.scrollTop = frame.mainScrollTop;
+    };
+    const done = back();
+    // back() drops any earlier offer; this one is for the page being returned to.
+    if (frame?.list) frames.offer(frame.list, restoreMain);
+    return done.then(restoreMain);
   }
 
   const openPlaylist = (id: string) => navigate({ view: "playlist", id });
@@ -378,7 +500,8 @@
   );
   $effect(() => {
     const key = lyricsKey;
-    const visible = route.view === "lyrics" && !documentHidden;
+    // Now playing shows a lyrics preview, so it loads the same lyrics the Lyrics page does.
+    const visible = (route.view === "lyrics" || route.view === "now-playing") && !documentHidden;
     if (key === requestedLyricsKey) return;
     requestedLyricsKey = visible ? key : null;
     untrack(() => {
@@ -404,13 +527,46 @@
     });
   }
 
-  function enqueue(track: Track, position: EnqueuePosition) {
-    void sendCommand("enqueue", {
+  /** Play next / Add to end of queue sent from this window, by command id, until the player settles them. */
+  const sentEnqueues = new Map<string, { readonly position: EnqueuePosition; readonly title: string }>();
+
+  /**
+   * The actions dialog closes at the click and the queue is not in view, so a confirmed enqueue
+   * is reported as a toast (not on the Queue page, where the row itself appears). A failure is
+   * reported by the command toasts below.
+   */
+  async function enqueue(track: Track, position: EnqueuePosition) {
+    const receipt = await sendCommand("enqueue", {
       target: { videoId: track.videoId, playlistId: null, startIndex: null },
       enqueuePosition: position,
       queueRevision: snapshot?.queueSummary.queueRevision ?? null,
     });
+    if (!receipt) return;
+    sentEnqueues.set(receipt.commandId, { position, title: track.title });
+    // A receipt overwritten by a later command before it settled is never seen; keep the newest few.
+    if (sentEnqueues.size > 16) sentEnqueues.delete(sentEnqueues.keys().next().value!);
+    settleEnqueue(receipt);
+    // The confirmation may have arrived before the receipt did.
+    settleEnqueue(snapshot?.pending.lastReceipt ?? null);
   }
+
+  function settleEnqueue(receipt: CommandReceipt | null) {
+    const sent = receipt?.op === "enqueue" ? sentEnqueues.get(receipt.commandId) : undefined;
+    if (!receipt || !sent) return;
+    if (receipt.status === "observed") {
+      sentEnqueues.delete(receipt.commandId);
+      if (route.view !== "queue") {
+        toasts.show({ kind: "enqueued", tone: "success", text: t.toast.enqueued[sent.position], detail: sent.title });
+      }
+    } else if (receipt.status === "failed" || receipt.status === "indeterminate" || receipt.status === "cancelled") {
+      sentEnqueues.delete(receipt.commandId);
+    }
+  }
+
+  $effect(() => {
+    const receipt = snapshot?.pending.lastReceipt ?? null;
+    untrack(() => settleEnqueue(receipt));
+  });
 
   function likedState(track: Track | null): boolean | null {
     if (!track) return null;
@@ -420,52 +576,360 @@
     return track.isLiked ?? null;
   }
 
-  /** One explicit account write; outcome is reported, never retried automatically. */
-  async function runMutation(req: Omit<MutationRequest, "confirmedByUser">, label: string) {
+  /** What to say about a write's outcome. `confirmed` is omitted when the control already shows it; `unknown` is the tooltip. */
+  interface WriteMessages {
+    readonly confirmed?: string;
+    readonly failed: string;
+    readonly unknown: string;
+  }
+
+  /**
+   * One explicit account write; never retried automatically. While pending, the control shows it.
+   * The outcome is a toast only when it is not visible where the action happened, or went wrong.
+   */
+  async function runMutation(req: Omit<MutationRequest, "confirmedByUser">, messages: WriteMessages) {
     const key = `${req.kind}:${req.videoId}`;
     if (pendingWrites.has(key)) return;
     const sentFor = accountKey;
     const token = Symbol(key);
     const before = ratingSequence;
     pendingWrites.set(key, token);
-    mutationNotice = { tone: "pending", text: t.mutation.pending.replace("{label}", label) };
     const result = await client.sendMutation({ ...req, confirmedByUser: true });
     if (pendingWrites.get(key) !== token || sentFor !== accountKey) return;
     pendingWrites.delete(key);
     if (result.outcome === "confirmed") {
-      mutationNotice = { tone: "success", text: t.mutation.confirmed.replace("{label}", label) };
       if (req.kind === "setLike" && req.liked != null && (invalidatedRatings.get(req.videoId) ?? 0) <= before) {
         likeOverrides.set(req.videoId, req.liked);
       }
+      if (messages.confirmed) toasts.show({ kind: "write-done", tone: "success", text: messages.confirmed });
     } else if (result.outcome === "rejected") {
-      mutationNotice = {
-        tone: "error",
-        text: t.mutation.rejected
-          .replace("{label}", label)
-          .replace("{message}", result.error?.safeMessage ?? result.error?.code ?? t.common.unknown),
-      };
+      toasts.show({
+        kind: "write-failed",
+        tone: "danger",
+        text: messages.failed,
+        detail: result.error ? `${result.error.code}: ${result.error.safeMessage}` : null,
+      });
     } else {
-      mutationNotice = { tone: "unknown", text: t.mutation.indeterminate.replace("{label}", label) };
+      toasts.show({
+        kind: "write-unknown",
+        tone: "warning",
+        text: t.toast.writeUnknown,
+        detail: messages.unknown,
+        action: { label: t.toast.openPlayer, run: openOfficialPlayer },
+      });
     }
   }
 
+  /** The heart changes by itself; only a failure or an unclear outcome is reported. */
   function setLike(track: Track, liked: boolean) {
-    const label = (liked ? t.mutation.likeLabel : t.mutation.unlikeLabel).replace("{title}", track.title);
-    void runMutation({ kind: "setLike", videoId: track.videoId, liked, playlistId: null }, label);
+    void runMutation(
+      { kind: "setLike", videoId: track.videoId, liked, playlistId: null },
+      {
+        failed: (liked ? t.toast.likeFailed : t.toast.unlikeFailed).replace("{title}", track.title),
+        unknown: t.toast.writeUnknownDetail.replace("{title}", track.title),
+      }
+    );
   }
 
+  /** The playlist is not in view, so success is reported too. There is no remove call, so no Undo. */
   function addToPlaylist(track: Track, playlist: PlaylistSummary) {
-    const label = t.mutation.addLabel.replace("{title}", track.title).replace("{playlist}", playlist.title);
-    void runMutation({ kind: "addToPlaylist", videoId: track.videoId, playlistId: playlist.playlistId, liked: null }, label);
+    void runMutation(
+      { kind: "addToPlaylist", videoId: track.videoId, playlistId: playlist.playlistId, liked: null },
+      {
+        confirmed: t.toast.added.replace("{playlist}", playlist.title),
+        failed: t.toast.addFailed.replace("{title}", track.title).replace("{playlist}", playlist.title),
+        unknown: t.toast.writeUnknownDetail.replace("{title}", track.title),
+      }
+    );
   }
 
-  const openTrackActions = (track: Track) => {
+  /** The latest playback command that failed or whose outcome is unknown; keyed so it is reported once. */
+  const commandIssue = $derived.by(() => {
+    const receipt = snapshot?.pending.lastReceipt ?? null;
+    if (receipt?.status === "indeterminate") {
+      return { key: `ind:${receipt.commandId}`, unknown: true, error: receipt.error ?? null, op: receipt.op };
+    }
+    const error = clientState.pendingOverlay.lastError ?? (receipt?.status === "failed" ? (receipt.error ?? null) : null);
+    if (!error) return null;
+    // The request is named only when this receipt is the one that failed with this error; a
+    // transport error has no receipt, and the last one may belong to an earlier command.
+    const own =
+      receipt?.status === "failed" &&
+      receipt.error?.code === error.code &&
+      receipt.error.safeMessage === error.safeMessage;
+    return {
+      key: `err:${receipt?.commandId ?? ""}:${error.code}:${error.safeMessage}`,
+      unknown: false,
+      error,
+      op: own ? receipt.op : null,
+    };
+  });
+  let reportedCommandKey: string | null = null;
+  $effect(() => {
+    const issue = commandIssue;
+    // A new command clears the transport error, so the same failure again is reported again.
+    if (!issue) reportedCommandKey = null;
+    if (!issue || issue.key === reportedCommandKey) return;
+    reportedCommandKey = issue.key;
+    untrack(() => {
+      if (issue.unknown) {
+        toasts.show({
+          kind: "command-unknown",
+          tone: "warning",
+          text: t.toast.commandUnknown,
+          detail: [t.toast.notRetried, issue.error?.safeMessage].filter(Boolean).join("\n"),
+          action: { label: t.toast.openPlayer, run: openOfficialPlayer },
+        });
+      } else {
+        toasts.show({
+          kind: "command-failed",
+          tone: "danger",
+          text: issue.op ? t.toast.commandFailed[issue.op] : t.toast.commandFailedGeneric,
+          detail: issue.error ? `${issue.error.code}: ${issue.error.safeMessage}` : null,
+          action: viewDiagnosticsAction(),
+        });
+      }
+    });
+  });
+
+  function viewDiagnosticsAction() {
+    return { label: t.toast.viewDiagnostics, run: () => (diagnosticsOpen = true), testId: "toast-view-diagnostics" };
+  }
+
+  /** Account and connection problems: one sticky toast with one action, until resolved. */
+  const problem = $derived(
+    currentProblem({ mode: clientState.mode, connectionError: clientState.connectionError, snapshot })
+  );
+  const problemToast = $derived<Toast | null>(problem ? describeProblem(problem) : null);
+
+  /** The state of the page the route shows, for pages that load catalog data. */
+  const routePageView = $derived.by<PageView | null>(() => {
+    switch (route.view) {
+      case "home":
+        return homeView;
+      case "search":
+        return searchView;
+      case "library":
+        return libraryView;
+      case "playlist":
+        return playlistView;
+      case "album":
+        return albumView;
+      case "artist":
+        return artistView;
+      case "liked":
+        return likedView;
+      case "recent":
+        return recentView;
+      default:
+        return null;
+    }
+  });
+
+  /** Reloads the page in view the way its own Retry button does. */
+  function retryRoute() {
+    if (route.view !== "search") loadRoute(route, true);
+    else if (!searchBlocked) void store.runSearch(store.search.key ?? "");
+  }
+
+  /**
+   * Content kept after a failed refresh: a toast with Retry, keyed to this page, so it leaves
+   * when the page changes or a refresh works. The open playlist picker counts as a page showing
+   * the library. Offline content gets none (the offline toast says it), and an account or
+   * connection problem outranks it.
+   */
+  const refreshToast = $derived.by<Toast | null>(() => {
+    const failed = (view: PageView | null) => (view?.cached && view.error ? view.error : null);
+    const pageError = failed(routePageView);
+    const pickerError = !pageError && actionsFor && pickerRequested ? failed(libraryView) : null;
+    const error = pageError ?? pickerError;
+    if (!error) return null;
+    return {
+      id: pageError ? `refresh-${pageIdentity(route)}` : "refresh-playlist-picker",
+      kind: "refresh-failed",
+      tone: "warning",
+      text: t.states.refreshFailedNotice,
+      detail: `${error.code}: ${error.safeMessage}`,
+      action: {
+        label: t.states.retry,
+        run: pageError ? retryRoute : () => loadRoute({ view: "library" }, true),
+        testId: "toast-retry",
+      },
+    };
+  });
+
+  $effect(() => {
+    const error = route.view === "lyrics"
+      ? lyrics?.error
+      : actionsFor && pickerRequested
+        ? store.library.moreError ?? libraryView.error
+        : routePageView?.error;
+    if (error) lastContentError = error;
+  });
+
+  /** The shell looks up only operations named by a delta it received outside the DJ page. */
+  let agentScope: string | null = null;
+  let agentReadGeneration = 0;
+  let agentVisibilityGeneration = 0;
+  let agentReading = false;
+  /** True for operations observed while queue announcements were eligible. */
+  const changedOperations = new Map<string, boolean>();
+  const reportedOperations = new Set<string>();
+  let agentHandoff = $state.raw<AgentOperationSummary | null>(null);
+  let agentToasts = $state.raw<AgentOperationSummary[]>([]);
+
+  function agentScopeOf(state: AppSnapshot | null): string | null {
+    return state ? `${state.coreEpoch}:${catalogAccountKey(state.authState)}` : null;
+  }
+
+  function canReadAgentNews(): boolean {
+    return !documentHidden && route.view !== "agent-activity";
+  }
+
+  function clearAgentNews() {
+    agentReadGeneration += 1;
+    agentReading = false;
+    changedOperations.clear();
+    agentHandoff = null;
+    agentToasts = [];
+    if (toasts.current?.kind === "agent-changed") toasts.dismiss();
+  }
+
+  function syncAgentScope(scope: string | null) {
+    if (scope === agentScope) return;
+    agentScope = scope;
+    reportedOperations.clear();
+    clearAgentNews();
+  }
+
+  $effect(() => {
+    const scope = agentScopeOf(snapshot);
+    const onDjPage = route.view === "agent-activity";
+    const hidden = documentHidden;
+    untrack(() => {
+      syncAgentScope(scope);
+      if (onDjPage) clearAgentNews();
+      else if (hidden) {
+        agentVisibilityGeneration += 1;
+        for (const key of changedOperations.keys()) changedOperations.set(key, false);
+      } else void readAgentNews();
+    });
+  });
+
+  /** Give each settlement time in the single transient slot without displacing listener feedback. */
+  $effect(() => {
+    const operation = agentToasts[0];
+    if (!operation || toasts.current || !canReadAgentNews()) return;
+    untrack(() => {
+      agentToasts = agentToasts.slice(1);
+      const resource = operation.resource === "interruption" ? "interruption" : "queue";
+      toasts.show({ kind: "agent-changed", tone: "agent", text: t.toast.agentChanged[resource], detail: operation.principal });
+    });
+  });
+
+  function noteAgentOperation(principal: string, operationId: string) {
+    const scope = agentScopeOf(client.getState().snapshot);
+    syncAgentScope(scope);
+    if (scope === null || route.view === "agent-activity") return;
+    changedOperations.set(operationKey(principal, operationId), !documentHidden);
+    if (!documentHidden) queueMicrotask(() => void readAgentNews());
+  }
+
+  async function readAgentNews() {
+    const scope = agentScope;
+    if (scope === null || scope !== agentScopeOf(client.getState().snapshot) ||
+      agentReading || changedOperations.size === 0 || !canReadAgentNews()) return;
+    const generation = agentReadGeneration;
+    const visibilityGeneration = agentVisibilityGeneration;
+    const batch = new Map(changedOperations);
+    changedOperations.clear();
+    agentReading = true;
+    try {
+      const { operations } = await client.agentActivity({ action: "read" });
+      if (generation !== agentReadGeneration || scope !== agentScopeOf(client.getState().snapshot) || route.view === "agent-activity") return;
+      // An acknowledged handoff can remain stuck until the listener sees it. Look it up after
+      // unhide, but do not replay queue settlements from the time the window was hidden.
+      if (documentHidden) {
+        for (const key of batch.keys()) changedOperations.set(key, false);
+        return;
+      }
+      const settled: AgentOperationSummary[] = [];
+      for (const operation of operations) {
+        const key = operationKey(operation.principal, operation.operationId);
+        if (visibilityGeneration !== agentVisibilityGeneration || !batch.get(key) ||
+          reportedOperations.has(key) || !settledAgentChange(operation)) continue;
+        reportedOperations.add(key);
+        settled.push(operation);
+      }
+      agentHandoff = operations.find(pendingAccountHandoff) ?? null;
+      if (settled.length) agentToasts = [...agentToasts, ...settled.reverse()];
+    } catch {
+      // The DJ page reports a failed read; the shell stays quiet.
+    } finally {
+      if (generation === agentReadGeneration) {
+        agentReading = false;
+        void readAgentNews();
+      }
+    }
+  }
+
+  const handoffToast = $derived<Toast | null>(
+    agentHandoff && route.view !== "agent-activity"
+      ? {
+          id: `agent-handoff-${operationKey(agentHandoff.principal, agentHandoff.operationId)}`,
+          kind: "agent-handoff",
+          tone: "agent",
+          text: t.toast.agentSignIn,
+          detail: agentHandoff.principal,
+          action: { label: t.toast.openPlayer, run: openOfficialPlayer },
+        }
+      : null
+  );
+
+  function describeProblem(kind: ProblemKind): Toast {
+    const openPlayer = { label: t.toast.openPlayer, run: openOfficialPlayer, testId: "btn-open-official-player" };
+    const base = { id: `problem-${kind}`, kind, tone: "danger" as const };
+    switch (kind) {
+      case "unconnected":
+        return {
+          ...base,
+          tone: "warning",
+          text: t.toast.notConnected,
+          detail: clientState.connectionError,
+          // No bridge to reconnect to; the mock preview is in Settings > Advanced.
+          action: viewDiagnosticsAction(),
+        };
+      case "connection-error":
+        return {
+          ...base,
+          text: t.toast.connectionFailed,
+          detail: clientState.connectionError,
+          action: { label: t.states.reconnect, run: () => void client.retryConnect(), testId: "btn-reconnect-core" },
+        };
+      case "offline":
+        // Nothing in the app can bring the network back; Diagnostics shows what the core sees.
+        return { ...base, tone: "warning", text: t.toast.offline, action: viewDiagnosticsAction() };
+      case "signed-out":
+        return { ...base, tone: "warning", text: t.toast.signedOut, detail: auth?.reason, action: openPlayer };
+      case "auth-expired":
+        return { ...base, text: t.toast.signInExpired, detail: auth?.reason, action: openPlayer };
+      case "auth-blocked":
+        return { ...base, text: t.toast.signInRefused, detail: auth?.reason, action: openPlayer };
+      case "bridge-disconnected":
+        return { ...base, text: t.toast.playerDisconnected, detail: snapshot?.hostHealth.lastError, action: openPlayer };
+      case "unsupported":
+        return { ...base, tone: "warning", text: t.toast.controlsUnsupported, action: viewDiagnosticsAction() };
+    }
+  }
+
+  const openTrackActions = (track: Track, startAt?: "pick") => {
     pickerRequested = false;
-    actionsFor = { track };
+    trackActionsRequest = { key: ++trackActionsSequence, track, startAt };
+    trackActionsOpen = true;
   };
   const closeTrackActions = () => {
     pickerRequested = false;
-    actionsFor = null;
+    trackActionsOpen = false;
   };
   /** Closes the actions dialog, then acts on the track it was opened for. */
   function runTrackAction(action: (track: Track) => void) {
@@ -481,6 +945,28 @@
     loadRoute(route, true);
   }
 
+  /** Mock only (Settings > Advanced): the playlist to fill with 10,000 synthetic songs once it has loaded. */
+  let testPlaylistId = $state<string | null>(null);
+
+  function openTestPlaylist() {
+    const id =
+      store.library.items[0]?.playlistId ?? store.home.detail?.pinnedPlaylists?.[0]?.playlistId ?? "mock-pl-favorites";
+    void navigate({ view: "playlist", id }).then(() => (testPlaylistId = id));
+  }
+
+  $effect(() => {
+    const id = testPlaylistId;
+    if (id === null) return;
+    const here = route.view === "playlist" && route.id === id && mockMode;
+    if (here && playlistView.kind !== "ready") return;
+    untrack(() => {
+      testPlaylistId = null;
+      if (!here) return;
+      store.playlist.items = createSyntheticTracks(10_000, "mock");
+      store.playlist.nextCursor = null;
+    });
+  });
+
   function handleGlobalKeydown(e: KeyboardEvent) {
     const action = resolveShortcut(e, imeComposing);
     if (!action) return;
@@ -491,9 +977,9 @@
           .then(() => tick())
           .then(() => document.getElementById("ytm-search-input")?.focus());
         break;
-      case "openLyrics":
+      case "toggleLyrics":
         e.preventDefault();
-        navigate({ view: "lyrics" });
+        void toggleLyrics();
         break;
       case "previous":
         e.preventDefault();
@@ -508,9 +994,17 @@
         if (playGate.enabled) void sendCommand("toggle");
         break;
       case "escape":
-        if (history.length > 0) {
+        // A dialog closes first, even when focus has left it.
+        if (actionsFor || diagnosticsOpen) {
           e.preventDefault();
-          back();
+          closeTrackActions();
+          diagnosticsOpen = false;
+        } else if (route.view === "lyrics" && lyricsReturn) {
+          e.preventDefault();
+          void closeLyrics();
+        } else if (history.length > 0) {
+          e.preventDefault();
+          void back();
         }
         break;
     }
@@ -575,12 +1069,17 @@
         dirtyRoutes.clear();
       });
     });
+    const unsubOperations = client.subscribeControlOperations(({ principal, operation_id }) => {
+      noteAgentOperation(principal, operation_id);
+    });
     unsubClient = client.subscribe((next) => { clientState = next; });
     void client.connect();
 
     return () => {
       mounted = false;
       unsubInvalidations();
+      unsubOperations();
+      clearAgentNews();
       motionMq?.removeEventListener("change", onMotion);
       lightMq?.removeEventListener("change", onScheme);
       document.removeEventListener("visibilitychange", onVisibility);
@@ -591,56 +1090,56 @@
   });
 
   onDestroy(() => {
+    sidebar.dispose();
     unsubClient?.();
     client.disconnect();
   });
 </script>
 
-<div class="app-shell" data-sidebar={sidebarCollapsed ? "collapsed" : "expanded"}>
+<div
+  class="app-shell"
+  data-sidebar={sidebar.collapsed ? "collapsed" : "expanded"}
+  data-sidebar-motion={sidebar.moving ? "" : undefined}
+  ontransitionend={(event) => sidebar.onTransitionEnd(event)}
+>
+  <AmbientLayer
+    store={ambient}
+    playing={currentTrack ? { cover: currentTrack.cover, seed: currentTrack.videoId, label: currentTrack.title } : null}
+    {mockMode}
+    breathing={ambientBreathing}
+    reducedMotion={motionReduced}
+    scroller={mainEl}
+  />
+
   <Sidebar
     activeView={navView}
-    collapsed={sidebarCollapsed}
+    collapsed={sidebar.collapsed}
+    textHidden={sidebar.textHidden}
     {mockMode}
-    isPlaying={snapshot?.player.playback === "playing"}
+    playback={snapshot?.player.playback ?? null}
+    {connection}
+    motion={decorativeMotion}
     onNavigate={(view) => navigate({ view })}
-    onToggleCollapse={() => {
-      sidebarCollapsed = !sidebarCollapsed;
-    }}
+    reducedMotion={motionReduced}
+    onToggleCollapse={() => sidebar.toggle(motionReduced)}
   />
 
   <main
+    bind:this={mainEl}
     class="app-scroll view-panel-enter view-panel-active"
     aria-label={t.app.mainContentLabel}
     data-testid="main-scroll-region"
   >
-    <div class="app-page">
-      <StatusBanners
-        mode={clientState.mode}
-        {snapshot}
-        connectionError={clientState.connectionError}
-        transportError={clientState.pendingOverlay.lastError}
-        lastReceipt={snapshot?.pending.lastReceipt ?? null}
-        {mutationNotice}
-        onDismissMutation={() => {
-          mutationNotice = null;
-        }}
-        {activeScenario}
-        onSelectScenario={handleScenarioChange}
-        onOpenOfficialPlayer={openOfficialPlayer}
-        onActivateMock={() => {
-          void client.activateMockMode("normal");
-        }}
-        onRetryConnect={() => {
-          void client.retryConnect();
-        }}
-      />
-
-      <div class="py-5">
+    <!-- The content area (the `content` container the tiers query) and the page column in it. -->
+    <div class="app-content">
+      <div class="app-page">
         {#if route.view === "home"}
           <HomeView
             view={homeView}
             homeFeed={store.home.detail}
             {currentVideoId}
+            like={rowLike}
+            nowPlaying={rowPlayback}
             {mockMode}
             smoothScroll={!motionReduced}
             onPlayTrack={(t) => playTrack(t)}
@@ -662,8 +1161,16 @@
             loadingMore={store.search.loadingMore}
             moreError={store.search.moreError}
             {currentVideoId}
+            like={rowLike}
+            nowPlaying={rowPlayback}
             {mockMode}
             blocked={searchBlocked}
+            {accountKey}
+            recentTracks={store.home.detail?.recentTracks ?? []}
+            libraryPlaylists={store.home.detail?.pinnedPlaylists ?? []}
+            smoothScroll={!motionReduced}
+            startDataMissing={store.home.status === "idle"}
+            onRequestStartData={() => loadRoute({ view: "home" })}
             onSearch={(q) => {
               if (!searchBlocked) void store.runSearch(q);
             }}
@@ -704,33 +1211,22 @@
             view={playlistView}
             tracks={store.playlist.items}
             hasMore={store.playlist.nextCursor !== null}
+            total={(store.library.items.find((p) => p.playlistId === playlistId) ??
+              store.home.detail?.pinnedPlaylists?.find((p) => p.playlistId === playlistId))?.trackCount ?? null}
             loadingMore={store.playlist.loadingMore}
             moreError={store.playlist.moreError}
             {currentVideoId}
             {mockMode}
+            playAll
+            like={rowLike}
+            nowPlaying={rowPlayback}
             onBack={history.length > 0 ? back : undefined}
             onRetry={() => loadRoute(route, true)}
             onOpenOfficialPlayer={openOfficialPlayer}
             onLoadMore={() => void store.loadMorePlaylist()}
             onPlayTrack={(t, idx) => playTrack(t, playlistId, idx)}
             onTrackActions={(t) => openTrackActions(t)}
-          >
-            {#snippet header()}
-              {#if mockMode && playlistView.kind === "ready" && store.playlist.items.length < 10_000}
-                <button
-                  type="button"
-                  class="btn-ghost self-start"
-                  onclick={() => {
-                    store.playlist.items = createSyntheticTracks(10_000, "mock");
-                    store.playlist.nextCursor = null;
-                  }}
-                  data-testid="btn-load-10k-fixture"
-                >
-                  {t.library.load10kFixture}
-                </button>
-              {/if}
-            {/snippet}
-          </TrackCollectionView>
+          />
         {:else if route.view === "album"}
           {@const albumId = route.id}
           <AlbumView
@@ -740,6 +1236,8 @@
             tracks={store.album.items}
             {currentVideoId}
             {mockMode}
+            like={rowLike}
+            nowPlaying={rowPlayback}
             onBack={history.length > 0 ? back : undefined}
             onRetry={() => loadRoute(route, true)}
             onOpenOfficialPlayer={openOfficialPlayer}
@@ -759,6 +1257,8 @@
             tracks={store.artist.items}
             {currentVideoId}
             {mockMode}
+            like={rowLike}
+            nowPlaying={rowPlayback}
             onBack={history.length > 0 ? back : undefined}
             onRetry={() => loadRoute(route, true)}
             onOpenOfficialPlayer={openOfficialPlayer}
@@ -772,6 +1272,7 @@
           <TrackCollectionView
             name={route.view}
             title={isLiked ? t.liked.title : t.recent.title}
+            icon={isLiked ? "heart" : "clock"}
             view={isLiked ? likedView : recentView}
             tracks={page.items}
             hasMore={page.nextCursor !== null}
@@ -779,6 +1280,8 @@
             moreError={page.moreError}
             {currentVideoId}
             {mockMode}
+            like={rowLike}
+            nowPlaying={rowPlayback}
             onRetry={() => loadRoute(route, true)}
             onOpenOfficialPlayer={openOfficialPlayer}
             onLoadMore={() => {
@@ -788,30 +1291,40 @@
             onTrackActions={(t) => openTrackActions(t)}
           />
         {:else if route.view === "now-playing"}
+          <!-- "Playing from": the context playlist's name, only when a loaded page or the library names it. -->
+          {@const contextId = snapshot?.player.playbackContext?.playlistId ?? null}
+          {@const playingFrom = !contextId
+            ? null
+            : store.playlist.detail?.playlistId === contextId
+              ? store.playlist.detail.title
+              : store.album.detail?.audioPlaylistId === contextId
+                ? store.album.detail.title
+                : (store.library.items.find((p) => p.playlistId === contextId)?.title ?? null)}
           <NowPlayingView
             {snapshot}
             {interpolatedPositionMs}
             liked={likedState(currentTrack)}
             {likeGate}
             likePending={currentTrack ? pendingWrites.has(`setLike:${currentTrack.videoId}`) : false}
-            canSeek={seekGate.enabled}
             {canOpenAlbum}
             {canOpenArtist}
             accent={trackAccent}
-            {decorativeMotion}
-            {seek}
-            onSeekMs={(ms) =>
-              sendCommand("seek", { positionMs: ms, trackInstanceId: snapshot?.player.trackInstanceId ?? null })}
+            {motionReduced}
+            {lyrics}
+            {playingFrom}
             onToggleLike={() => {
               if (currentTrack) setLike(currentTrack, likedState(currentTrack) !== true);
             }}
             onOpenActions={() => {
               if (currentTrack) openTrackActions(currentTrack);
             }}
+            {playlistGate}
+            onAddToPlaylist={() => {
+              if (currentTrack) openTrackActions(currentTrack, "pick");
+            }}
             onOpenAlbum={openAlbum}
             onOpenArtist={openArtist}
             onOpenLyrics={() => navigate({ view: "lyrics" })}
-            onOpenQueue={() => navigate({ view: "queue" })}
           />
         {:else if route.view === "queue"}
           <QueueView
@@ -821,6 +1334,9 @@
             player={snapshot?.player ?? null}
             lastReceipt={snapshot?.pending.lastReceipt ?? null}
             {mockMode}
+            motion={decorativeMotion}
+            like={rowLike}
+            bind:playedOpen={queuePlayedOpen}
             onCommand={sendCommand}
             onSelectEntry={(entry) =>
               void sendCommand("selectQueueEntry", {
@@ -861,11 +1377,16 @@
         {:else if route.view === "settings"}
           <SettingsView
             {snapshot}
-            resnapshotCount={clientState.resnapshotCount}
+            mockScenario={clientState.mode === "mock" && mockMode
+              ? { active: activeScenario, onSelect: handleScenarioChange, onOpenTestPlaylist: openTestPlaylist }
+              : null}
+            onUseMockPreview={clientState.mode === "unconnected" ? () => void client.activateMockMode("normal") : null}
             momentClient={client}
             momentScopeKey={snapshot ? `${snapshot.coreEpoch}:${accountKey}` : null}
             momentRevision={clientState.momentRevision}
             onUpdateSettings={(patch) => client.updateSettings(patch)}
+            onSaveFailed={(message) =>
+              toasts.show({ kind: "settings-failed", tone: "danger", text: t.settings.saveFailed, detail: message })}
             onOpenDiagnostics={() => {
               diagnosticsOpen = true;
             }}
@@ -885,45 +1406,56 @@
     onCommand={sendCommand}
     {seek}
     onOpenNowPlaying={() => navigate({ view: "now-playing" })}
-    onOpenLyrics={() => navigate({ view: "lyrics" })}
-    onOpenDiagnostics={() => {
-      diagnosticsOpen = true;
+    lyricsOpen={route.view === "lyrics"}
+    onToggleLyrics={() => void toggleLyrics()}
+    queueOpen={route.view === "queue"}
+    onOpenQueue={() => void navigate({ view: "queue" })}
+    liked={likedState(currentTrack)}
+    {likeGate}
+    likePending={currentTrack ? pendingWrites.has(`setLike:${currentTrack.videoId}`) : false}
+    onToggleLike={() => {
+      if (currentTrack) setLike(currentTrack, likedState(currentTrack) !== true);
     }}
   />
 
-  <AccessibleDialog open={actionsFor !== null} title={t.track.actions} onClose={closeTrackActions}>
-    {#if actionsFor}
-      <TrackActions
-        track={actionsFor.track}
-        liked={likedState(actionsFor.track)}
-        {mockMode}
-        {enqueueGate}
-        {likeGate}
-        {playlistGate}
-        {canOpenAlbum}
-        {canOpenArtist}
-        pending={pendingWrites.has(`setLike:${actionsFor.track.videoId}`) ||
-          pendingWrites.has(`addToPlaylist:${actionsFor.track.videoId}`)}
-        playlistsView={libraryView}
-        playlists={store.library.items}
-        playlistsHasMore={store.library.nextCursor !== null}
-        playlistsLoadingMore={store.library.loadingMore}
-        playlistsMoreError={store.library.moreError}
-        onPlay={() => runTrackAction((t) => playTrack(t))}
-        onEnqueue={(position) => runTrackAction((t) => enqueue(t, position))}
-        onSetLike={(liked) => runTrackAction((t) => setLike(t, liked))}
-        onRequestPlaylists={() => {
-          pickerRequested = true;
-          loadRoute({ view: "library" });
-        }}
-        onLoadMorePlaylists={() => void store.loadMoreLibrary()}
-        onRetryPlaylists={() => loadRoute({ view: "library" }, true)}
-        onAddToPlaylist={(playlist) => runTrackAction((t) => addToPlaylist(t, playlist))}
-        onOpenAlbum={(id) => runTrackAction(() => openAlbum(id))}
-        onOpenArtist={(id) => runTrackAction(() => openArtist(id))}
-      />
-    {/if}
-  </AccessibleDialog>
+  <ToastHost store={toasts} sticky={problemToast ?? refreshToast ?? handoffToast} />
+
+  <!-- The per-track menu: an L4 overlay grown from its trigger, above the content area only. -->
+  {#if trackActionsRequest}
+    <TrackActions
+      active={trackActionsOpen}
+      openKey={trackActionsRequest.key}
+      track={trackActionsRequest.track}
+      startAt={trackActionsRequest.startAt}
+      onClose={closeTrackActions}
+      liked={likedState(trackActionsRequest.track)}
+      {mockMode}
+      {enqueueGate}
+      {likeGate}
+      {playlistGate}
+      {canOpenAlbum}
+      {canOpenArtist}
+      pending={pendingWrites.has(`setLike:${trackActionsRequest.track.videoId}`) ||
+        pendingWrites.has(`addToPlaylist:${trackActionsRequest.track.videoId}`)}
+      playlistsView={libraryView}
+      playlists={store.library.items}
+      playlistsHasMore={store.library.nextCursor !== null}
+      playlistsLoadingMore={store.library.loadingMore}
+      playlistsMoreError={store.library.moreError}
+      onPlay={() => runTrackAction((t) => playTrack(t))}
+      onEnqueue={(position) => runTrackAction((t) => enqueue(t, position))}
+      onSetLike={(liked) => runTrackAction((t) => setLike(t, liked))}
+      onRequestPlaylists={() => {
+        pickerRequested = true;
+        loadRoute({ view: "library" });
+      }}
+      onLoadMorePlaylists={() => void store.loadMoreLibrary()}
+      onRetryPlaylists={() => loadRoute({ view: "library" }, true)}
+      onAddToPlaylist={(playlist) => runTrackAction((t) => addToPlaylist(t, playlist))}
+      onOpenAlbum={(id) => runTrackAction(() => openAlbum(id))}
+      onOpenArtist={(id) => runTrackAction(() => openArtist(id))}
+    />
+  {/if}
 
   <AccessibleDialog
     open={diagnosticsOpen}
@@ -933,6 +1465,7 @@
     }}
   >
     {#if snapshot}
+      {@const player = snapshot.player}
       {@const rows = [
         [t.dialog.coreEpoch, snapshot.coreEpoch],
         [t.dialog.bridgeEpoch, snapshot.player.bridgeEpoch ?? "-"],
@@ -943,6 +1476,23 @@
         ],
         [t.dialog.connection, t.dialog.connectionStates[snapshot.player.connection]],
         [t.dialog.authState, t.settings.authStates[snapshot.authState.state]],
+        [t.dialog.network, t.dialog.networkStates[snapshot.networkState]],
+        // What the pages no longer show: the player's state and the full facts of the audio stream.
+        [t.dialog.playbackState, t.player.playbackStates[player.playback]],
+        [
+          t.dialog.codec,
+          player.codec
+            ? `${player.codec}${player.audioItag != null ? t.common.parenthetical.replace("{text}", String(player.audioItag)) : ""}`
+            : t.common.unknown,
+        ],
+        [t.dialog.audioMode, player.audioMode || t.common.unknown],
+        [t.dialog.audioQuality, player.audioQuality ? t.player.quality[player.audioQuality] : t.common.unknown],
+        [
+          t.dialog.audioBitrate,
+          player.audioBitrateKbps ? t.player.quality.kbps.replace("{n}", String(player.audioBitrateKbps)) : t.common.unknown,
+        ],
+        [t.dialog.pageQualityLabel, player.qualityLabel || t.common.unknown],
+        [t.dialog.drmProtected, boolLabel(player.drmProtected)],
         [t.dialog.waylandNative, boolLabel(snapshot.hostHealth.waylandNative)],
         [t.dialog.gpuAccelerated, boolLabel(snapshot.hostHealth.gpuAccelerated)],
         [t.dialog.sandboxEnabled, boolLabel(snapshot.hostHealth.sandboxEnabled)],
@@ -950,6 +1500,13 @@
         [t.dialog.mprisActive, boolLabel(snapshot.hostHealth.mprisActive)],
         [t.dialog.secretStoreBackend, snapshot.hostHealth.secretStoreBackend || t.common.unknown],
         [t.dialog.coreRestartCount, String(snapshot.hostHealth.coreRestartCount)],
+        // Detail that toasts leave out: present only when there is something to report.
+        ...(snapshot.hostHealth.lastError ? [[t.dialog.hostLastError, snapshot.hostHealth.lastError]] : []),
+        ...(snapshot.authState.reason ? [[t.dialog.authReason, snapshot.authState.reason]] : []),
+        ...(commandIssue?.error
+          ? [[t.dialog.lastCommandError, `${commandIssue.error.code}${t.common.colon}${commandIssue.error.safeMessage}`]]
+          : []),
+        ...(lastContentError ? [[t.dialog.lastContentError, queryErrorDetail(lastContentError)]] : []),
       ]}
       <div class="flex flex-col gap-4 type-sm" data-testid="diagnostics-content">
         <dl class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 m-0">
@@ -986,7 +1543,15 @@
         </div>
       </div>
     {:else}
-      <p class="type-sm" style="color: var(--text-secondary);">{t.states.loading}</p>
+      <div class="flex flex-col gap-3 type-sm" data-testid="diagnostics-content">
+        <p class="m-0" style="color: var(--text-secondary);">{t.dialog.noSnapshot}</p>
+        {#if clientState.connectionError}
+          <div class="p-3 rounded-lg border" style="border-color: var(--border-subtle);">
+            <div class="type-xs" style="color: var(--text-muted);">{t.dialog.connectionError}</div>
+            <div class="font-mono type-xs mt-1 break-all">{clientState.connectionError}</div>
+          </div>
+        {/if}
+      </div>
     {/if}
   </AccessibleDialog>
 </div>

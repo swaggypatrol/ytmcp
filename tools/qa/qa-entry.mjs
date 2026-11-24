@@ -116,12 +116,14 @@ function summarizeCatalog(p) {
   const paged = p.items ? p : p.tracks?.items ? p.tracks : p.songs?.items ? p.songs : null;
   return {
     resultType: p.resultType ?? null,
+    playlistId: p.resultType === "playlistTracks" ? hash(p.playlistId ?? null) : null,
     freshness: p.freshness ?? paged?.freshness ?? null,
     itemCount: paged?.items?.length ?? null,
     ids: paged?.items?.map((i) => i.videoId ?? i.playlistId ?? null) ?? null,
     counts: paged?.items?.map((i) => i.trackCount ?? null) ?? null,
     liked: paged?.items?.map((i) => (typeof i.isLiked === "boolean" ? i.isLiked : null)) ?? null,
     hasNextCursor: Boolean(paged?.nextCursor),
+    nextCursorId: hash(paged?.nextCursor || null),
     providerVersion: paged?.providerVersion ?? null,
     accountScope: hash(paged?.accountScope ?? null),
     error: p.resultType === "error" ? { code: p.code, retriable: p.retriable } : null,
@@ -200,7 +202,10 @@ function observeUiToHost(env, ack) {
           ...(p.op === "playTarget" ? { playlistContext: playlistCommandFacts(p.args.target) } : {}),
         }
       : undefined,
-    query: env?.kind === "ui.catalogQuery" ? { kind: p.kind, cursor: Boolean(p.cursor), playlistId: hash(p.playlistId ?? null), q: p.query ?? undefined } : undefined,
+    query: env?.kind === "ui.catalogQuery" ? {
+      kind: p.kind, cursor: Boolean(p.cursor), cursorId: hash(p.cursor || null),
+      playlistId: hash(p.playlistId ?? null), q: p.query ?? undefined,
+    } : undefined,
     mutation: env?.kind === "ui.mutation" ? { kind: p.kind, videoId: p.videoId, liked: p.liked ?? null, playlistId: hash(p.playlistId ?? null) } : undefined,
     ack: ack ? { ok: ack.ok, code: ack.code ?? null } : null,
   });

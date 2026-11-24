@@ -4,7 +4,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, screen } from "electron";
-import { runLook, runPerf, runShots } from "./real-ui.mjs";
+import { runPhase2Acceptance } from "./phase2-acceptance.mjs";
+import { runFlow, runLook, runOverlay, runPerf, runRims, runShots, runTiers, runTransition } from "./real-ui.mjs";
 
 const mode = process.env.GLASS_PROBE_MODE ?? "shots";
 const modeArgs = JSON.parse(process.env.GLASS_PROBE_ARGS ?? "[]");
@@ -234,8 +235,16 @@ async function runBehavior() {
 const shotsEvidenceDir = process.env.GLASS_PROBE_SHOTS_DIR;
 const modes = {
   behavior: runBehavior,
-  shots: (args) => runShots(shotsEvidenceDir ?? outDir, { quick: args.includes("quick") }),
+  acceptance: (args) => runPhase2Acceptance(process.env.GLASS_PROBE_ACCEPTANCE_DIR ?? join(outDir, "acceptance"), args),
+  rims: () => runRims(outDir),
+  shots: (args) => runShots(shotsEvidenceDir ?? outDir, { quick: args.includes("quick"), clean: args.includes("clean") }),
   look: (args) => runLook(shotsEvidenceDir ? join(shotsEvidenceDir, "look") : outDir, args[0] ?? "dark", { clean: args.includes("clean") }),
+  overlay: (args) => runOverlay(outDir, {
+    spike: args.includes("spike"), dialogProfile: args.includes("dialog-profile"),
+  }),
+  flow: () => runFlow(join(outDir, "flow.json")),
+  transition: () => runTransition(join(outDir, "transition")),
+  tiers: (args) => runTiers(join(outDir, "tiers"), args.find((a) => a === "dark" || a === "light") ?? null),
   perf: (args) => runPerf(process.env.GLASS_PROBE_PERF_FILE ?? join(outDir, "perf.json"), Number(args.find((a) => /^\d+$/.test(a)) ?? 60), args.includes("collapse") ? "collapse" : null),
 };
 

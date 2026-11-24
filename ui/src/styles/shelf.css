@@ -1,0 +1,206 @@
+/* Browse pages (Home, Search, Library): the spacing ruler, the cover shelf, tile grids and the search start. */
+
+/* ---- One ruler for every browse page: 48 between sections, 16 from a heading to its
+   content, 12 inside a row. The page title sits 32 above the first section. ---------------- */
+
+.browse-page {
+  display: flex;
+  flex-direction: column;
+}
+.browse-page > * + * {
+  margin-top: var(--space-48);
+}
+.browse-page > .browse-head + * {
+  margin-top: var(--space-32);
+}
+/* Search's field sits closer: 24 under the title. */
+.browse-page > .browse-head + .search-form {
+  margin-top: var(--space-24);
+}
+.browse-title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: 1.16;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.browse-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+/* Tall enough for its 40 px controls, so a heading never moves when they appear. */
+.browse-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  min-height: 40px;
+}
+/* The end of a paged grid while more can load: one fixed-height row for the loading note, or
+   the failure and its Retry, so none of its states moves the page. */
+.browse-tail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-12);
+  height: 40px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.browse-tail-note.is-failed {
+  color: var(--status-danger);
+}
+
+/* ---- Cover shelf ------------------------------------------------------------------------
+   The row bleeds to the window edge: covers pass under the sidebar glass while moving and
+   rest with a card on the page's left edge (mandatory snap, scroll-padding from .bleed).
+   The wheel turns it sideways from script; snapping pauses while a wheel turn is under way. */
+
+.shelf {
+  position: relative;
+  display: flex;
+  gap: var(--space-16);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-8);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+}
+.shelf.is-wheeling {
+  scroll-snap-type: none;
+}
+.shelf-card {
+  flex: none;
+  /* The design's 9.5 / 10.5 / 11.5 rem at a 16 px rem (the app's root is 15 px). */
+  width: 152px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: 0;
+  background: none;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  scroll-snap-align: start;
+  border-radius: var(--radius-lg);
+}
+.shelf-cover {
+  width: 100%;
+  aspect-ratio: 1;
+  box-shadow: 0 6px 18px -6px oklch(0 0 0 / 0.45);
+  /* Leaving hover is quicker than entering it. */
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+.shelf-card:hover .shelf-cover {
+  transform: translateY(-3px);
+  transition-duration: var(--lg-duration-hover);
+}
+@container content (min-width: 880px) {
+  .shelf-card {
+    width: 168px;
+  }
+}
+@container content (min-width: 1400px) {
+  .shelf-card {
+    width: 184px;
+  }
+}
+
+/* ---- Tile grids: more columns as the content area widens --------------------------------- */
+
+.tile-grid {
+  display: grid;
+  gap: var(--space-12);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@container content (max-width: 559px) {
+  .tile-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@container content (min-width: 880px) {
+  .tile-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@container content (min-width: 1400px) {
+  .tile-grid:not(.tile-grid-max-3) {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* ---- Search ------------------------------------------------------------------------------ */
+
+/* The blocks or results sit 32 under the field. */
+.browse-page > .search-form + .search-stage {
+  margin-top: var(--space-32);
+}
+.search-field.search-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  height: 52px;
+  max-width: 760px;
+  padding: 0 var(--space-8) 0 var(--space-16);
+  border-radius: var(--radius-lg);
+}
+.search-field.search-bar input {
+  height: 100%;
+  padding: 0;
+}
+.search-bar-hint {
+  flex: none;
+  padding-right: var(--space-8);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.recent-search-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+.recent-search-chips .chip {
+  gap: var(--space-8);
+  cursor: pointer;
+}
+
+/* Start blocks and results share one place. The pane in charge stays in the flow; the other
+   is lifted out, fades and drops 8 px, then stops being drawn. Leaving takes 140 ms, entering
+   220 ms; a reversal mid-way turns around from where it is. */
+.search-stage {
+  position: relative;
+}
+.search-pane {
+  transition:
+    opacity var(--duration-normal) var(--ease-standard),
+    transform var(--duration-normal) var(--ease-standard),
+    visibility 0s;
+}
+.search-pane:not(.is-active) {
+  position: absolute;
+  inset: 0 0 auto 0;
+  opacity: 0;
+  transform: translateY(8px);
+  visibility: hidden;
+  pointer-events: none;
+  transition-duration: var(--duration-fast), var(--duration-fast), 0s;
+  transition-delay: 0s, 0s, var(--duration-fast);
+}
+
+/* Reduced motion: nothing slides or lifts; the panes only cross-fade. */
+:root[data-reduce-motion="true"] .shelf-card:hover .shelf-cover,
+:root[data-reduce-motion="true"] .search-pane:not(.is-active) {
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shelf-card:hover .shelf-cover,
+  .search-pane,
+  .search-pane:not(.is-active) {
+    transform: none;
+  }
+}

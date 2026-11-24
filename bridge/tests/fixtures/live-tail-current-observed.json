@@ -1,0 +1,108 @@
+{
+ "about": "Edge state seen live on the official page, 2026-11-23 (tools/probes/bridge/live-queue-tune-entry.mjs, YTMCP_LIVE_TUNE_VIA=app): right after a single search result was played through the app, the explicit list (state.queue.items) became EMPTY and the playing video sat at automixItems[0]. Counts, booleans and event names only.",
+ "playTargetThenQueueSnapshots": {
+  "note": "[ms relative to the first filter click, queueRevision, explicit entries, anchor index, has current id]",
+  "trail": [
+   [
+    -22642,
+    1,
+    0,
+    -1,
+    false
+   ],
+   [
+    -22574,
+    2,
+    1,
+    0,
+    true
+   ],
+   [
+    -22293,
+    3,
+    0,
+    -1,
+    false
+   ],
+   [
+    -21707,
+    4,
+    1,
+    0,
+    true
+   ],
+   [
+    -21685,
+    5,
+    0,
+    -1,
+    false
+   ],
+   [
+    -20709,
+    6,
+    0,
+    -1,
+    false
+   ],
+   [
+    25,
+    6,
+    0,
+    -1,
+    false
+   ],
+   [
+    855,
+    7,
+    0,
+    -1,
+    false
+   ]
+  ]
+ },
+ "whilePlayingFromTheTail": {
+  "pageExplicitItems": 0,
+  "pageAutomixItems": 51,
+  "playingVideoIndexInAutomix": 0,
+  "pageSelectedItemIndex": 0,
+  "bridgeEntries": 0,
+  "bridgeHasCurrentId": false,
+  "bridgeOfficial": {
+   "status": "observed",
+   "tracks": 50
+  },
+  "filterSelectStillWorked": {
+   "via": "app",
+   "status": "observed",
+   "filterOffered": true,
+   "latencyMs": 24
+  }
+ },
+ "enqueueNextInThatState": {
+  "receipt": "observed",
+  "afterwards": {
+   "pageExplicitItems": 1,
+   "selectedRowKind": "playlistPanelVideoWrapperRenderer",
+   "playingVideoStillTheSame": false,
+   "mediaSourceChanged": true,
+   "trackInstanceChanged": true,
+   "mediaEvents": [
+    "durationchange",
+    "seeking",
+    "seeked",
+    "playing",
+    "waiting",
+    "playing"
+   ],
+   "positionMsAfter": [
+    29500,
+    29706,
+    31426,
+    35451
+   ],
+   "positionMsBeforeEnqueue": 30676,
+   "suggestions": "reloaded (0 while loading, then 50); filters were absent while loading"
+  }
+ }
+}

@@ -54,7 +54,7 @@ That's the whole remote control. The agent you already talk to, Claude Code or a
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/now-playing-light.jpg" alt="Now playing in the day look: a large cover, the title and artist, a progress bar and buttons for like, more, lyrics and the queue"></td>
+    <td width="50%"><img src="docs/images/now-playing-light.jpg" alt="Now playing in the day look, with the cover, song title, artist, like button and lyrics preview"></td>
     <td width="50%"><img src="docs/images/lyrics-dark.jpg" alt="Japanese lyrics in the night look, the current line highlighted and the others dimmed"></td>
   </tr>
   <tr>

@@ -2,11 +2,16 @@
 // Launches the liquid-glass probe in the repo's pinned Electron with a throwaway profile.
 //
 //   node tools/probes/glass/run-probe.mjs behavior          Chromium behaviour matrix (synthetic page)
-//   node tools/probes/glass/run-probe.mjs shots [quick]     real UI: screenshots + contrast measured on them
+//   node tools/probes/glass/run-probe.mjs shots [quick|clean] real UI: screenshots and contrast, clean adds README views
+//   node tools/probes/glass/run-probe.mjs acceptance [section ...] phase 2 layout, native input and frame recordings
 //   node tools/probes/glass/run-probe.mjs perf [seconds]    real UI: frame pacing of automated scrolling (default 60 s per run)
 //   node tools/probes/glass/run-probe.mjs perf collapse     real UI: only the sidebar collapse transition
 //   node tools/probes/glass/run-probe.mjs look [dark|light] real UI: a few scenes and 2x crops, for visual iteration
-//                                          add "clean" to hide the mock-mode banner (README shots)
+//   node tools/probes/glass/run-probe.mjs flow              real UI: volume wheel, Ctrl+L return, playback indicator
+//   node tools/probes/glass/run-probe.mjs tiers [dark|light] real UI: every main view at the four layout tiers
+//   node tools/probes/glass/run-probe.mjs overlay           real UI: popover motion, frame intervals, input and press spring
+//   node tools/probes/glass/run-probe.mjs rims              native corner crops in both themes at the selected DPR
+//   node tools/probes/glass/run-probe.mjs transition        real UI: slowed page transitions captured mid-way
 //
 // shots, perf and look start the real application (apps/desktop/dist + ui/dist) with
 // YTMCP_MODE=mock; build both first (`just dev-mock` shows how). They never contact
@@ -60,7 +65,7 @@ if (existsSync(userFontconfig)) symlinkSync(userFontconfig, join(dirs.config, "f
 
 const cpus = spawnSync(join(homedir(), ".local/bin/workload-cpus"), { encoding: "utf8" }).stdout?.trim();
 // The real app derives its profile from XDG_DATA_HOME; the synthetic page gets an explicit one.
-const electronArgs = [...(realUi ? [] : [`--user-data-dir=${join(scratch, "profile")}`]), ...electronFlags, join(here, "electron-entry.mjs")];
+const electronArgs = ["--mute-audio", ...(realUi ? [] : [`--user-data-dir=${join(scratch, "profile")}`]), ...electronFlags, join(here, "electron-entry.mjs")];
 const command = cpus ? "taskset" : electronBin;
 const args = cpus ? ["-c", cpus, electronBin, ...electronArgs] : electronArgs;
 
@@ -74,10 +79,10 @@ const result = spawnSync(command, args, {
     XDG_DATA_HOME: dirs.data,
     XDG_CACHE_HOME: dirs.cache,
     XDG_STATE_HOME: dirs.state,
-    ...(realUi ? { YTMCP_MODE: "mock" } : {}),
+    ...(realUi ? { YTMCP_MODE: "mock", YTMCP_WITH_DAEMON: "0" } : {}),
     GLASS_PROBE_MODE: mode,
     GLASS_PROBE_ARGS: JSON.stringify(modeArgs),
-    GLASS_PROBE_OUT: join(here, "out"),
+    GLASS_PROBE_OUT: resolve(process.env.GLASS_PROBE_OUT ?? join(here, "out")),
     ...(evidence
       ? {
           GLASS_PROBE_SHOTS_DIR: resolve(repoRoot, "artifacts/screenshots/glass"),

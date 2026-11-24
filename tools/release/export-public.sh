@@ -35,9 +35,13 @@ CJK_ALLOWED=(
   ui/src/lib/i18n/zh-CN.ts
   ui/src/lib/i18n/index.svelte.ts
   ui/src/app/__tests__/app.test.ts
+  ui/src/lib/i18n/__tests__/
   # Formatting and lyrics handling of CJK text.
   ui/src/lib/components/format.ts
   crates/core/src/control/lyrics.rs
+  # Telling the writing system of titles and artist names for the listener profile, and its tests.
+  crates/core/src/control/profile.rs
+  crates/storage/tests/control_service.rs
   # Invented mixed-script titles and lyrics that exercise CJK rendering, search and input.
   ui/src/fixtures/synthetic.ts
   ui/src/lib/__tests__/lib.test.ts

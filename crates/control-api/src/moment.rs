@@ -211,15 +211,22 @@ pub enum ListeningIntentDuration {
     deny_unknown_fields
 )]
 pub enum ListeningIntentChange {
+    /// `expected_moment_revision` is the Moment revision the change was decided on. An
+    /// inference must carry it; a listener's request may omit it.
     Set {
         instruction: ListeningIntentInstruction,
         duration: ListeningIntentDuration,
         basis: ReportedIntentBasis,
         expected_moment_revision: Option<u64>,
     },
+    /// Clears the intent stored under `intent_key`. With `intent_id`, only that exact intent:
+    /// one that replaced it since it was read stays.
     Clear {
         #[schemars(length(min = 1, max = 128))]
         intent_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(min = 1, max = 64))]
+        intent_id: Option<String>,
         basis: ReportedIntentBasis,
         expected_moment_revision: Option<u64>,
     },

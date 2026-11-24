@@ -1,11 +1,14 @@
 use ytm_control_api::{
     AccountState, Album, Artist, AudioObservation, Capability, CapabilityArea, ContextSnapshot,
-    EventCursor, MomentView, PendingPlayback, PlayerInclude, PlayerState, PlayerView,
-    QueueOccurrence, QueueProjection, Rating, Track,
+    EventCursor, ListenerAction, MomentView, OfficialUpcomingView, PendingPlayback, PlayerInclude,
+    PlayerState, PlayerView, QueueFilterView, QueueOccurrence, QueueProjection, Rating, Track,
+    UpcomingStatus,
 };
 use ytm_protocol::{
     AppSnapshot, CapabilitySupport, Freshness, PlayerConnectionState, QueueSnapshot,
 };
+
+use crate::queue_window::{Upcoming, upcoming};
 
 pub(super) fn track_projection(track: &ytm_protocol::Track) -> Track {
     Track {
@@ -40,16 +43,15 @@ pub(super) fn context_projection(
     context_token: String,
     preview_limit: usize,
     moment: Option<MomentView>,
+    listener_actions: Vec<ListenerAction>,
 ) -> ContextSnapshot {
     let player = &snapshot.player;
-    let start = queue
-        .and_then(|queue| {
-            queue
-                .entries
-                .iter()
-                .position(|entry| Some(&entry.entry_id) == queue.current_entry_id.as_ref())
-        })
-        .map_or(0, |index| index + 1);
+    // A context read shows what follows the current occurrence, and nothing when that is
+    // unknown: the start of the window would be history, not what plays next.
+    let (start, limit) = match queue.map(upcoming) {
+        Some(Upcoming::Known { index, .. }) => (index + 1, preview_limit),
+        _ => (0, 0),
+    };
     ContextSnapshot {
         cursor: EventCursor {
             core_epoch: snapshot.core_epoch.clone(),
@@ -61,9 +63,10 @@ pub(super) fn context_projection(
         freshness: player_freshness(snapshot),
         player: player_projection(snapshot),
         account: account_projection(&snapshot.auth_state),
-        queue: queue_projection(snapshot, queue, start, preview_limit),
+        queue: queue_projection(snapshot, queue, start, limit, Some(preview_limit)),
         capabilities: capabilities(snapshot),
         moment,
+        listener_actions,
     }
 }
 
@@ -126,11 +129,15 @@ pub(super) fn account_projection(auth: &ytm_protocol::AuthStatusInfo) -> Account
     }
 }
 
+/// Projects `limit` loaded entries from `start`. The page's own continuation follows the explicit
+/// list's end, so it is listed with up to `official_limit` tracks whether or not what follows the
+/// current occurrence is known; `None` (a later page) leaves it out.
 pub(super) fn queue_projection(
     snapshot: &AppSnapshot,
     queue: Option<&QueueSnapshot>,
     start: usize,
     limit: usize,
+    official_limit: Option<usize>,
 ) -> QueueProjection {
     let summary = &snapshot.queue_summary;
     let entries: Vec<_> = queue
@@ -156,6 +163,10 @@ pub(super) fn queue_projection(
     QueueProjection {
         revision: summary.queue_revision,
         current_entry_id: summary.current_entry_id.clone(),
+        upcoming: match queue.map(upcoming) {
+            Some(Upcoming::Known { .. }) => UpcomingStatus::Known,
+            _ => UpcomingStatus::Unknown,
+        },
         entries,
         next_cursor,
         completeness: summary.completeness,
@@ -165,6 +176,29 @@ pub(super) fn queue_projection(
         loaded_start: queue.and_then(|queue| queue.loaded_range.as_ref().map(|range| range.start)),
         loaded_end_exclusive: queue
             .and_then(|queue| queue.loaded_range.as_ref().map(|range| range.end_exclusive)),
+        official_upcoming: official_limit.and_then(|limit| {
+            let official = queue?.official_upcoming.as_ref()?;
+            Some(OfficialUpcomingView {
+                status: official.status,
+                tracks: official
+                    .tracks
+                    .iter()
+                    .take(limit)
+                    .map(track_projection)
+                    .collect(),
+                more: official.tracks.len() > limit,
+            })
+        }),
+        filters: queue
+            .and_then(|queue| queue.filters.as_ref())
+            .into_iter()
+            .flatten()
+            .map(|filter| QueueFilterView {
+                filter_id: filter.filter_id.clone(),
+                label: filter.label.clone(),
+                selected: filter.selected,
+            })
+            .collect(),
     }
 }
 
@@ -183,18 +217,15 @@ pub(super) fn capabilities(snapshot: &AppSnapshot) -> Vec<Capability> {
             true,
             caps.playlist_tracks,
         ),
+        // Creating a private playlist is an account write like adding to one; recommendations
+        // are a catalog read like search.
         (
             "playlistCreate",
             CapabilityArea::Playlists,
             true,
-            CapabilitySupport::Unverified,
+            caps.playlist_add_mutation,
         ),
-        (
-            "recommendations",
-            catalog,
-            true,
-            CapabilitySupport::Unverified,
-        ),
+        ("recommendations", catalog, true, caps.search),
         ("shuffle", playback, true, caps.shuffle),
         ("playPause", playback, true, caps.play_pause),
         ("next", playback, true, caps.next),
@@ -227,6 +258,13 @@ pub(super) fn capabilities(snapshot: &AppSnapshot) -> Vec<Capability> {
             queue,
             true,
             caps.queue_autoplay.unwrap_or(CapabilitySupport::Unverified),
+        ),
+        // Selecting an Up Next filter replaces only YouTube Music's own suggestions.
+        (
+            "queueFilter",
+            queue,
+            true,
+            caps.queue_filter.unwrap_or(CapabilitySupport::Unverified),
         ),
     ]
     .into_iter()

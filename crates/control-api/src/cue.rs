@@ -25,6 +25,9 @@ pub enum DjCueKind {
     TrackEnding,
     /// A good moment to ask the listener whether the music still suits them.
     CheckIn,
+    /// The listener just did something by hand that says where the music should go (see the
+    /// reasons). It is a chance to adjust what plays next, not a prompt to speak.
+    ListenerSignal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -38,6 +41,14 @@ pub enum DjCueReason {
     Routine,
     /// At most one track is queued after the current one.
     LittleQueued,
+    /// The listener skipped two or more tracks in a row.
+    SkipStreak,
+    /// The listener started something particular by hand: a track, a collection, a queue entry.
+    ManualPick,
+    /// The listener went back to hear a track again, or turned on repeat-one.
+    Replay,
+    /// The listener chose another Up Next filter.
+    FilterChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -117,6 +128,30 @@ pub struct DjListener {
     /// since the previous check-in adds one, and any listener action or words reset it. The
     /// first check-in after a reset counts 0. Above zero, check-ins come less often.
     pub unanswered_check_ins: u32,
+    /// What the listener did by hand since this client's previous prompt, newest first, at most
+    /// [`crate::MAX_LISTENER_ACTIONS`]. Facts for the agent to read; never a request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_actions: Vec<crate::ListenerAction>,
+    /// Older actions since the previous prompt that are not listed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub actions_omitted: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// YouTube Music's own continuation in a prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DjOfficialUpNext {
+    pub status: ytm_protocol::OfficialUpcomingStatus,
+    pub tracks: Vec<DjTrack>,
+    /// More suggestions are loaded than listed.
+    pub more: bool,
+    /// The selected Up Next filter's label, when one is offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 /// One prompt for the agent, with the listening context as it is at delivery.
@@ -132,8 +167,16 @@ pub struct DjCue {
     pub age_ms: u64,
     pub prompt: String,
     pub now_playing: Option<DjNowPlaying>,
+    /// Whether `up_next` is what follows the current occurrence. When unknown it is empty and
+    /// says nothing about what comes next.
+    #[serde(default)]
+    pub upcoming: crate::UpcomingStatus,
     pub up_next: Vec<DjTrack>,
     pub more_queued: bool,
+    /// What YouTube Music plays on its own after the queued tracks: status and up to 5
+    /// suggestions. Absent when the page state was not readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub official_up_next: Option<DjOfficialUpNext>,
     /// Newest first.
     pub recent: Vec<DjRecentTrack>,
     pub listener: DjListener,
@@ -164,6 +207,20 @@ pub struct DjCueInput {
     #[serde(default)]
     pub spoke: bool,
     pub chattiness: Option<DjChattiness>,
+    /// The last prompt this client actually received. A prompt handed out after it (for
+    /// example to a wait the client cancelled before the reply arrived) is offered again, so a
+    /// cancelled wait loses nothing; the client skips repeats by `(coreEpoch, seq)`. Ignored
+    /// when it names another core epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_received: Option<DjCueAck>,
+}
+
+/// Names one delivered prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DjCueAck {
+    pub core_epoch: CoreEpoch,
+    pub seq: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

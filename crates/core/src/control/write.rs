@@ -781,6 +781,12 @@ impl MusicOperation {
                 );
                 PlayerOp::SetAutoplay
             }
+            // No queue revision or playback instance: the filter changes only the suggestions,
+            // so an unrelated queue edit or a skip must not make it stale.
+            SetQueueFilter { filter_id } => {
+                args.queue_filter_id = Some(filter_id.clone());
+                PlayerOp::SetQueueFilter
+            }
             Play {
                 target:
                     target @ (PlayContextTarget::Album { .. } | PlayContextTarget::Playlist { .. }),
@@ -894,7 +900,8 @@ pub(super) fn required_scope(action: &WriteAction) -> Result<GrantAction, Contro
         | RemoveQueueEntry { .. }
         | MoveQueueEntry { .. }
         | ClearUpcoming { .. }
-        | Autoplay { .. } => Ok(GrantAction::Queue),
+        | Autoplay { .. }
+        | SetQueueFilter { .. } => Ok(GrantAction::Queue),
         Rate { .. } => Ok(GrantAction::Rating),
         SetArtistSubscription { .. } => Ok(GrantAction::ArtistSubscription),
         SetLibraryMembership { .. } => Ok(GrantAction::LibraryMembership),
@@ -985,5 +992,6 @@ pub(super) fn empty_args() -> PlayerCommandArgs {
         queue_entry_id: None,
         before_queue_entry_id: None,
         queue_revision: None,
+        queue_filter_id: None,
     }
 }

@@ -279,6 +279,9 @@ mod tests {
                         codec: None,
                         audio_mode: None,
                         quality_label: None,
+                        audio_itag: None,
+                        audio_quality: None,
+                        audio_bitrate_kbps: None,
                         drm_protected: None,
                     }
                 )

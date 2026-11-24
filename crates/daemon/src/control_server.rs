@@ -533,14 +533,18 @@ async fn queue_event(
     }
 }
 
-/// Upcoming entries after the current one, when the current entry is inside the preview.
+/// Loaded entries after the current one, when the current entry is inside the preview (the
+/// preview is anchored on it, so it is whenever it is in the loaded window).
 fn upcoming_in_preview(summary: &QueueSummary) -> Option<usize> {
     let current = summary.current_entry_id.as_ref()?;
     summary
         .preview_entries
         .iter()
         .position(|entry| &entry.entry_id == current)
-        .map(|index| (summary.loaded_count as usize).saturating_sub(index + 1))
+        .map(|index| {
+            (summary.loaded_count as usize)
+                .saturating_sub(summary.preview_start as usize + index + 1)
+        })
 }
 
 fn denied(message: &str) -> ControlError {
@@ -628,6 +632,8 @@ mod tests {
                         has_more: Some(false),
                         explicit_complete: None,
                         may_load_more: None,
+                        official_upcoming: None,
+                        filters: None,
                     },
                 )
                 .await
@@ -642,6 +648,66 @@ mod tests {
             revision: 1,
         };
         queue_event(&service, &access, cursor, summary).await
+    }
+
+    /// 230 queued, playing absolute 220: the bridge loads 30..230, current at window index 190.
+    #[tokio::test]
+    async fn a_long_queue_preview_keeps_the_current_entry_and_what_follows() {
+        let engine = CoreEngine::start(CoreDeps::default(), EngineConfig::default());
+        let bridge_epoch = BridgeEpoch::new("fixture-queue-bridge").unwrap();
+        assert!(
+            engine
+                .on_bridge_ready(
+                    1,
+                    BridgeReadyPayload {
+                        bridge_epoch: bridge_epoch.clone(),
+                        bridge_version: "0.1.0".into(),
+                        capabilities: Default::default(),
+                        account_hint: None,
+                        logged_in_observed: false,
+                    },
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            engine
+                .on_bridge_queue_observed(
+                    2,
+                    QueueSnapshot {
+                        bridge_epoch: Some(bridge_epoch),
+                        queue_revision: 1,
+                        current_entry_id: Some(entry(220).entry_id),
+                        entries: (30..230).map(entry).collect(),
+                        loaded_range: Some(ytm_protocol::QueueRange {
+                            start: 30,
+                            end_exclusive: 230,
+                        }),
+                        completeness: QueueCompleteness::Complete,
+                        has_more: Some(false),
+                        explicit_complete: None,
+                        may_load_more: None,
+                        official_upcoming: None,
+                        filters: None,
+                    },
+                )
+                .await
+                .unwrap()
+        );
+        let summary = engine.snapshot().await.unwrap().queue_summary;
+        assert_eq!(summary.loaded_count, 200);
+        assert_eq!(summary.loaded_start, Some(30));
+        assert_eq!(summary.preview_start, 100);
+        let ids: Vec<_> = summary
+            .preview_entries
+            .iter()
+            .map(|e| e.entry_id.clone())
+            .collect();
+        assert_eq!(ids.first(), Some(&entry(130).entry_id));
+        assert!(ids.contains(&entry(220).entry_id));
+        assert_eq!(ids.last(), Some(&entry(229).entry_id));
+        assert_eq!(upcoming_in_preview(&summary), Some(9));
+        engine.shutdown().await.unwrap();
     }
 
     #[tokio::test]

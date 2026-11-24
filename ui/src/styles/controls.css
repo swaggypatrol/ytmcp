@@ -1,0 +1,454 @@
+/* Buttons, chips, cards, tiles, navigation and menu items, toggles, fields and the play button,
+   and the one way every control reacts. */
+
+/* Fills shared by every control. Glass sets its own pair (glass.css), so the same rule gives
+   7% / 12% on glass and the canvas fills elsewhere. */
+:root {
+  --control-fill-hover: var(--bg-elevated-hover);
+  --control-fill-active: color-mix(in oklch, var(--text-primary) 12%, transparent);
+}
+
+/* ---- Shapes and sizes ---------------------------------------------------------------------- */
+
+.btn-primary,
+.btn-secondary,
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.btn-primary {
+  background-color: var(--accent);
+  color: var(--text-on-accent);
+  /* Glyphs on a solid accent take the label colour, not the glass icon ink. */
+  --icon-ink: currentColor;
+}
+.btn-secondary {
+  background-color: var(--bg-subtle);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.btn-ghost {
+  background-color: transparent;
+  color: var(--text-secondary);
+  padding: 0.25rem 0.5rem;
+}
+/* Text buttons on glass are capsules with a 40 px hit area, like everything else there. */
+.lg :is(.btn-primary, .btn-secondary, .btn-ghost) {
+  min-height: 40px;
+  border-radius: 9999px;
+}
+
+/* Icon buttons: a 40 px round hit area with a 20 px glyph; -sm is the 32 px size for list rows
+   (16 px glyph). -lg is kept as a name for the default size. */
+.btn-icon {
+  display: inline-grid;
+  place-items: center;
+  height: 40px;
+  min-width: 40px;
+  padding: 0 8px;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.btn-icon .icon {
+  width: 20px;
+  height: 20px;
+}
+.btn-icon-lg {
+  height: 40px;
+  min-width: 40px;
+}
+.btn-icon-sm {
+  height: 32px;
+  min-width: 32px;
+  padding: 0 6px;
+}
+.btn-icon-sm .icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* The primary play/pause button: a 44 px solid accent disc, the one control on the bar that is
+   not glass, with a 22 px filled glyph in --lg-on-accent-fill (tone.test.ts checks that pair).
+   It never takes a hover or pressed fill; it only sinks. */
+.btn-play-focal {
+  --icon-ink: currentColor;
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 9999px;
+  background-color: var(--lg-accent-fill);
+  color: var(--lg-on-accent-fill);
+  cursor: pointer;
+}
+.btn-play-focal .icon {
+  width: 22px;
+  height: 22px;
+}
+.lg .btn-play-focal .icon {
+  filter: var(--lg-icon-lift-on-accent);
+}
+
+[aria-busy="true"] {
+  cursor: progress;
+}
+
+.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--text-primary);
+  text-decoration-color: currentColor;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.6rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+.chip-accent {
+  border-color: transparent;
+  background-color: var(--accent-soft);
+  color: var(--accent);
+}
+.chip-agent {
+  border-color: transparent;
+  background-color: var(--agent-soft);
+  color: var(--agent);
+}
+button.chip,
+a.chip {
+  cursor: pointer;
+}
+
+.card {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-elevated);
+}
+
+.state-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 2rem;
+  text-align: center;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.tile {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.75rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--lg-duration-hover) ease-out,
+    border-color var(--lg-duration-hover) ease-out;
+}
+.tile:hover:not(:disabled) {
+  background-color: var(--bg-elevated-hover);
+  border-color: var(--border-strong);
+}
+
+/* Row-wide controls: 40 px tall, and they sink less than small ones. */
+.nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 40px;
+  padding: 0 0.75rem;
+  border-radius: var(--radius-md);
+  background-color: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.nav-divider {
+  height: 1px;
+  margin: 0.35rem 0.65rem;
+  background-color: var(--border-subtle);
+}
+
+.menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.menu-divider {
+  height: 1px;
+  margin: 0.25rem 0.5rem;
+  background-color: var(--border-subtle);
+}
+
+/* Native checkbox styled as a tactile desktop switch while keeping full keyboard/a11y semantics. */
+.toggle {
+  appearance: none;
+  position: relative;
+  width: 2.5rem;
+  height: 1.4rem;
+  flex: none;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-subtle);
+  cursor: pointer;
+}
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(1.4rem - 6px);
+  height: calc(1.4rem - 6px);
+  border-radius: 50%;
+  background-color: var(--text-muted);
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.35);
+  transition:
+    transform var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) ease-out;
+}
+.toggle:hover:not(:disabled, :checked) {
+  background-color: var(--control-fill-hover);
+}
+/* A setting being on is a fact, not a moment: Nimbus ink, not the rose of what's playing. */
+.toggle:checked {
+  background-color: var(--text-primary);
+  border-color: var(--text-primary);
+}
+.toggle:checked::after {
+  background-color: var(--bg-canvas);
+  transform: translateX(1.1rem);
+}
+@media (forced-colors: active) {
+  .toggle {
+    forced-color-adjust: none;
+    background-color: Canvas;
+    border-color: CanvasText;
+  }
+  .toggle::after {
+    background-color: CanvasText;
+  }
+  .toggle:checked {
+    background-color: Highlight;
+    border-color: Highlight;
+  }
+  .toggle:checked::after {
+    background-color: HighlightText;
+  }
+  :root button.chip:is([aria-pressed="true"], [aria-checked="true"]) {
+    forced-color-adjust: none;
+    background-color: Highlight;
+    color: HighlightText;
+  }
+}
+
+/* Fields: hover fills like any control; keyboard focus draws the app's ring around the whole
+   field (motion-a11y.css), not around the bare input. */
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 240px;
+  padding: 0 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  transition: background-color var(--lg-duration-hover) ease-out;
+}
+.search-field:hover:not(:disabled, :has(input:disabled)) {
+  background-color: var(--control-fill-hover);
+}
+.search-field:is(:disabled, :has(input:disabled)) {
+  opacity: 0.45;
+}
+.search-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.6rem 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+}
+/* The search page draws its own clear button; other search fields keep the native one. */
+.search-field input[type="search"]::-webkit-search-decoration,
+.search-field input[type="search"]::-webkit-search-cancel-button,
+.search-field input[type="search"]::-webkit-search-results-button,
+.search-field input[type="search"]::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+}
+
+.select {
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background-color: var(--bg-subtle);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background-color var(--lg-duration-hover) ease-out;
+}
+.select:hover:not(:disabled) {
+  background-color: var(--control-fill-hover);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+/* ---- One reaction for every control --------------------------------------------------------
+   hover     the light fill, no movement (160 ms)
+   pressed   the strong fill and a sink: 0.94 for small controls, 0.96 for text buttons and
+             chips, 0.975 for row-wide ones; 90 ms in, 240 ms spring back on release
+   selected  the strong fill and an accent glyph (the filled variant is the component's choice);
+             the label stays primary. Hover never adds to it.
+   disabled  45% opacity, no hover and no press
+   Keyboard focus is the ring in motion-a11y.css and combines with any of these.
+   Controls on glass have no fill and no border at rest. The solid buttons (.btn-primary,
+   .btn-play-focal) keep their fill in every state and only sink.
+   .lg-press is the older name for "a control on glass" and reacts the same way. */
+
+:where(.btn-primary, .btn-secondary, .btn-ghost, .btn-icon, .btn-play-focal, .nav-item, .menu-item,
+  button.chip, a.chip, .lg-press, .toggle) {
+  transition:
+    background-color var(--lg-duration-hover) ease-out,
+    border-color var(--lg-duration-hover) ease-out,
+    color var(--duration-fast) ease-out,
+    transform var(--lg-duration-press) var(--lg-ease-spring);
+}
+.btn-icon,
+.btn-play-focal,
+.toggle {
+  --lg-press-scale: 0.94;
+}
+.btn-primary,
+.btn-secondary,
+.btn-ghost,
+button.chip,
+a.chip {
+  --lg-press-scale: 0.96;
+}
+.nav-item,
+.menu-item {
+  --lg-press-scale: 0.975;
+}
+
+/* At rest on glass: nothing behind or around the control. (A control styled by its own
+   component, such as a toast's action, keeps what that component gives it.) */
+.lg :where(.btn-secondary, .btn-ghost, .btn-icon, button.chip, a.chip):where(:not(.btn-primary, .btn-play-focal, .btn-icon-active, [aria-current="page"], [aria-pressed="true"], [aria-checked="true"])) {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+/* Hover: never on a selected control, so the two fills cannot stack. */
+:where(.btn-secondary, .btn-ghost, .btn-icon, .nav-item, .menu-item, button.chip, a.chip, .lg-press):hover:where(:not(.btn-primary, .btn-play-focal, :disabled, [aria-disabled="true"], .btn-icon-active, [aria-current="page"], [aria-pressed="true"], [aria-checked="true"])) {
+  background-color: var(--control-fill-hover);
+}
+.btn-primary:hover:not(:disabled, [aria-disabled="true"]) {
+  background-color: var(--accent-hover);
+}
+
+/* Selected. */
+:where(.btn-secondary, .btn-ghost, .btn-icon, .nav-item, .menu-item, button.chip, a.chip, .lg-press):where(:not(.btn-primary, .btn-play-focal)):is(.btn-icon-active, [aria-current="page"], [aria-pressed="true"], [aria-checked="true"]) {
+  background-color: var(--control-fill-active);
+  border-color: transparent;
+  color: var(--text-primary);
+  --icon-ink: var(--accent);
+}
+/* A chip has no glyph to turn Rose, so a selected chip is drawn inverted (chapter 04). */
+button.chip:is([aria-pressed="true"], [aria-checked="true"]) {
+  background-color: var(--text-primary);
+  color: var(--bg-canvas);
+}
+
+/* Pressed: the strong fill comes in with the sink. */
+:where(.btn-secondary, .btn-ghost, .btn-icon, .nav-item, .menu-item, button.chip, a.chip, .lg-press):active:where(:not(.btn-primary, .btn-play-focal, :disabled, [aria-disabled="true"])) {
+  background-color: var(--control-fill-active);
+}
+:where(.btn-primary, .btn-secondary, .btn-ghost, .btn-icon, .btn-play-focal, .nav-item, .menu-item,
+  button.chip, a.chip, .lg-press, .toggle):active:where(:not(:disabled, [aria-disabled="true"])) {
+  transform: scale(var(--lg-press-scale));
+  transition-duration: var(--lg-duration-quick);
+  transition-timing-function: ease-out;
+}
+
+/* Disabled. A control that is only waiting for its own receipt (aria-busy) is not dimmed: it
+   confirms by changing itself, not by fading out and back. */
+:where(.btn-primary, .btn-secondary, .btn-ghost, .btn-icon, .btn-play-focal, .nav-item, .menu-item,
+  button.chip, a.chip, .lg-press, .toggle, .select):is(:disabled, [aria-disabled="true"]:not([aria-busy="true"])) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Reduced motion: no sink at all, and the fills change colour within --duration-fast (the
+   blanket rule in motion-a11y.css makes everything else instant). */
+@media (prefers-reduced-motion: reduce) {
+  :where(.btn-primary, .btn-secondary, .btn-ghost, .btn-icon, .btn-play-focal, .nav-item, .menu-item,
+    button.chip, a.chip, .lg-press, .toggle):active {
+    transform: none;
+  }
+  :where(.btn-primary, .btn-secondary, .btn-ghost, .btn-icon, .btn-play-focal, .nav-item, .menu-item,
+    button.chip, a.chip, .lg-press, .toggle, .search-field, .select) {
+    transition-property: background-color, border-color, color !important;
+    transition-duration: var(--duration-fast) !important;
+  }
+}
+:root[data-reduce-motion="true"] :where(.btn-primary, .btn-secondary, .btn-ghost, .btn-icon, .btn-play-focal,
+  .nav-item, .menu-item, button.chip, a.chip, .lg-press, .toggle):active {
+  transform: none;
+}
+:root[data-reduce-motion="true"] :where(.btn-primary, .btn-secondary, .btn-ghost, .btn-icon, .btn-play-focal,
+  .nav-item, .menu-item, button.chip, a.chip, .lg-press, .toggle, .search-field, .select) {
+  transition-property: background-color, border-color, color !important;
+  transition-duration: var(--duration-fast) !important;
+}

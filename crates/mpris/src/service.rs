@@ -226,6 +226,7 @@ impl MprisService {
             queue_entry_id: None,
             before_queue_entry_id: None,
             queue_revision: None,
+            queue_filter_id: None,
         }
     }
 }
@@ -807,6 +808,9 @@ mod tests {
                     codec: None,
                     audio_mode: None,
                     quality_label: None,
+                    audio_itag: None,
+                    audio_quality: None,
+                    audio_bitrate_kbps: None,
                     drm_protected: None,
                 }
             )
@@ -961,6 +965,9 @@ mod tests {
             codec: None,
             audio_mode: None,
             quality_label: None,
+            audio_itag: None,
+            audio_quality: None,
+            audio_bitrate_kbps: None,
             drm_protected: None,
         };
 

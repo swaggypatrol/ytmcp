@@ -1,0 +1,126 @@
+/* App shell: the layers (L0 canvas to L3 glass), the content area and its tiers and the page
+   column. The floating sidebar and its collapse transition are in sidebar.css. */
+
+/* ---- Registered lengths -------------------------------------------------------------------
+   Registered so that they compute to pixels where they are declared (on .app-page, against the
+   content container) and inherit as pixels. A descendant can then use them inside another
+   container without its own cqw changing their meaning. */
+@property --page-offset {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --page-left {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+/* ---- App shell -----------------------------------------------------------------------------
+   L0 is the shell's own canvas. L1, the ambient light, is a fixed sibling before the scroll
+   container (hero.css). L2 is the one vertical scroll container; it spans the whole window so
+   content can pass under the glass. L3 is the sidebar and the player dock. */
+
+.app-shell {
+  position: relative;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  /* Left edge of the content area: the sidebar plus the gap on both sides. Collapsing the
+     sidebar switches it in one step, so the page lays out once; the sidebar, the player dock and
+     the page column then follow it over --duration-slow (sidebar.css). */
+  --content-inset: calc(var(--sidebar-width) + var(--shell-gap) * 2);
+  /* Space above the first line of every page (target screens: 56px). */
+  --page-top: 56px;
+}
+.app-shell[data-sidebar="collapsed"] {
+  --content-inset: calc(var(--sidebar-collapsed-width) + var(--shell-gap) * 2);
+}
+
+.app-scroll {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-content);
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* The scrollbar's room is kept whether or not the page overflows, so the column does not
+     shift sideways between a short page and a long one. */
+  scrollbar-gutter: stable;
+  padding-bottom: calc(var(--player-bar-height) + var(--shell-gap) * 2 + var(--space-16));
+}
+
+/* The content area: from the sidebar's outer gap to the window's right edge. Its inline size is
+   what the layout tiers query: compact under 880, regular to 1399, wide to 2099, ultrawide from
+   2100 (`@container content (min-width: …)`). */
+.app-content {
+  margin-left: var(--content-inset);
+  container: content / inline-size;
+}
+
+/* The page column. It fills the content area less the tier's margins; from wide up it stops at
+   --page-max-wide (with a context rail, column and rail together). Width goes to content first, then to
+   the margins, split evenly on both sides, so nothing piles up on one side. */
+.app-page {
+  --page-margin: 20px;
+  --page-cap: 100cqw;
+  /* Each side's margin: the tier's, or half of what is left beyond the cap if that is more. */
+  --page-offset: max(var(--page-margin), (100cqw - var(--page-cap)) / 2);
+  /* Distance from the window's left edge to the column; .bleed and the shelves use it. */
+  --page-left: calc(var(--content-inset) + var(--page-offset));
+  /* Older name of the tier's side margin, kept for components that pad against it. */
+  --page-pad: var(--page-margin);
+  margin-left: var(--page-offset);
+  margin-right: var(--page-offset);
+  padding-top: var(--page-top);
+  padding-bottom: var(--space-16);
+}
+@container content (min-width: 880px) {
+  .app-page {
+    --page-margin: 32px;
+  }
+}
+@container content (min-width: 1400px) {
+  .app-page {
+    --page-margin: 48px;
+    --page-cap: var(--page-max-wide);
+  }
+}
+@container content (min-width: 2100px) {
+  .app-page {
+    --page-margin: 56px;
+  }
+  /* Reserved for a context rail (queue or lyrics beside the page): the column keeps
+     --page-max-wide and the rail takes --context-rail to its right. Nothing renders a rail yet,
+     so no empty one is drawn. */
+  .app-page:has(> .context-rail) {
+    --page-cap: calc(var(--page-max-wide) + var(--space-48) + var(--context-rail));
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--context-rail);
+    column-gap: var(--space-48);
+  }
+  /* Now playing's third column (Up next) is the rail, so the page takes the rail's room too
+     rather than squeezing cover, lyrics and queue into the plain column. */
+  .app-page:has(.np-stage) {
+    --page-cap: calc(var(--page-max-wide) + var(--space-48) + var(--context-rail));
+  }
+}
+
+/* A page title (or, while it loads, the main region) focused after a page change is a landmark,
+   not a control: no ring, no halo. */
+.app-scroll[tabindex="-1"]:focus,
+.app-page h1[tabindex="-1"]:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* A direct child of a page section that spans the window, from its left edge under the sidebar
+   to its right edge. Its content still starts at the column's left edge. */
+.bleed {
+  width: calc(100% + var(--page-left) + var(--page-offset));
+  margin-left: calc(var(--page-left) * -1);
+  padding-left: var(--page-left);
+  padding-right: var(--page-margin);
+  scroll-padding-left: var(--page-left);
+}

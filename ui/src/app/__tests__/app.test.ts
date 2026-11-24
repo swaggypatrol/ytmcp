@@ -207,36 +207,43 @@ describe("App page states and mock isolation", () => {
   it("renders mock scenarios through the shared page states and hides mock UI in preload mode", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     render(App, { props: { client: createUiClient({ fakeClient: new FakeCoreClient("normal") }) } });
-    await waitFor(() => expect(screen.getByTestId("banner-mock-mode")).toBeTruthy());
-    const select = screen.getByTestId("mock-scenario-select") as HTMLSelectElement;
+    await screen.findByTestId("view-home");
+    // The scenario select is in Settings (Advanced), never in the page flow.
+    expect(screen.queryByTestId("mock-scenario-select")).toBeNull();
+    const pick = async (value: string) => {
+      await fireEvent.click(screen.getByTestId("nav-settings"));
+      await fireEvent.change(await screen.findByTestId("mock-scenario-select"), { target: { value } });
+      await fireEvent.click(screen.getByTestId("nav-home"));
+    };
 
-    await fireEvent.change(select, { target: { value: "loading" } });
+    await pick("loading");
     await waitFor(() => expect(screen.getByTestId("home-state-loading")).toBeTruthy());
 
-    await fireEvent.change(select, { target: { value: "empty" } });
+    await pick("empty");
     await waitFor(() => expect(screen.getByTestId("home-state-empty")).toBeTruthy());
 
-    await fireEvent.change(select, { target: { value: "offlineCached" } });
+    await pick("offlineCached");
     await waitFor(() => {
-      expect(screen.getByTestId("banner-offline")).toBeTruthy();
-      expect(screen.getByTestId("home-state-cached")).toBeTruthy();
+      expect(screen.getByTestId("toast-offline")).toBeTruthy();
+      // The offline toast says it; the page adds no second note.
+      expect(screen.queryByTestId("toast-refresh-failed")).toBeNull();
     });
 
-    await fireEvent.change(select, { target: { value: "authExpired" } });
+    await pick("authExpired");
     await waitFor(() => {
-      expect(screen.getByTestId("banner-auth-expired")).toBeTruthy();
+      expect(screen.getByTestId("toast-auth-expired")).toBeTruthy();
       expect(screen.getByTestId("home-state-auth-expired")).toBeTruthy();
     });
 
-    await fireEvent.change(select, { target: { value: "unsupported" } });
+    await pick("unsupported");
     await waitFor(() => {
-      expect(screen.getByTestId("banner-unsupported")).toBeTruthy();
+      expect(screen.getByTestId("toast-unsupported")).toBeTruthy();
       expect((screen.getByTestId("btn-play-pause") as HTMLButtonElement).disabled).toBe(true);
     });
 
-    await fireEvent.change(select, { target: { value: "bridgeCrashed" } });
+    await pick("bridgeCrashed");
     await waitFor(() => {
-      expect(screen.getByTestId("banner-bridge-disconnected")).toBeTruthy();
+      expect(screen.getByTestId("toast-bridge-disconnected")).toBeTruthy();
       expect((screen.getByTestId("btn-play-pause") as HTMLButtonElement).disabled).toBe(true);
     });
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -244,8 +251,9 @@ describe("App page states and mock isolation", () => {
     cleanup();
     renderApp(createPreloadBridge().bridge);
     await waitFor(() => expect(screen.getByTestId("view-home")).toBeTruthy());
-    expect(screen.queryByTestId("status-banners")).toBeNull();
-    expect(screen.queryByTestId("banner-mock-mode")).toBeNull();
+    expect(screen.getByTestId("toast-region").children).toHaveLength(0);
+    await fireEvent.click(screen.getByTestId("nav-settings"));
+    await screen.findByTestId("settings-advanced");
     expect(screen.queryByTestId("mock-scenario-select")).toBeNull();
   });
 
@@ -270,16 +278,19 @@ describe("App page states and mock isolation", () => {
     });
     renderApp(failing.bridge, "library");
     const errorBox = await screen.findByTestId("library-state-error");
-    expect(errorBox.textContent).toContain("RATE_LIMITED");
+    // The code stays out of the visible text; the tooltip carries it.
+    expect(errorBox.textContent).not.toContain("RATE_LIMITED");
+    expect(errorBox.getAttribute("title")).toContain("RATE_LIMITED");
     await fireEvent.click(within(errorBox).getByRole("button"));
     await waitFor(() => expect(failing.catalogCalls.filter((r) => r.kind === "libraryPlaylists")).toHaveLength(2));
     cleanup();
 
     render(App, { props: { client: createUiClient({ mockScenario: "offlineCached" }), initialView: "library" } });
     await waitFor(() => {
-      expect(screen.getByTestId("library-state-cached")).toBeTruthy();
+      expect(screen.getByTestId("toast-offline")).toBeTruthy();
       expect(screen.getByTestId("playlist-card-mock-pl-favorites")).toBeTruthy();
     });
+    expect(screen.queryByTestId("toast-refresh-failed")).toBeNull();
   });
 });
 
@@ -356,13 +367,18 @@ describe("Page loading follows capability and sign-in", () => {
     failWith = new IpcTimeoutError("ui.catalogQuery");
     invalidate(snapshot.revision + 1);
     await waitFor(() => expect(catalogCalls.filter((r) => r.kind === "libraryPlaylists")).toHaveLength(2));
-    await waitFor(() => expect(screen.getByTestId("library-state-cached").textContent).toContain("TIMEOUT"));
+    // The kept content is reported by a toast, not a note in the page.
+    const note = await screen.findByTestId("toast-refresh-failed");
+    expect(note.querySelector(".toast-text")!.getAttribute("title")).toContain("TIMEOUT");
+    expect(note.textContent).toContain(en.states.refreshFailedNotice);
+    expect(note.textContent).not.toContain("TIMEOUT");
     expect(screen.getByTestId("playlist-card-mock-pl-favorites")).toBeTruthy();
 
     failWith = new Error("IPC rejected ui.catalogQuery");
     invalidate(snapshot.revision + 2);
     const errorBox = await screen.findByTestId("library-state-error");
-    expect(errorBox.textContent).toContain("BRIDGE_INCOMPATIBLE");
+    expect(errorBox.getAttribute("title")).toContain("BRIDGE_INCOMPATIBLE");
+    expect(errorBox.textContent).not.toContain("BRIDGE_INCOMPATIBLE");
     expect(errorBox.textContent).not.toMatch(/IPC|rejected/);
     expect(screen.queryByTestId("playlist-card-mock-pl-favorites")).toBeNull();
   });
@@ -420,10 +436,10 @@ describe("Catalog browsing", () => {
     await waitFor(() => {
       expect(screen.getByTestId("search-album-alb-1")).toBeTruthy();
       expect(screen.getByTestId("search-artist-art-1")).toBeTruthy();
-      expect(screen.getAllByTestId("virtual-track-row")).toHaveLength(2);
+      expect(screen.getAllByTestId("virtual-track-row").length).toBeGreaterThanOrEqual(2);
     });
 
-    await fireEvent.click(screen.getByTestId("search-load-more"));
+    // The list asks for the next page by itself as its end comes near; there is no button.
     await waitFor(() => expect(screen.getAllByTestId("virtual-track-row")).toHaveLength(4));
     expect(catalogCalls.filter((r) => r.kind === "searchSongs").at(-1)).toMatchObject({ query: "abc", cursor: "cur-1" });
     expect(screen.queryByTestId("search-load-more")).toBeNull();
@@ -506,6 +522,23 @@ describe("Catalog browsing", () => {
     expect(screen.queryAllByTestId("virtual-track-row")).toHaveLength(0);
     expect(screen.queryByTestId("search-album-alb-1")).toBeNull();
   });
+
+  it("wipes recent searches when the account changes, even while Search is not open", async () => {
+    const { bridge, snapshot, emit } = createPreloadBridge({ queryCatalog: searchCatalog });
+    renderApp(bridge, "search");
+    await waitFor(() => expect(screen.getByTestId("search-input")).toBeTruthy());
+    await submitSearch("kept query");
+    await waitFor(() => expect(localStorage.getItem("ytmcp.recentSearches.v1")).toContain("kept query"));
+
+    await fireEvent.click(screen.getByTestId("nav-home"));
+    await screen.findByTestId("view-home");
+    emit({
+      deltaType: "authChanged",
+      revision: snapshot.revision + 1,
+      auth_state: { ...snapshot.authState, accountEpoch: "acct-2", accountScope: "scope-acct-2" },
+    });
+    await waitFor(() => expect(localStorage.getItem("ytmcp.recentSearches.v1")).toBeNull());
+  });
 });
 
 describe("Account writes and queue controls", () => {
@@ -559,7 +592,7 @@ describe("Account writes and queue controls", () => {
     renderApp(bridge, "library");
     const playlist = () => screen.findByTestId("playlist-card-mock-pl-favorites");
     await fireEvent.click(await playlist());
-    await screen.findByText(title);
+    await screen.findByRole("heading", { name: title });
     await fireEvent.click(screen.getByTestId("nav-now-playing"));
     await screen.findByTestId("view-now-playing");
 
@@ -569,7 +602,7 @@ describe("Account writes and queue controls", () => {
     });
     await fireEvent.click(screen.getByTestId("nav-library"));
     await fireEvent.click(await playlist());
-    await screen.findByText(title);
+    await screen.findByRole("heading", { name: title });
     expect(catalogCalls.filter((req) => req.kind === "playlistTracks")).toHaveLength(1);
     await fireEvent.click(screen.getByTestId("nav-now-playing"));
     title = "Playlist after remote edit";
@@ -581,7 +614,7 @@ describe("Account writes and queue controls", () => {
     expect(catalogCalls.filter((req) => req.kind === "playlistTracks")).toHaveLength(1);
     await fireEvent.click(screen.getByTestId("nav-library"));
     await fireEvent.click(await playlist());
-    await screen.findByText(title);
+    await screen.findByRole("heading", { name: title });
     expect(catalogCalls.filter((req) => req.kind === "playlistTracks")).toHaveLength(2);
     expect(catalogCalls.filter((req) => req.kind === "libraryPlaylists")).toHaveLength(1);
   });
@@ -616,41 +649,69 @@ describe("Account writes and queue controls", () => {
 
     const likeBtn = (await screen.findByTestId("np-like")) as HTMLButtonElement;
     expect(likeBtn.disabled).toBe(false);
-    expect(likeBtn.textContent).toContain("Remove like"); // synthetic track #1 is liked
+    expect(likeBtn.getAttribute("aria-label")).toBe("Remove like"); // synthetic track #1 is liked
     await fireEvent.click(likeBtn);
     await waitFor(() => {
-      const banner = screen.getByTestId("banner-mutation");
-      expect(banner.getAttribute("data-tone")).toBe("unknown");
-      expect(banner.textContent).toContain("Outcome unknown");
+      const toast = screen.getByTestId("toast-write-unknown");
+      expect(toast.getAttribute("data-tone")).toBe("warning");
+      expect(toast.textContent).toContain("Couldn’t confirm");
     });
     expect(sendMutation).toHaveBeenCalledTimes(1);
     expect(sendMutation).toHaveBeenCalledWith(
       { kind: "setLike", videoId: "mock-vid-00001", liked: false, playlistId: null, confirmedByUser: true },
       "mock-account-epoch-1"
     );
-    expect(likeBtn.textContent).toContain("Remove like"); // unknown outcome is not applied
+    expect(likeBtn.getAttribute("aria-label")).toBe("Remove like"); // unknown outcome is not applied
 
     await fireEvent.click(screen.getByTestId("np-actions"));
     await fireEvent.click(await screen.findByTestId("action-add-to-playlist"));
     await fireEvent.click(await screen.findByTestId("pick-playlist-mock-pl-late-night"));
     expect(sendMutation).toHaveBeenCalledTimes(1); // nothing sent before explicit confirm
     await fireEvent.click(await screen.findByTestId("confirm-add-to-playlist"));
-    await waitFor(() => expect(screen.getByTestId("banner-mutation").getAttribute("data-tone")).toBe("success"));
+    // The playlist is not in view, so its result is a toast (no Undo: there is no remove call).
+    await waitFor(() => expect(screen.getByTestId("toast-write-done").textContent).toContain("Added to"));
     expect(sendMutation).toHaveBeenLastCalledWith(
       expect.objectContaining({ kind: "addToPlaylist", playlistId: "mock-pl-late-night", confirmedByUser: true }),
       "mock-account-epoch-1"
     );
   });
 
-  it("disables writes that are unsupported, unverified or account-unmatched and explains why", async () => {
+  it("opens the playlist chooser straight from Now Playing's Add to playlist, only while adding can work", async () => {
+    const sendMutation = vi.fn(async (): Promise<MutationResult> => ({ kind: "addToPlaylist", outcome: "confirmed", error: null }));
+    const { bridge } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "now-playing");
+    await fireEvent.click(await screen.findByTestId("np-add-to-playlist"));
+    expect(screen.queryByTestId("action-play")).toBeNull();
+    await fireEvent.click(await screen.findByTestId("pick-playlist-mock-pl-late-night"));
+    await fireEvent.click(await screen.findByTestId("confirm-add-to-playlist"));
+    await waitFor(() =>
+      expect(sendMutation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "addToPlaylist", videoId: "mock-vid-00001", playlistId: "mock-pl-late-night" }),
+        "mock-account-epoch-1"
+      )
+    );
+    cleanup();
+
+    const readOnly = createPreloadBridge({
+      snapshot: (s) => ({ ...writeReady(s), capabilities: { ...writeReady(s).capabilities, playlistAddMutation: "unverified" } }),
+      sendMutation,
+    });
+    renderApp(readOnly.bridge, "now-playing");
+    await screen.findByTestId("now-playing-title");
+    expect(screen.queryByTestId("np-add-to-playlist")).toBeNull();
+  });
+
+  it("leaves out like on Now Playing when the write cannot work, and explains other writes in the actions dialog", async () => {
     const unverified = createPreloadBridge({
       snapshot: (s) => ({ ...s, capabilities: { ...s.capabilities, likeMutation: "unverified" } }),
       sendMutation: vi.fn(),
     });
     renderApp(unverified.bridge, "now-playing");
-    const like = (await screen.findByTestId("np-like")) as HTMLButtonElement;
-    expect(like.disabled).toBe(true);
-    expect(screen.getByTestId("view-now-playing").textContent).toContain("This change is not verified yet");
+    await screen.findByTestId("now-playing-title");
+    const page = screen.getByTestId("view-now-playing");
+    expect(screen.queryByTestId("np-like")).toBeNull();
+    expect(screen.queryByTestId("player-like")).toBeNull();
+    expect(page.textContent).not.toContain("This change is not verified yet");
     cleanup();
 
     const unmatched = createPreloadBridge({
@@ -661,8 +722,9 @@ describe("Account writes and queue controls", () => {
       }),
     });
     renderApp(unmatched.bridge, "now-playing");
-    expect(((await screen.findByTestId("np-like")) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("view-now-playing").textContent).toContain("not confirmed to match");
+    await screen.findByTestId("now-playing-title");
+    expect(screen.getByTestId("view-now-playing").textContent).not.toContain("not confirmed to match");
+    expect(screen.queryByTestId("np-like")).toBeNull();
 
     await fireEvent.click(screen.getByTestId("np-actions"));
     const actions = await screen.findByTestId("track-actions");
@@ -689,7 +751,7 @@ describe("Account writes and queue controls", () => {
     expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(expect.objectContaining({ op: "setShuffle", args: { shuffle: true } }));
     const repeat = screen.getByTestId("btn-repeat") as HTMLButtonElement;
     expect(repeat.disabled).toBe(false);
-    expect(repeat.title).toContain("not verified yet");
+    expect(repeat.title).toBe(en.player.repeat.off);
     await fireEvent.click(repeat);
     expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(expect.objectContaining({ op: "setRepeat", args: { repeat: "all" } }));
 
@@ -708,7 +770,7 @@ describe("Player bar seek preview", () => {
     const onCommand = vi.fn(() => new Promise<CommandReceipt | null>((r) => (resolveCmd = r)));
     const overlay = { pendingCount: 0, activeOp: null, desiredPlayback: null, desiredPositionMs: null, desiredVolume: null, lastError: null };
     const { rerender } = render(PlayerBar, {
-      props: { snapshot: snap, pendingOverlay: overlay, interpolatedPositionMs: 12_000, onCommand, onOpenNowPlaying: () => {}, onOpenLyrics: () => {}, onOpenDiagnostics: () => {} },
+      props: { snapshot: snap, pendingOverlay: overlay, interpolatedPositionMs: 12_000, onCommand, onOpenNowPlaying: () => {}, onToggleLyrics: () => {} },
     });
 
     const slider = screen.getByTestId("player-seek-slider") as HTMLInputElement;
@@ -739,7 +801,7 @@ describe("Player bar seek preview", () => {
     const onCommand = vi.fn(() => new Promise<CommandReceipt | null>(() => {}));
     const pendingVolume = { pendingCount: 1, activeOp: "setVolume" as const, desiredPlayback: null, desiredPositionMs: null, desiredVolume: 0.3, lastError: null };
     render(PlayerBar, {
-      props: { snapshot: snap, pendingOverlay: pendingVolume, interpolatedPositionMs: 12_000, onCommand, onOpenNowPlaying: () => {}, onOpenLyrics: () => {}, onOpenDiagnostics: () => {} },
+      props: { snapshot: snap, pendingOverlay: pendingVolume, interpolatedPositionMs: 12_000, onCommand, onOpenNowPlaying: () => {}, onToggleLyrics: () => {} },
     });
     const bar = screen.getByTestId("player-bar");
     const before = bar.textContent;
@@ -748,11 +810,13 @@ describe("Player bar seek preview", () => {
     await fireEvent.pointerDown(slider);
     await fireEvent.input(slider, { target: { value: "30" } });
     expect(onCommand).toHaveBeenLastCalledWith("setVolume", { volume: 0.3 });
-    // Only the number on the mute button changes; nothing like "waiting" is added.
-    expect(bar.textContent).toBe(before!.replace(`${Math.round(snap.player.volume * 100)}%`, "30%"));
+    // The slider announces the level and the controls use their names as tooltips.
+    expect(bar.textContent).toBe(before);
     expect(slider.value).toBe("30");
-    expect(slider.getAttribute("title")).toBeNull();
-    expect(screen.getByTestId("player-observed-status").classList.contains("is-waiting")).toBe(false);
+    expect(slider.getAttribute("aria-valuetext")).toBe("30%");
+    expect(slider.title).toBe(en.player.volumeLabel);
+    expect(screen.getByTestId("btn-mute").title).toBe(en.player.mute);
+    expect(screen.queryByTestId("player-waiting-dot")).toBeNull();
   });
 });
 
@@ -771,7 +835,7 @@ describe("Covers, lists and text safety", () => {
 
   it("virtualizes 10,000 tracks with bounded DOM rows and unique keys for duplicate queue videoIds", async () => {
     const { getAllByTestId } = render(VirtualizedTrackList, {
-      props: { tracks: createSyntheticTracks(10_000, "test10k"), mockMode: true, heightPx: 480, onPlayTrack: () => {} },
+      props: { tracks: createSyntheticTracks(10_000, "test10k"), mockMode: true, onPlayTrack: () => {} },
     });
     const renderedRows = getAllByTestId("virtual-track-row");
     expect(renderedRows.length).toBeGreaterThan(0);
@@ -938,23 +1002,24 @@ describe("Covers, lists and text safety", () => {
 describe("Keyboard, dialogs and settings", () => {
   it("does not trigger Space playback in inputs or during IME composition", async () => {
     render(App, { props: { client: createUiClient({ fakeClient: new FakeCoreClient("normal") }), initialView: "search" } });
-    const status = () => screen.getByTestId("player-observed-status").textContent?.trim();
+    // Playing or paused is the play button's icon; its label names the action it would take.
+    const status = () => screen.getByTestId("btn-play-pause").getAttribute("aria-label");
     await waitFor(() => expect(screen.getByTestId("search-input")).toBeTruthy());
-    expect(status()).toBe("Paused");
+    expect(status()).toBe("Play");
 
     const input = screen.getByTestId("search-input") as HTMLInputElement;
     input.focus();
     await fireEvent.keyDown(input, { key: " ", code: "Space" });
-    expect(status()).toBe("Paused");
+    expect(status()).toBe("Play");
 
     input.blur();
     await fireEvent(window, new CompositionEvent("compositionstart", { data: "ni" }));
     await fireEvent.keyDown(document.body, { key: " ", code: "Space", isComposing: true });
-    expect(status()).toBe("Paused");
+    expect(status()).toBe("Play");
 
     await fireEvent(window, new CompositionEvent("compositionend", { data: "你" }) /* pinyin "ni" committed */);
     await fireEvent.keyDown(document.body, { key: " ", code: "Space" });
-    await waitFor(() => expect(status()).toBe("Playing"));
+    await waitFor(() => expect(status()).toBe("Pause"));
   });
 
   it("handles Ctrl+F, Ctrl+L and Ctrl+Arrow shortcuts without hijacking text inputs", async () => {
@@ -985,7 +1050,7 @@ describe("Keyboard, dialogs and settings", () => {
     expect(await screen.findByRole("heading", { name: "设置" })).toBeTruthy();
     // Already-rendered chrome outside the view follows too, including derived labels.
     expect(screen.getByTestId("nav-home").textContent).toContain("首页");
-    expect(screen.getByTestId("player-observed-status").textContent?.trim()).toBe("已暂停");
+    expect(screen.getByTestId("btn-play-pause").getAttribute("aria-label")).toBe("播放");
     expect(screen.getByTestId("settings-account-state").textContent).toContain("登录状态：已登录");
     expect(document.documentElement.lang).toBe("zh-CN");
     expect(fake.subscribeSnapshot(() => {}).snapshot.settings.uiLanguage).toBe("zh-CN");
@@ -1015,8 +1080,8 @@ describe("Keyboard, dialogs and settings", () => {
   });
 
   it("traps focus in the diagnostics dialog and restores it on Esc", async () => {
-    render(App, { props: { client: createUiClient({ fakeClient: new FakeCoreClient("normal") }) } });
-    const trigger = (await screen.findByTestId("btn-open-diagnostics")) as HTMLButtonElement;
+    render(App, { props: { client: createUiClient({ fakeClient: new FakeCoreClient("normal") }), initialView: "settings" } });
+    const trigger = (await screen.findByTestId("settings-open-diagnostics")) as HTMLButtonElement;
     trigger.focus();
     await fireEvent.click(trigger);
     const dialog = await screen.findByTestId("accessible-dialog");
@@ -1081,11 +1146,14 @@ describe("Keyboard, dialogs and settings", () => {
     const autoplay = screen.getByTestId("setting-autoplay") as HTMLInputElement;
     expect(autoplay.checked).toBe(base.autoplayOnLaunch);
     await fireEvent.click(autoplay);
-    expect((await screen.findByTestId("settings-save-error")).textContent).toContain("settings disk read-only");
+    const saveFailed = await screen.findByTestId("toast-settings-failed");
+    expect(saveFailed.textContent).toContain("Couldn’t save the setting");
+    expect(saveFailed.textContent).not.toContain("settings disk read-only");
+    expect(saveFailed.querySelector(".toast-text")!.getAttribute("title")).toContain("settings disk read-only");
     await waitFor(() => expect(autoplay.checked).toBe(base.autoplayOnLaunch));
   });
 
-  it("wires official player open, account match status, cache clear feedback, search clear, now-playing seek, banner dismiss and localized diagnostics", async () => {
+  it("wires official player open, account match status, cache clear feedback, search clear, now-playing seek, failure toast and localized diagnostics", async () => {
     const failedReceipt: CommandReceipt = {
       commandId: "cmd-fail-1",
       op: "play",
@@ -1114,9 +1182,16 @@ describe("Keyboard, dialogs and settings", () => {
     emit({ deltaType: "resourceInvalidated", revision: snapshot.revision + 1, resource_kind: "catalog" });
     expect(await screen.findByTestId("settings-cache-cleared")).toBeTruthy();
 
-    expect(screen.getByTestId("banner-command-error")).toBeTruthy();
-    await fireEvent.click(screen.getByTestId("dismiss-command-banner"));
-    await waitFor(() => expect(screen.queryByTestId("banner-command-error")).toBeNull());
+    // A failed command is a toast in plain words; its code is in Diagnostics, one click away.
+    const failure = screen.getByTestId("toast-command-failed");
+    expect(failure.textContent).toContain("Couldn’t start playing");
+    expect(failure.textContent).not.toContain("player timed out");
+    expect(failure.textContent).not.toContain("TIMEOUT");
+    await fireEvent.click(screen.getByTestId("toast-view-diagnostics"));
+    expect((await screen.findByTestId("diagnostics-content")).textContent).toContain("TIMEOUT: player timed out");
+    await fireEvent.keyDown(screen.getByTestId("accessible-dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("accessible-dialog")).toBeNull());
+    expect(screen.queryByTestId("toast-command-failed")).toBeNull();
 
     await fireEvent.click(screen.getByTestId("settings-open-diagnostics"));
     const diag = await screen.findByTestId("diagnostics-content");
@@ -1127,8 +1202,10 @@ describe("Keyboard, dialogs and settings", () => {
     await fireEvent.keyDown(screen.getByTestId("accessible-dialog"), { key: "Escape" });
 
     await fireEvent.click(screen.getByTestId("nav-now-playing"));
-    const npSlider = (await screen.findByTestId("np-seek-slider")) as HTMLInputElement;
-    await fireEvent.change(npSlider, { target: { value: "42000" } });
+    await screen.findByTestId("view-now-playing");
+    // Now Playing has no seek bar of its own; the player bar's seeks from every page.
+    expect(screen.queryAllByRole("slider", { name: "Playback position" })).toHaveLength(1);
+    await fireEvent.change(screen.getByTestId("player-seek-slider"), { target: { value: "42000" } });
     expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({ op: "seek", args: { positionMs: 42_000, trackInstanceId: "ti-mock-1" } })
     );
@@ -1171,19 +1248,20 @@ describe("Appearance and glass shell", () => {
     }
   });
 
-  it("puts glass only on the sidebar, the player bar and dialogs, and keeps list text off the bleed layers", async () => {
+  it("puts glass only on the sidebar, the player bar and overlays, and keeps list text off the bleed layers", async () => {
     render(App, { props: { client: createUiClient({ fakeClient: new FakeCoreClient("normal") }) } });
     await screen.findByTestId("home-playlist-mock-pl-favorites");
     const glass = () => Array.from(document.querySelectorAll(".lg")).map((el) => el.getAttribute("data-testid"));
     expect(glass()).toEqual(["app-sidebar", "player-bar"]);
-    await fireEvent.click(screen.getByTestId("btn-open-diagnostics"));
-    await screen.findByTestId("accessible-dialog");
-    expect(glass()).toEqual(["app-sidebar", "player-bar", "accessible-dialog"]);
+    await fireEvent.click(screen.getAllByTestId("track-actions-btn")[0]!);
+    await screen.findByTestId("track-actions-menu");
+    expect(glass()).toEqual(["app-sidebar", "player-bar", "track-actions-menu"]);
 
-    // Only the hero wash and the cover shelf leave the page column; track rows never do.
+    // Only the cover shelf leaves the page column; track rows never do. The ambient light is a
+    // window layer outside the scroll container, so pages paint no wash of their own.
     expect(screen.getByTestId("cover-shelf").classList.contains("bleed")).toBe(true);
-    expect(screen.getByTestId("hero-wash").closest(".page-hero")).not.toBeNull();
-    for (const row of screen.getAllByTestId("virtual-track-row")) expect(row.closest(".bleed, .hero-wash")).toBeNull();
+    expect(screen.getByTestId("ambient-light").closest('[data-testid="main-scroll-region"]')).toBeNull();
+    for (const row of screen.getAllByTestId("virtual-track-row")) expect(row.closest(".bleed")).toBeNull();
   });
 });
 
@@ -1245,14 +1323,18 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     commandId: cmd.commandId, op: cmd.op, status: "accepted", acceptedAtMs: 0, observedAtMs: null, deduplicated: false, error: null,
   });
 
+  /** All five rows in queue order; the Played section starts collapsed, so it is opened first. */
   async function queueRows() {
+    await screen.findAllByTestId("virtual-track-row");
+    const played = screen.queryByTestId("queue-played-toggle");
+    if (played?.getAttribute("aria-expanded") === "false") await fireEvent.click(played);
     const rows = await screen.findAllByTestId("virtual-track-row");
     expect(rows).toHaveLength(5);
     return rows;
   }
   const button = (row: HTMLElement, id: string) => within(row).getByTestId(id) as HTMLButtonElement;
 
-  it("keeps clear upcoming disabled while the page refuses clearing, single edits still work", async () => {
+  it("draws no Clear upcoming while the page refuses clearing, single edits still work", async () => {
     const { bridge } = createPreloadBridge({
       snapshot: (s) => {
         const queue = editableQueue(s);
@@ -1261,9 +1343,7 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     });
     renderApp(bridge, "queue");
     const rows = await queueRows();
-    const clear = screen.getByTestId("queue-clear-upcoming") as HTMLButtonElement;
-    expect(clear.disabled).toBe(true);
-    expect(clear.title).toBe(en.queue.clearUnavailable);
+    expect(screen.queryByTestId("queue-clear-upcoming")).toBeNull();
     expect(button(rows[2]!, "queue-remove").disabled).toBe(false);
   });
 
@@ -1319,38 +1399,97 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     });
     await waitFor(() => expect(screen.queryByTestId("queue-row-pending")).toBeNull());
     expect(button(rows[2]!, "queue-remove").disabled).toBe(false);
-    expect(screen.getByTestId("banner-command-error").textContent).toContain("queue changed");
+    expect(screen.getByTestId("toast-command-failed").textContent).toContain("Couldn’t remove that song");
+    expect(screen.getByTestId("toast-command-failed").textContent).not.toContain("queue changed");
   });
 
-  it("disables edits on partial, truncated or unanchored queues and autoplay when unknown", async () => {
-    for (const snap of [
-      (s: AppSnapshot) => editableQueue(s, { completeness: "partial" }),
-      (s: AppSnapshot) => editableQueue(s, { hasMore: null }),
-      (s: AppSnapshot) => editableQueue(s, { loadedCount: 120 }),
-      (s: AppSnapshot) => ({ ...editableQueue(s), player: { ...editableQueue(s).player, trackInstanceId: null, autoplay: null } }),
-    ]) {
+  it("draws no edits on partial or truncated queues, disables them while unanchored, and no autoplay switch while unknown", async () => {
+    // Clearing needs only the anchored current occurrence, not a complete queue (core clears
+    // the loaded upcoming batch), so it stays available on the first three.
+    for (const [snap, clearEnabled, editsDrawn] of [
+      [(s: AppSnapshot) => editableQueue(s, { completeness: "partial" }), true, false],
+      [(s: AppSnapshot) => editableQueue(s, { hasMore: null }), true, false],
+      [(s: AppSnapshot) => editableQueue(s, { loadedCount: 120 }), true, false],
+      [(s: AppSnapshot) => ({ ...editableQueue(s), player: { ...editableQueue(s).player, trackInstanceId: null } }), false, true],
+    ] as const) {
       const { bridge } = createPreloadBridge({ snapshot: snap });
       renderApp(bridge, "queue");
       const rows = await queueRows();
       for (const id of ["queue-move-up", "queue-move-down", "queue-remove"]) {
-        expect(button(rows[3]!, id).disabled).toBe(true);
+        if (editsDrawn) expect(button(rows[3]!, id).disabled).toBe(true);
+        else expect(within(rows[3]!).queryByTestId(id)).toBeNull();
       }
-      expect((screen.getByTestId("queue-clear-upcoming") as HTMLButtonElement).disabled).toBe(true);
-      expect(screen.getByTestId("queue-note").textContent).toMatch(/fully loaded|current track/);
+      expect((screen.getByTestId("queue-clear-upcoming") as HTMLButtonElement).disabled).toBe(!clearEnabled);
+      // No sentence about why: nothing is added to the page above the list.
+      expect(screen.queryByTestId("queue-note")).toBeNull();
+      expect(screen.getByTestId("view-queue").textContent).not.toMatch(/fully loaded|finite|not supported|current track/i);
       cleanup();
     }
     const { bridge } = createPreloadBridge({
       snapshot: (s) => ({ ...editableQueue(s), player: { ...editableQueue(s).player, autoplay: null } }),
     });
     renderApp(bridge, "queue");
-    expect(((await screen.findByTestId("queue-autoplay-toggle")) as HTMLButtonElement).disabled).toBe(true);
+    await queueRows();
+    expect(screen.queryByTestId("queue-autoplay-toggle")).toBeNull();
+    expect(screen.getByTestId("view-queue").textContent).not.toContain("Unknown");
+  });
+
+  it("offers Clear upcoming on an autoplay tail without single edits, gated only on the anchored current track", async () => {
+    // YouTube Music's autoplay tail: a partial queue with more to load; remove/reorder refused.
+    const tail = (s: AppSnapshot): AppSnapshot => {
+      const queue = editableQueue(s, { completeness: "partial", hasMore: true });
+      return { ...queue, capabilities: { ...queue.capabilities, queueRemove: "unsupported", queueReorder: "unsupported" } };
+    };
+    const { bridge } = createPreloadBridge({ snapshot: tail });
+    bridge.sendPlayerCommand.mockImplementation((cmd) => ({ ...accepted(cmd), status: "failed" }) as never);
+    renderApp(bridge, "queue");
+    const rows = await queueRows();
+    expect(within(rows[3]!).queryByTestId("queue-remove")).toBeNull();
+    const clear = screen.getByTestId("queue-clear-upcoming") as HTMLButtonElement;
+    expect(clear.disabled).toBe(false);
+    expect(clear.title).toBe(en.queue.clearHint);
+    expect(screen.queryByTestId("queue-note")).toBeNull();
+    await fireEvent.click(clear);
+    const cmd = bridge.sendPlayerCommand.mock.lastCall![0];
+    expect([cmd.op, cmd.args]).toEqual(["clearUpcoming", { queueEntryId: "qe-cur", queueRevision: 7, trackInstanceId: "ti-q" }]);
+    cleanup();
+
+    for (const unanchored of [
+      // The player is on another occurrence than the queue's current entry.
+      (s: AppSnapshot) => ({ ...tail(s), player: { ...tail(s).player, currentQueueEntryId: "qe-b" } }),
+      // The current entry is not among the loaded entries.
+      (s: AppSnapshot) => {
+        const queue = tail(s);
+        return { ...queue, player: { ...queue.player, currentQueueEntryId: "qe-gone" }, queueSummary: { ...queue.queueSummary, currentEntryId: "qe-gone" } };
+      },
+      (s: AppSnapshot) => ({ ...tail(s), player: { ...tail(s).player, trackInstanceId: null } }),
+    ]) {
+      const next = createPreloadBridge({ snapshot: unanchored });
+      renderApp(next.bridge, "queue");
+      await queueRows();
+      const button = screen.getByTestId("queue-clear-upcoming") as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe(en.queue.editNeedsCurrent);
+      cleanup();
+    }
+
+    // Neither clearing nor single edits: nothing to offer.
+    const none = createPreloadBridge({
+      snapshot: (s) => {
+        const queue = tail(s);
+        return { ...queue, capabilities: { ...queue.capabilities, queueClear: "unsupported" } };
+      },
+    });
+    renderApp(none.bridge, "queue");
+    await queueRows();
+    expect(screen.queryByTestId("queue-clear-upcoming")).toBeNull();
   });
 
   it("disables play without a loaded track but keeps pause available", async () => {
     const fake = new FakeCoreClient("normal");
     const snap = fake.subscribeSnapshot(() => {}).snapshot;
     const overlay = { pendingCount: 0, activeOp: null, desiredPlayback: null, desiredPositionMs: null, desiredVolume: null, lastError: null };
-    const props = { pendingOverlay: overlay, interpolatedPositionMs: 0, onCommand: vi.fn(async () => null), onOpenNowPlaying: () => {}, onOpenLyrics: () => {}, onOpenDiagnostics: () => {} };
+    const props = { pendingOverlay: overlay, interpolatedPositionMs: 0, onCommand: vi.fn(async () => null), onOpenNowPlaying: () => {}, onToggleLyrics: () => {} };
     const { rerender } = render(PlayerBar, { props: { ...props, snapshot: { ...snap, player: { ...snap.player, currentTrack: null, playback: "paused" } } } });
     const play = screen.getByTestId("btn-play-pause") as HTMLButtonElement;
     expect(play.disabled).toBe(true);
@@ -1369,7 +1508,10 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     });
     renderApp(bridge, "settings");
     await fireEvent.click(await screen.findByTestId("settings-clear-cache"));
-    expect((await screen.findByTestId("settings-cache-failed")).textContent).toContain("core busy");
+    const cacheFailed = await screen.findByTestId("settings-cache-failed");
+    expect(cacheFailed.textContent).toContain("Couldn’t clear the cache");
+    expect(cacheFailed.textContent).not.toContain("core busy");
+    expect(cacheFailed.getAttribute("title")).toBe("core busy");
     expect(screen.queryByTestId("settings-cache-cleared")).toBeNull();
     cleanup();
 
@@ -1457,9 +1599,12 @@ describe("Queue editing, play gating, cache clear and album context", () => {
         client: createUiClient({ preloadBridge: autoRetryBridge, connectRetryDelaysMs: [15] }),
       },
     });
-    expect(await screen.findByTestId("banner-connection-error")).toBeTruthy();
-    expect(screen.getByTestId("banner-connection-error").textContent).toContain("daemon handshake not ready");
-    await waitFor(() => expect(screen.queryByTestId("banner-connection-error")).toBeNull());
+    // A sticky toast in plain words; the transport's own message is only its tooltip.
+    const errorDetail = () =>
+      screen.getByTestId("toast-connection-error").querySelector(".toast-text")?.getAttribute("title") ?? "";
+    expect(await screen.findByTestId("toast-connection-error")).toBeTruthy();
+    expect(errorDetail()).toContain("daemon handshake not ready");
+    await waitFor(() => expect(screen.queryByTestId("toast-connection-error")).toBeNull());
     expect(screen.queryByTestId("home-state-loading")).toBeNull();
     expect(attempts).toBe(2);
     cleanup();
@@ -1487,14 +1632,14 @@ describe("Queue editing, play gating, cache clear and album context", () => {
       // Run far past every scheduled retry: the auto-retry stops after its bounded schedule.
       await vi.advanceTimersByTimeAsync(10_000);
       expect(manualAttempts).toBe(1 + retryDelaysMs.length);
-      expect(screen.getByTestId("banner-connection-error").textContent).toContain("sidecar crashed during boot");
+      expect(errorDetail()).toContain("sidecar crashed during boot");
     } finally {
       vi.useRealTimers();
     }
 
     allowManual = true;
     await fireEvent.click(screen.getByTestId("btn-reconnect-core"));
-    await waitFor(() => expect(screen.queryByTestId("banner-connection-error")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("toast-connection-error")).toBeNull());
     expect(screen.queryByTestId("home-state-loading")).toBeNull();
   });
 
@@ -1569,50 +1714,69 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     await fireEvent.input(filter, { target: { value: "" } });
     await fireEvent.click(screen.getByTestId("playlist-picker-load-more"));
     const errBanner = await screen.findByTestId("playlist-picker-more-error");
-    expect(errBanner.textContent).toContain("TIMEOUT");
+    expect(errBanner.textContent).toContain(en.states.requestTimeout);
+    expect(errBanner.textContent).not.toContain("TIMEOUT");
+    expect(errBanner.title).toBe(`TIMEOUT${en.common.colon}${en.transport.timeout}`);
 
     await fireEvent.click(screen.getByTestId("playlist-picker-load-more"));
     await fireEvent.click(await screen.findByTestId("pick-playlist-pl-p2"));
     await fireEvent.click(await screen.findByTestId("confirm-add-to-playlist"));
-    await waitFor(() => expect(screen.getByTestId("banner-mutation").getAttribute("data-tone")).toBe("success"));
+    await waitFor(() => expect(screen.getByTestId("toast-write-done").textContent).toContain("Added to"));
     expect(sendMutation).toHaveBeenLastCalledWith(
       expect.objectContaining({ kind: "addToPlaylist", playlistId: "pl-p2", confirmedByUser: true }),
       "mock-account-epoch-1"
     );
   });
 
+  it("cross-fades a page change inside the scroll region only, never as a document transition that would capture the glass", async () => {
+    // The update runs later, as in Chromium: focus has to follow the new page once it is in.
+    const scoped = vi.fn(function (this: HTMLElement, cb: () => void | Promise<void>) {
+      const updateCallbackDone = new Promise<void>((done) => setTimeout(() => void Promise.resolve(cb()).then(done), 20));
+      return { updateCallbackDone };
+    });
+    const documentWide = vi.fn();
+    const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+    const docRecord = document as unknown as Record<string, unknown>;
+    const origDoc = Object.getOwnPropertyDescriptor(document, "startViewTransition");
+    Object.defineProperty(proto, "startViewTransition", { value: scoped, configurable: true, writable: true });
+    Object.defineProperty(document, "startViewTransition", { value: documentWide, configurable: true, writable: true });
+    try {
+      renderApp(createPreloadBridge().bridge, "home");
+      await screen.findByTestId("view-home");
+      await fireEvent.click(screen.getByTestId("nav-settings"));
+      await screen.findByTestId("view-settings");
+      await waitFor(() => expect(document.activeElement?.id).toBe("settings-heading"));
+      expect(scoped).toHaveBeenCalledTimes(1);
+      expect(scoped.mock.contexts[0]).toBe(screen.getByTestId("main-scroll-region"));
+      expect(documentWide).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(proto, "startViewTransition");
+      if (origDoc) Object.defineProperty(document, "startViewTransition", origDoc);
+      else Reflect.deleteProperty(docRecord, "startViewTransition");
+    }
+  });
+
   it("focuses the search input after async view transitions, without transitions, and under reduced motion", async () => {
-    const origDescriptor = Object.getOwnPropertyDescriptor(document, "startViewTransition");
+    // Page changes start a transition scoped to the scroll region, so the stub lives on elements.
+    const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
     const setStartViewTransition = (fn: ((cb: () => void | Promise<void>) => unknown) | undefined) => {
-      if (fn === undefined) {
-        Object.defineProperty(document, "startViewTransition", {
-          value: undefined,
-          configurable: true,
-          writable: true,
-        });
-        return;
-      }
-      Object.defineProperty(document, "startViewTransition", {
-        value: fn,
-        configurable: true,
-        writable: true,
-      });
+      Object.defineProperty(proto, "startViewTransition", { value: fn, configurable: true, writable: true });
     };
     try {
-      setStartViewTransition(
-        vi.fn((cb: () => void | Promise<void>) => {
-          const updateCallbackDone = new Promise<void>((resolve) => {
-            setTimeout(() => {
-              void Promise.resolve(cb()).then(resolve);
-            }, 20);
-          });
-          return { updateCallbackDone };
-        })
-      );
+      const asyncSpy = vi.fn((cb: () => void | Promise<void>) => {
+        const updateCallbackDone = new Promise<void>((resolve) => {
+          setTimeout(() => {
+            void Promise.resolve(cb()).then(resolve);
+          }, 20);
+        });
+        return { updateCallbackDone };
+      });
+      setStartViewTransition(asyncSpy);
       renderApp(createPreloadBridge().bridge, "home");
       await screen.findByTestId("view-home");
       await fireEvent.keyDown(document.body, { key: "f", ctrlKey: true });
       await waitFor(() => expect(document.activeElement?.id).toBe("ytm-search-input"));
+      expect(asyncSpy).toHaveBeenCalledTimes(1);
       cleanup();
 
       setStartViewTransition(undefined);
@@ -1637,11 +1801,7 @@ describe("Queue editing, play gating, cache clear and album context", () => {
       await waitFor(() => expect(document.activeElement?.id).toBe("ytm-search-input"));
       expect(skippedSpy).not.toHaveBeenCalled();
     } finally {
-      if (origDescriptor) {
-        Object.defineProperty(document, "startViewTransition", origDescriptor);
-      } else {
-        Reflect.deleteProperty(document, "startViewTransition");
-      }
+      Reflect.deleteProperty(proto, "startViewTransition");
     }
   });
 
@@ -1649,20 +1809,23 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     const tracks = createSyntheticTracks(1000, "kb");
     const entryIds = tracks.map((_, idx) => `qe-kb-${idx}`);
     const onPlayTrack = vi.fn();
+    // Rows scroll with the page: render inside the app's scroll container.
+    const main = document.body.appendChild(document.createElement("main"));
+    main.dataset.testid = "main-scroll-region";
+    Object.defineProperty(main, "clientHeight", { value: 480, configurable: true });
     render(VirtualizedTrackList, {
+      target: main,
       props: {
         tracks,
         entryIds,
         mockMode: true,
-        heightPx: 480,
         onPlayTrack,
       },
     });
 
     const list = screen.getByTestId("virtual-track-list");
-    Object.defineProperty(list, "clientHeight", { value: 480, configurable: true });
-    list.scrollTop = 5800;
-    await fireEvent.scroll(list);
+    main.scrollTop = 5800;
+    await fireEvent.scroll(main);
 
     let visibleIdx = -1;
     await waitFor(() => {
@@ -1685,6 +1848,7 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     });
     await fireEvent.click(document.activeElement!);
     expect(onPlayTrack).toHaveBeenCalledWith(tracks[nextIdx], nextIdx, `qe-kb-${nextIdx}`);
+    main.remove();
   });
 
   it("configures Moment DJ sharing in Settings and updates the live principal preview", async () => {
@@ -1724,13 +1888,14 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     }));
     renderApp(bridge, "now-playing");
 
-    const npSlider = (await screen.findByTestId("np-seek-slider")) as HTMLInputElement;
-    const beforePos = screen.getByTestId("np-pos-text").textContent;
-    await fireEvent.input(npSlider, { target: { value: "90000" } });
-    expect(screen.getByTestId("np-pos-text").textContent).toBe("1:30");
-    await fireEvent.change(npSlider, { target: { value: "90000" } });
+    await screen.findByTestId("view-now-playing");
+    const seekSlider = screen.getByTestId("player-seek-slider") as HTMLInputElement;
+    const beforePos = screen.getByTestId("player-pos-text").textContent;
+    await fireEvent.input(seekSlider, { target: { value: "90000" } });
+    expect(screen.getByTestId("player-pos-text").textContent?.trim()).toBe("1:30");
+    await fireEvent.change(seekSlider, { target: { value: "90000" } });
     await waitFor(() => {
-      expect(screen.getByTestId("np-pos-text").textContent).toBe(beforePos);
+      expect(screen.getByTestId("player-pos-text").textContent).toBe(beforePos);
     });
 
     const volSlider = screen.getByTestId("player-volume-slider") as HTMLInputElement;
@@ -1749,5 +1914,165 @@ describe("Queue editing, play gating, cache clear and album context", () => {
       );
     });
     void snapshot;
+  });
+});
+
+describe("Lyrics toggle and return frame", () => {
+  const onView = (name: string) => screen.findByTestId(`view-${name}`);
+  const escape = () => fireEvent.keyDown(document.body, { key: "Escape" });
+  const ctrlL = (target: Element = document.body) => fireEvent.keyDown(target, { key: "l", ctrlKey: true });
+  const focusedRow = () => document.activeElement?.getAttribute("data-row-index");
+
+  it("closes lyrics from the dock or Ctrl+L back to the page it came from, without history ping-pong", async () => {
+    const { bridge } = createPreloadBridge();
+    renderApp(bridge, "home");
+    await onView("home");
+    const dock = screen.getByTestId("btn-open-lyrics");
+    expect(dock.getAttribute("aria-pressed")).toBe("false");
+
+    await fireEvent.click(dock);
+    await onView("lyrics");
+    expect(dock.getAttribute("aria-pressed")).toBe("true");
+    expect(dock.classList.contains("btn-icon-active")).toBe(true);
+    expect(dock.title).toBe(en.nowPlaying.closeLyrics);
+    await fireEvent.click(dock);
+    await onView("home");
+    expect(dock.getAttribute("aria-pressed")).toBe("false");
+    // Closing went back rather than forward: Escape has nowhere left to go.
+    await escape();
+    await onView("home");
+
+    await ctrlL();
+    await onView("lyrics");
+    await ctrlL();
+    await onView("home");
+
+    // Escape closes a toggled lyrics page the same way.
+    await ctrlL();
+    await onView("lyrics");
+    await escape();
+    await onView("home");
+    await escape();
+    await onView("home");
+
+    // The sidebar entry only navigates; the dock then returns to the page before it.
+    await fireEvent.click(screen.getByTestId("nav-search"));
+    await onView("search");
+    await fireEvent.click(screen.getByTestId("nav-lyrics"));
+    await onView("lyrics");
+    await fireEvent.click(screen.getByTestId("nav-lyrics"));
+    await onView("lyrics");
+    await fireEvent.click(dock);
+    await onView("search");
+  });
+
+  it("leaves an initial lyrics page for Now Playing with a track, else Home", async () => {
+    const { bridge } = createPreloadBridge();
+    renderApp(bridge, "lyrics");
+    await onView("lyrics");
+    await fireEvent.click(screen.getByTestId("btn-open-lyrics"));
+    await onView("now-playing");
+    // Replaced, not pushed: Escape does not bring lyrics back.
+    await escape();
+    await onView("now-playing");
+    cleanup();
+
+    const idle = createPreloadBridge({ snapshot: (s) => ({ ...s, player: { ...s.player, currentTrack: null } }) });
+    renderApp(idle.bridge, "lyrics");
+    await onView("lyrics");
+    await ctrlL();
+    await onView("home");
+  });
+
+  it("closes an open track menu on Escape before leaving lyrics, even with focus outside it", async () => {
+    const { bridge } = createPreloadBridge();
+    renderApp(bridge, "home");
+    await onView("home");
+    // A menu opened on Home stays open across Ctrl+L, so it is still open on the lyrics page.
+    await fireEvent.click((await screen.findAllByTestId("track-actions-btn"))[0]!);
+    const dialog = await screen.findByTestId("track-actions-menu");
+    await ctrlL();
+    await onView("lyrics");
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+    (document.activeElement as HTMLElement).blur();
+
+    await escape();
+    await waitFor(() => expect(screen.queryByTestId("track-actions-menu")).toBeNull());
+    expect(screen.getByTestId("view-lyrics")).toBeTruthy();
+    await escape();
+    await onView("home");
+  });
+
+  it("keeps the Queue page's Played section open across lyrics", async () => {
+    const { bridge } = createPreloadBridge({
+      snapshot: (s) => {
+        const previewEntries = createSyntheticTracks(3, "lq").map((track, i) => ({
+          entryId: `lq-${i}`, videoId: track.videoId, track, availability: "available" as const,
+        }));
+        return {
+          ...s,
+          player: { ...s.player, currentQueueEntryId: "lq-1", trackInstanceId: "ti-lq" },
+          queueSummary: { queueRevision: 1, currentEntryId: "lq-1", completeness: "complete", hasMore: false, loadedCount: 3, previewEntries },
+        };
+      },
+    });
+    renderApp(bridge, "queue");
+    const toggle = await screen.findByTestId("queue-played-toggle");
+    await fireEvent.click(toggle);
+    await ctrlL();
+    await onView("lyrics");
+    await ctrlL();
+    await onView("queue");
+    expect(screen.getByTestId("queue-played-toggle").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("puts a list page back where it was scrolled and focused, but not after an account switch", async () => {
+    const { bridge, snapshot, emit } = createPreloadBridge();
+    renderApp(bridge, "liked");
+    await screen.findAllByTestId("virtual-track-row");
+    const main = screen.getByTestId("main-scroll-region");
+    // jsdom has no layout: the list starts 240 px into the page and moves up as the page scrolls.
+    const LIST_TOP = 240;
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const top = this.classList.contains("track-list-body") ? LIST_TOP - main.scrollTop : 0;
+      return DOMRect.fromRect({ x: 0, y: top, width: 800, height: 0 });
+    });
+    const scrolled = LIST_TOP + 5 * 56 + 10;
+
+    async function leaveForLyrics() {
+      main.scrollTop = scrolled;
+      await fireEvent.scroll(main);
+      const list = screen.getByTestId("virtual-track-list");
+      await waitFor(() => expect(list.querySelector('[data-row-index="7"]')).not.toBeNull());
+      const row = list.querySelector<HTMLElement>('[data-row-index="7"]')!;
+      row.focus();
+      await ctrlL(row);
+      await onView("lyrics");
+      // The shorter lyrics page clamps the page scroll.
+      main.scrollTop = 0;
+    }
+
+    try {
+      await leaveForLyrics();
+      await ctrlL();
+      await onView("liked");
+      await waitFor(() => expect(focusedRow()).toBe("7"));
+      expect(main.scrollTop).toBe(scrolled);
+
+      await leaveForLyrics();
+      emit({
+        deltaType: "authChanged",
+        revision: snapshot.revision + 1,
+        auth_state: { ...snapshot.authState, accountEpoch: "acct-2", accountScope: "scope-acct-2" },
+      });
+      await ctrlL();
+      await onView("liked");
+      await screen.findAllByTestId("virtual-track-row");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(main.scrollTop).toBe(0);
+      expect(focusedRow() ?? null).toBeNull();
+    } finally {
+      rect.mockRestore();
+    }
   });
 });

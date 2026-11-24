@@ -3,10 +3,13 @@
   import { untrack } from "svelte";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";
+  import { recentSearches } from "../recent-searches.svelte.js";
+  import CoverShelf from "./CoverShelf.svelte";
+  import { detectCjkLangHint, formatArtists, isPlayable } from "./format.js";
   import Icon from "./Icon.svelte";
   import PageState from "./PageState.svelte";
-  import TileGrid from "./TileGrid.svelte";
-  import VirtualizedTrackList from "./VirtualizedTrackList.svelte";
+  import TileGrid, { type Tile } from "./TileGrid.svelte";
+  import VirtualizedTrackList, { type TrackRowLike, type TrackRowPlayback } from "./VirtualizedTrackList.svelte";
 
   interface Props {
     /** The query of the current results (store key); empty when none. */
@@ -20,9 +23,24 @@
     loadingMore: boolean;
     moreError: QueryError | null;
     currentVideoId: string | null;
+    /** Like toggles for the song rows; pass it only while likes can be written. */
+    like?: TrackRowLike;
+    /** The playing row's indicator. */
+    nowPlaying?: TrackRowPlayback;
     mockMode: boolean;
     /** Search cannot be requested (unsupported or sign-in required): input off, state shown. */
     blocked: boolean;
+    /** The catalog account key; recent searches belong to it. */
+    accountKey: string;
+    /** What was really played lately, for "Jump back in". */
+    recentTracks?: readonly Track[];
+    /** The account's playlists, for "From your library". */
+    libraryPlaylists?: readonly PlaylistSummary[];
+    smoothScroll?: boolean;
+    /** The data behind the start blocks is not loaded (never, or dropped by an invalidation). */
+    startDataMissing?: boolean;
+    /** Asks for the data behind the blocks shown before typing. */
+    onRequestStartData?: () => void;
     onSearch: (query: string) => void;
     onLoadMore: () => void;
     onPlayTrack: (track: Track) => void;
@@ -45,8 +63,16 @@
     loadingMore,
     moreError,
     currentVideoId,
+    like,
+    nowPlaying,
     mockMode,
     blocked,
+    accountKey,
+    recentTracks = [],
+    libraryPlaylists = [],
+    smoothScroll = true,
+    startDataMissing = false,
+    onRequestStartData,
     onSearch,
     onLoadMore,
     onPlayTrack,
@@ -58,7 +84,11 @@
     onOpenOfficialPlayer,
   }: Props = $props();
 
-  let inputValue = $state("");
+  /** "Jump back in" shows at most this many songs. */
+  const JUMP_BACK_LIMIT = 6;
+
+  // Starts from the shown results, so coming back to them does not first show the start blocks.
+  let inputValue = $state(untrack(() => query));
   let isComposing = $state(false);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let inputEl = $state<HTMLInputElement | null>(null);
@@ -73,6 +103,27 @@
     if (debounceTimer) clearTimeout(debounceTimer);
   });
 
+  // A list made by another account (or before a sign-out) is dropped, never shown.
+  $effect(() => {
+    const key = accountKey;
+    untrack(() => recentSearches.sync(key));
+  });
+
+  // The start blocks need Home's data: asked again whenever the account changes or the data is
+  // dropped. Sent after this update settles, so an account change has already cleared the old
+  // account's pages when the request goes out.
+  $effect(() => {
+    void accountKey;
+    void startDataMissing;
+    const request = onRequestStartData;
+    if (blocked || !request) return;
+    queueMicrotask(request);
+  });
+
+  /** Before typing: recent searches, recent plays and the library. Typing swaps in results. */
+  const showStart = $derived(!blocked && inputValue.trim() === "");
+  const recentQueries = $derived(recentSearches.itemsFor(accountKey));
+
   function scheduleSearch(next: string) {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => onSearch(next), 250);
@@ -85,18 +136,60 @@
     inputEl?.focus();
   }
 
+  /** Runs a query now and remembers it: the user asked for exactly this. */
+  function runNow(text: string) {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    onSearch(text);
+    if (!blocked) recentSearches.record(accountKey, text);
+  }
+
+  /** A chip runs its query again; focus goes to the field, as the chips give way to results. */
+  function runRecent(text: string) {
+    inputValue = text;
+    runNow(text);
+    inputEl?.focus();
+  }
+
+  function clearRecent() {
+    recentSearches.clear();
+    inputEl?.focus();
+  }
+
+  /** Acting on a result means the query that found it was worth keeping. */
+  function rememberQuery() {
+    recentSearches.record(accountKey, query);
+  }
+
+  function openAlbum(id: string) {
+    rememberQuery();
+    onOpenAlbum(id);
+  }
+
+  function openArtist(id: string) {
+    rememberQuery();
+    onOpenArtist(id);
+  }
+
+  function openPlaylist(id: string) {
+    rememberQuery();
+    onOpenPlaylist(id);
+  }
+
+  function playResult(track: Track) {
+    rememberQuery();
+    onPlayTrack(track);
+  }
+
   const albumTiles = $derived(
     albums.flatMap((album) => {
       const id = album.id ?? album.browseId;
-      return id
-        ? [{ key: id, title: album.title, testId: `search-album-${id}`, onOpen: () => onOpenAlbum(id) }]
-        : [];
+      return id ? [{ key: id, title: album.title, testId: `search-album-${id}`, onOpen: () => openAlbum(id) }] : [];
     })
   );
   const artistTiles = $derived(
     artists.flatMap((artist) =>
       artist.id
-        ? [{ key: artist.id, title: artist.name, testId: `search-artist-${artist.id}`, onOpen: () => onOpenArtist(artist.id!) }]
+        ? [{ key: artist.id, title: artist.name, testId: `search-artist-${artist.id}`, onOpen: () => openArtist(artist.id!) }]
         : []
     )
   );
@@ -107,27 +200,57 @@
       subtitle: pl.subtitle,
       cover: pl.cover,
       testId: `search-playlist-${pl.playlistId}`,
+      onOpen: () => openPlaylist(pl.playlistId),
+    }))
+  );
+
+  /** Distinct, playable recent songs; choosing one plays it again. */
+  const jumpTiles = $derived.by(() => {
+    const seen = new Set<string>();
+    const out: Tile[] = [];
+    for (const track of recentTracks) {
+      if (out.length >= JUMP_BACK_LIMIT) break;
+      if (seen.has(track.videoId) || !isPlayable(track)) continue;
+      seen.add(track.videoId);
+      out.push({
+        key: track.videoId,
+        title: track.title,
+        subtitle: track.artists?.length ? formatArtists(track) : null,
+        cover: track.cover,
+        label: t.track.playTitle.replace("{title}", track.title),
+        testId: `search-jump-${track.videoId}`,
+        onOpen: () => onPlayTrack(track),
+      });
+    }
+    return out;
+  });
+  const libraryTiles = $derived(
+    libraryPlaylists.map((pl) => ({
+      key: pl.playlistId,
+      title: pl.title,
+      subtitle: pl.subtitle ?? (pl.trackCount != null ? t.common.trackCount.replace("{count}", String(pl.trackCount)) : null),
+      cover: pl.cover,
+      testId: `search-library-${pl.playlistId}`,
       onOpen: () => onOpenPlaylist(pl.playlistId),
     }))
   );
 </script>
 
-<section class="flex flex-col gap-5" aria-labelledby="search-heading" data-testid="view-search">
-  <h1 id="search-heading" class="type-xl font-bold tracking-tight">{t.search.title}</h1>
+<section class="browse-page" aria-labelledby="search-heading" data-testid="view-search">
+  <header class="browse-head page-hero">
+    <h1 id="search-heading" class="browse-title">{t.search.title}</h1>
+  </header>
 
   <form
-    class="flex flex-wrap items-center gap-3"
+    class="search-form"
     role="search"
     onsubmit={(e) => {
       e.preventDefault();
-      if (!isComposing) {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        onSearch(inputValue);
-      }
+      if (!isComposing) runNow(inputValue);
     }}
   >
-    <div class="search-field surface-rounded-md">
-      <Icon name="search" style="color: var(--text-muted);" />
+    <div class="search-field search-bar">
+      <Icon name="search" style="color: var(--text-secondary);" />
       <input
         bind:this={inputEl}
         id="ytm-search-input"
@@ -136,7 +259,8 @@
         disabled={blocked}
         placeholder={t.search.placeholder}
         aria-label={t.search.inputLabel}
-        class="type-sm"
+        aria-keyshortcuts="Control+F"
+        class="type-base"
         oncompositionstart={() => {
           isComposing = true;
         }}
@@ -162,62 +286,78 @@
         >
           <Icon name="close" />
         </button>
+      {:else if !blocked}
+        <span class="search-bar-hint" aria-hidden="true">{t.search.shortcutHint}</span>
       {/if}
     </div>
-    {#if isComposing}
-      <span class="chip type-xs">{t.search.imeComposingHint}</span>
-    {/if}
   </form>
 
-  {#if !query && !blocked}
-    <div class="state-block">
-      <Icon name="search" class="w-9 h-9" style="color: var(--text-muted);" />
-      <p class="type-sm m-0" style="color: var(--text-primary);">{t.search.promptEmpty}</p>
-      <p class="type-xs m-0" style="color: var(--text-muted);">{t.search.shortcutsTip}</p>
-    </div>
-  {:else}
-    <PageState {view} name="search" emptyText={t.search.noResults} {onRetry} {onOpenOfficialPlayer}>
-      <TileGrid heading={t.search.artists} tiles={artistTiles} {mockMode} round />
-      <TileGrid heading={t.search.albums} tiles={albumTiles} {mockMode} />
-      <TileGrid heading={t.search.playlists} tiles={playlistTiles} {mockMode} />
-
-      {#if songs.length > 0}
-        <div class="flex flex-col gap-3">
-          <div class="flex items-baseline justify-between gap-3">
-            <h2 class="type-lg font-semibold">{t.search.songs}</h2>
-            <span class="type-xs tabular-nums" style="color: var(--text-secondary);">
-              {t.search.resultCount.replace("{count}", String(songs.length))}
-            </span>
+  <div class="search-stage">
+    <div class="search-pane browse-page" class:is-active={showStart} inert={!showStart} data-testid="search-start">
+      {#if recentQueries.length > 0}
+        <div class="browse-block" data-testid="search-recent">
+          <div class="browse-block-head">
+            <h2 class="type-lg font-semibold">{t.search.recentSearches}</h2>
+            <button
+              type="button"
+              class="btn-ghost"
+              aria-label={t.search.clearRecent}
+              onclick={clearRecent}
+              data-testid="search-recent-clear"
+            >
+              {t.common.clear}
+            </button>
           </div>
-          <VirtualizedTrackList
-            tracks={songs}
-            {currentVideoId}
-            {mockMode}
-            showHeader
-            ariaLabel={t.search.songs}
-            onPlayTrack={(track) => onPlayTrack(track)}
-            onTrackActions={(track) => onTrackActions(track)}
-          />
-          {#if moreError}
-            <div role="alert" class="type-sm" style="color: var(--status-danger);">
-              [{moreError.code}] {moreError.safeMessage}
-            </div>
-          {/if}
-          {#if hasMore}
-            <div class="flex justify-center">
+          <div class="recent-search-chips">
+            {#each recentQueries as text (text)}
               <button
                 type="button"
-                class="btn-secondary"
-                disabled={loadingMore}
-                onclick={onLoadMore}
-                data-testid="search-load-more"
+                class="chip"
+                lang={detectCjkLangHint(text)}
+                onclick={() => runRecent(text)}
+                data-testid="search-recent-chip"
               >
-                {loadingMore ? t.common.loadingMore : t.common.loadMore}
+                <Icon name="clock" class="w-3.5 h-3.5" />{text}
               </button>
-            </div>
-          {/if}
+            {/each}
+          </div>
         </div>
       {/if}
-    </PageState>
-  {/if}
+      <TileGrid heading={t.search.jumpBackIn} tiles={jumpTiles} {mockMode} maxThree />
+      <CoverShelf heading={t.search.fromLibrary} tiles={libraryTiles} {mockMode} {smoothScroll} />
+    </div>
+
+    <div class="search-pane browse-page" class:is-active={!showStart} inert={showStart} data-testid="search-results">
+      {#if query || blocked}
+        <PageState {view} name="search" emptyText={t.search.noResults} {onRetry} {onOpenOfficialPlayer}>
+          <TileGrid heading={t.search.artists} tiles={artistTiles} {mockMode} round />
+          <TileGrid heading={t.search.albums} tiles={albumTiles} {mockMode} />
+          <TileGrid heading={t.search.playlists} tiles={playlistTiles} {mockMode} />
+
+          {#if songs.length > 0}
+            <div class="browse-block">
+              <div class="browse-block-head">
+                <h2 class="type-lg font-semibold">{t.search.songs}</h2>
+              </div>
+              <VirtualizedTrackList
+                tracks={songs}
+                {currentVideoId}
+                {mockMode}
+                showHeader
+                ariaLabel={t.search.songs}
+                onPlayTrack={(track) => playResult(track)}
+                onTrackActions={(track) => onTrackActions(track)}
+                {like}
+                {nowPlaying}
+                {hasMore}
+                {loadingMore}
+                moreFailed={moreError !== null}
+                {onLoadMore}
+              />
+            </div>
+          {/if}
+        </PageState>
+      {/if}
+    </div>
+  </div>
 </section>

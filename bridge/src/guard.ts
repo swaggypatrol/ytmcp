@@ -27,6 +27,7 @@ const VALID_PLAYER_OPS: ReadonlySet<string> = new Set<PlayerOp>([
   "setShuffle",
   "setRepeat",
   "setAutoplay",
+  "setQueueFilter",
   "enqueue",
   "selectQueueEntry",
   "removeQueueEntry",
@@ -185,6 +186,9 @@ function validateCommandArgs(args: Record<string, unknown>): string | null {
   }
   if (present(args.shuffle) && typeof args.shuffle !== "boolean") return "shuffle must be a boolean";
   if (present(args.autoplay) && typeof args.autoplay !== "boolean") return "autoplay must be a boolean";
+  if (present(args.queueFilterId) && (typeof args.queueFilterId !== "string" || args.queueFilterId.length === 0 || args.queueFilterId.length > 64)) {
+    return "queueFilterId must be a valid filter identifier";
+  }
   if (present(args.repeat) && (typeof args.repeat !== "string" || !VALID_REPEAT_MODES.has(args.repeat))) {
     return "repeat must be off | all | one";
   }

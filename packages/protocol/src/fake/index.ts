@@ -1,4 +1,5 @@
 import type {
+  AccountEpoch,
   AppSettings,
   AppSettingsPatch,
   AppSnapshot,
@@ -10,9 +11,13 @@ import type {
   LyricsResult,
   MomentDesktopRequest,
   MomentDesktopSnapshot,
+  MutationRequest,
+  MutationResult,
   OwnerMomentConfig,
   PlayerCommandPayload,
   PlaylistSummary,
+  PlayerObservedState,
+  QueryErrorCode,
   QueueEntry,
   StateDelta,
   Track,
@@ -85,6 +90,18 @@ export const CALIBRATED_LRC_FIXTURE: LyricsResult = {
   error: null,
 };
 
+/** Synthetic metadata for the second mock track, used to exercise the audio-quality label. */
+const SECOND_TRACK_AUDIO = {
+  audioQuality: "high",
+  audioBitrateKbps: 192,
+  codec: "mp4a.40.2",
+} satisfies Partial<PlayerObservedState>;
+const UNKNOWN_MOCK_AUDIO = {
+  audioQuality: null,
+  audioBitrateKbps: null,
+  codec: "UNKNOWN (Mock)",
+} satisfies Partial<PlayerObservedState>;
+
 export class FakeCoreClient {
   private snapshot: AppSnapshot;
   private listeners = new Set<DeltaListener>();
@@ -92,6 +109,7 @@ export class FakeCoreClient {
   private scenario: FakeScenario;
   private playlists: PlaylistSummary[];
   private tracks10k: Track[];
+  private likedVideoIds: Set<string>;
   private injectGapNext = false;
   private momentConfig: OwnerMomentConfig = {
     configRevision: 0,
@@ -109,6 +127,7 @@ export class FakeCoreClient {
   constructor(scenario: FakeScenario = "normal") {
     this.scenario = scenario;
     this.tracks10k = createSyntheticTracks(10_000, "mock");
+    this.likedVideoIds = new Set(this.tracks10k.filter((track) => track.isLiked).map((track) => track.videoId));
     this.playlists = [
       {
         playlistId: "mock-pl-favorites",
@@ -184,7 +203,7 @@ export class FakeCoreClient {
         muted: false,
         shuffle: false,
         repeat: "off",
-        codec: "UNKNOWN (Mock)",
+        ...UNKNOWN_MOCK_AUDIO,
         audioMode: "Mock Fixture",
         qualityLabel: "UNKNOWN",
         drmProtected: null,
@@ -205,6 +224,18 @@ export class FakeCoreClient {
         completeness: scenario === "empty" ? "unknown" : "partial",
         hasMore: scenario !== "empty",
         previewEntries: scenario === "empty" ? [] : queueEntries,
+        previewStart: 0,
+        // YouTube Music's own continuation after the explicit list, as the page reports it.
+        officialUpcoming:
+          scenario === "empty" ? null : { status: "observed", tracks: this.tracks10k.slice(20, 28) },
+        filters:
+          scenario === "empty"
+            ? null
+            : ["All", "Familiar", "Discover", "Popular"].map((label, i) => ({
+                filterId: `qf-mock-${i}`,
+                label,
+                selected: i === 0,
+              })),
       },
       capabilities: {
         playPause: scenario === "unsupported" ? "unsupported" : "supported",
@@ -225,7 +256,7 @@ export class FakeCoreClient {
         artistDetail: "supported",
         likedSongs: "supported",
         personalizedHome: "unsupported",
-        likeMutation: "unsupported",
+        likeMutation: scenario === "normal" || scenario === "indeterminateNext" ? "supported" : "unsupported",
         playlistAddMutation: "unsupported",
         lyricsLrclib: "unsupported",
         mpris: "unsupported",
@@ -367,6 +398,7 @@ export class FakeCoreClient {
       const idx = cmd.op === "next" ? 1 : 0;
       const track = this.tracks10k[idx]!;
       p.currentTrack = track;
+      Object.assign(p, idx === 1 ? SECOND_TRACK_AUDIO : UNKNOWN_MOCK_AUDIO);
       p.trackInstanceId = `ti-mock-${Date.now()}`;
       p.timeAnchor.positionMs = 0;
       p.timeAnchor.durationMs = track.durationMs ?? null;
@@ -420,6 +452,76 @@ export class FakeCoreClient {
     return structuredClone(next);
   }
 
+  /** Applies a confirmed change to the mock account and publishes the affected projections. */
+  public sendMutation(req: MutationRequest, accountEpoch: AccountEpoch | null): MutationResult {
+    const reject = (code: QueryErrorCode, safeMessage: string): MutationResult => ({
+      kind: req.kind, outcome: "rejected", error: { code, safeMessage, retriable: false },
+    });
+    if (!req.confirmedByUser || accountEpoch === null) {
+      return reject("INVALID_PAYLOAD", "Mock account writes require confirmation and an account epoch");
+    }
+    const { authState, capabilities, networkState } = this.snapshot;
+    if (authState.state === "expired") return reject("AUTH_EXPIRED", "Mock auth expired");
+    if (accountEpoch !== authState.accountEpoch || !authState.playerCatalogMatched) {
+      return reject("ACCOUNT_MISMATCH", "Mock account does not match");
+    }
+    if (networkState === "offline") return reject("NETWORK_OFFLINE", "Mock account is offline");
+    if (req.kind !== "setLike" || capabilities.likeMutation !== "supported") {
+      return reject("UNSUPPORTED_CAPABILITY", "Mock account does not support this write");
+    }
+    const liked = req.liked;
+    if (liked == null) return reject("INVALID_PAYLOAD", "Mock like requires a rating");
+    const index = this.tracks10k.findIndex((track) => track.videoId === req.videoId);
+    if (index < 0) return reject("UNAVAILABLE_TRACK", "Mock track does not exist");
+
+    if (liked !== this.likedVideoIds.has(req.videoId)) {
+      if (liked) this.likedVideoIds.add(req.videoId);
+      else this.likedVideoIds.delete(req.videoId);
+      const track = { ...this.tracks10k[index]!, isLiked: liked };
+      this.tracks10k[index] = track;
+      this.publishTrackRating(track);
+      this.emit({ deltaType: "resourceInvalidated", resource_kind: "likedSongs", revision: ++this.snapshot.revision });
+    }
+    return { kind: req.kind, outcome: "confirmed", error: null };
+  }
+
+  private publishTrackRating(track: Track): void {
+    const { player, pending, queueSummary } = this.snapshot;
+    const isRatedTrack = ({ videoId }: { videoId: string }) => videoId === track.videoId;
+    if (player.currentTrack && isRatedTrack(player.currentTrack)) {
+      player.currentTrack = track;
+      this.emit({ deltaType: "playerChanged", player, pending, revision: ++this.snapshot.revision });
+    }
+    const official = queueSummary.officialUpcoming;
+    const preview = queueSummary.previewEntries;
+    if (preview?.some(isRatedTrack) || official?.tracks?.some(isRatedTrack)) {
+      const queue = {
+        ...queueSummary,
+        previewEntries: preview?.map((entry) => isRatedTrack(entry) ? { ...entry, track } : entry),
+        officialUpcoming: official?.tracks
+          ? { ...official, tracks: official.tracks.map((item) => isRatedTrack(item) ? track : item) }
+          : official,
+      };
+      this.snapshot.queueSummary = queue;
+      this.emit({ deltaType: "queueReplaced", queue_summary: queue, revision: ++this.snapshot.revision });
+    }
+  }
+
+  /** The cursor follows fixture order, so liking or unliking earlier songs keeps the next page stable. */
+  private likedPage(offset: number, limit: number): { items: Track[]; nextCursor: string | null } {
+    const items: Track[] = [];
+    let resumeAt = offset;
+    if (this.scenario === "empty") return { items, nextCursor: null };
+    for (let index = offset; index < this.tracks10k.length; index++) {
+      const track = this.tracks10k[index]!;
+      if (!this.likedVideoIds.has(track.videoId)) continue;
+      if (items.length === limit) return { items, nextCursor: String(resumeAt) };
+      items.push(track);
+      resumeAt = index + 1;
+    }
+    return { items, nextCursor: null };
+  }
+
   public queryCatalog(req: CatalogQueryRequest): CatalogResponsePayload {
     if (this.scenario === "authExpired") {
       return {
@@ -432,8 +534,8 @@ export class FakeCoreClient {
       };
     }
     const freshness = this.scenario === "offlineCached" ? "stale" : "fresh";
-    const limit = Math.min(req.limit ?? 50, 100);
-    const offset = req.cursor ? Number.parseInt(req.cursor, 10) || 0 : 0;
+    const limit = Math.max(1, Math.min(req.limit ?? 50, 100));
+    const offset = req.cursor ? Math.max(0, Number.parseInt(req.cursor, 10) || 0) : 0;
 
     switch (req.kind) {
       case "home":
@@ -528,8 +630,7 @@ export class FakeCoreClient {
       case "likedSongs":
         return {
           resultType: "likedSongs",
-          items: this.tracks10k.slice(0, 25),
-          nextCursor: null,
+          ...this.likedPage(offset, limit),
           freshness,
           fetchedAtMs: Date.now(),
           accountScope: "mock-scope",

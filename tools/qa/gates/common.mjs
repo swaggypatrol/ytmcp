@@ -81,26 +81,49 @@ export async function waitCatalog(app, since, resultType, timeoutMs = 25_000) {
   return ev?.catalog ?? null;
 }
 
-/** The song-search answer (or its error), ignoring other views' responses such as the home feed. */
-export async function waitSearchResult(app, since, timeoutMs = 25_000) {
-  const ev = await app.waitForEvent(
-    (e) => e.type === "core->ui" && ((e.kind === "core.catalogResponse" && ["searchSongs", "error"].includes(e.catalog?.resultType)) || e.kind === "core.error"),
-    { since, timeoutMs }
-  );
-  if (!ev) return null;
-  return ev.kind === "core.error" ? { resultType: "error", error: ev.error ?? null } : ev.catalog;
+/** Correlates a first-page or continuation request with its own core reply. */
+export async function catalogPage(app, { since, kind, playlistId = null, cursorId = null, query = null, tail = null, timeoutMs = 25_000 }) {
+  const matches = (e) => e.kind === "ui.catalogQuery" && e.query?.kind === kind &&
+    e.query.playlistId === playlistId && e.query.cursorId === cursorId && e.query.cursor === (cursorId !== null) &&
+    (query === null || e.query.q === query);
+  let scrolledToTail = false;
+  let request;
+  if (tail) {
+    // Short pages can request their continuation before the harness sees the reply.
+    request = (await app.waitFor(async () => {
+      const sent = (await app.events(since, ["ui->host"])).find(matches);
+      if (sent) return sent;
+      if (!scrolledToTail) scrolledToTail = await app.scrollIntoView(tail, "end");
+      return null;
+    }, { timeoutMs: 8_000 })).value;
+  } else {
+    request = await app.waitForEvent(matches, { since, types: ["ui->host"], timeoutMs: 8_000 });
+  }
+  const reply = request?.requestId ? await app.waitForEvent((e) =>
+    e.requestId === request.requestId && ["core.catalogResponse", "core.error"].includes(e.kind),
+  { since, types: ["core->ui"], timeoutMs }) : null;
+  return { request, reply, page: reply?.catalog ?? null, scrolledToTail };
 }
 
-/** Searches through the real search box (value + input event, then Enter-equivalent submit). */
-export async function uiSearch(app, query) {
+/** Starts from the earlier reply so an automatic continuation can already be in the log. */
+export function nextCatalogPage(app, previous, { kind, playlistId = null, tail, timeoutMs }) {
+  return catalogPage(app, {
+    since: previous.reply.seq, kind, playlistId, cursorId: previous.page.nextCursorId, tail, timeoutMs,
+  });
+}
+
+/** Searches through the real search box and correlates the exact query's typed reply. */
+export async function uiSearch(app, query, timeoutMs = 25_000) {
   await navigate(app, "search");
   const since = (await app.state()).seq;
   const set = await app.setInput('[data-testid="search-input"]', query, { change: false });
-  const q = await app.waitForEvent((e) => e.type === "ui->host" && e.kind === "ui.catalogQuery" && e.query?.kind === "searchSongs", { since, timeoutMs: 6000 });
-  const resp = await waitSearchResult(app, since);
+  const { request, reply, page } = set.set
+    ? await catalogPage(app, { since, kind: "searchSongs", query: query.trim(), timeoutMs })
+    : {};
+  const response = page ?? (reply?.kind === "core.error" ? { resultType: "error", error: reply.error ?? null } : null);
   await sleep(500);
   const rows = await app.evalMain(`document.querySelectorAll('[data-testid="view-search"] [data-testid="virtual-track-row"]').length`);
-  return { set, querySent: Boolean(q), queryAck: q?.ack ?? null, response: resp, renderedRows: rows };
+  return { set, querySent: Boolean(request), queryAck: request?.ack ?? null, response, renderedRows: rows };
 }
 
 export function sinceSeq(app) {

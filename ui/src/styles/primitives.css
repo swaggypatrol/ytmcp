@@ -1,0 +1,123 @@
+/* Icons, the scrub bar and rounded surfaces. */
+
+/* ---- Icons and sliders -------------------------------------------------------------------- */
+
+/* Glass Music Icons (see lib/icons/README.md): stroke and fill come from the <svg> attributes,
+   never from CSS, so per-element overrides in a glyph keep working. --icon-ink is set by glass
+   surfaces; elsewhere icons take the text colour. */
+.icon {
+  width: 1.25em;
+  height: 1.25em;
+  flex: none;
+  color: var(--icon-ink, currentColor);
+}
+
+/* ---- Scrub bar -------------------------------------------------------------------------------
+   Seek and volume (ScrubBar.svelte): a flat rounded bar with no thumb, drawn from the text colour
+   of whatever it sits on: the colour itself up to the value, a lighter grey up to what has loaded,
+   a dark grey track for the rest. A transparent native range input on top does all the
+   interaction: its hit area is 20 px tall while the bar stays 4 px, and grows to 6 px (a scale,
+   not a relayout) only while pressed. Keyboard focus rings the bar (motion-a11y.css). */
+.scrub {
+  position: relative;
+  height: 20px;
+  min-width: 40px;
+}
+.scrub-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  overflow: hidden;
+  background: color-mix(in oklch, var(--text-primary) 16%, transparent);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+.scrub.is-pressed .scrub-track {
+  transform: translateY(-50%) scaleY(1.5);
+}
+.scrub-buffered,
+.scrub-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: inherit;
+}
+.scrub-buffered {
+  width: var(--buffered);
+  background: color-mix(in oklch, var(--text-primary) 30%, transparent);
+}
+.scrub-fill {
+  width: var(--fill);
+  background: var(--text-primary);
+}
+.scrub.is-disabled {
+  opacity: 0.45;
+}
+.scrub-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+}
+/* A hairline thumb keeps the input's value mapping linear across the whole bar. */
+.scrub-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 1px;
+  height: 100%;
+}
+.scrub-input:disabled {
+  cursor: not-allowed;
+}
+:root[data-reduce-motion="true"] .scrub.is-pressed .scrub-track {
+  transform: translateY(-50%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .scrub.is-pressed .scrub-track {
+    transform: translateY(-50%);
+  }
+}
+/* Forced colours: the system draws the native control instead. */
+@media (forced-colors: active) {
+  .scrub-track {
+    display: none;
+  }
+  .scrub-input {
+    opacity: 1;
+    appearance: auto;
+  }
+  .scrub.is-disabled {
+    opacity: 1;
+  }
+}
+
+/* Feature-detected corner-shape with standard rounded-corner fallback */
+.surface-rounded-md {
+  border-radius: var(--radius-md);
+}
+.surface-rounded-lg {
+  border-radius: var(--radius-lg);
+}
+.surface-rounded-xl {
+  border-radius: var(--radius-xl);
+}
+
+@supports (corner-shape: squircle) {
+  .surface-rounded-md {
+    corner-shape: squircle;
+  }
+  .surface-rounded-lg {
+    corner-shape: squircle;
+  }
+  .surface-rounded-xl {
+    corner-shape: squircle;
+  }
+}

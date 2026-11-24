@@ -264,9 +264,7 @@ try {
         await app.call("winop", { target: "main", op: "show" });
         const lib = await libraryPagingCheck(app);
         add("g4", lib.check, { libraryPaging: lib.measured });
-        const evs = await app.events(0);
-        const libEv = evs.filter((e) => e.catalog?.resultType === "libraryPlaylists").at(0)?.catalog;
-        const pl = await playlistPagingCheck(app, libEv?.ids ?? [], libEv?.counts ?? []);
+        const pl = await playlistPagingCheck(app, lib.ids1, lib.counts1);
         add("g4", pl.check, { playlistPaging: pl.measured });
         add("g4", await accountConsistencyCheck(app));
         const g5 = await g5Checks(app);

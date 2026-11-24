@@ -1,7 +1,11 @@
 // Live T09 bridge probe against music.youtube.com with the app's real (already logged-in)
 // profile. Audio goes to a temporary PipeWire/Pulse null sink, never to the speakers.
 //
-//   YTMCP_ALLOW_LIVE=1 node tools/probes/bridge/run-live-bridge-probe.mjs
+//   YTMCP_ALLOW_LIVE=1 node tools/probes/bridge/run-live-bridge-probe.mjs [--entry queue-future|queue-tune]
+//
+// `--entry queue-future` runs the read-only look at the page's queue future instead
+// (live-queue-future-entry.mjs); `--entry queue-tune` clicks Up Next filters during playback
+// (live-queue-tune-entry.mjs) and changes only the session's play queue.
 //
 // It bundles the committed desktop shell, so it exercises the production path: the bridge in
 // isolated world 1001 and only the page shim in the main world (see docs/architecture.md).
@@ -22,7 +26,19 @@ const electronBin = resolve(desktop, "node_modules/.bin/electron");
 const daemonBin = process.env.YTMCP_DAEMON_BIN || resolve(repoRoot, "target/release/ytm-daemon");
 const bridgeDist = resolve(repoRoot, "bridge/dist");
 const reportDir = resolve(repoRoot, "artifacts/live/bridge");
-const reportPath = resolve(reportDir, "t09-live-isolated-world.json");
+const entryArg = process.argv.indexOf("--entry");
+const entryName = entryArg >= 0 ? process.argv[entryArg + 1] : "t09";
+const ENTRIES = {
+  t09: ["live-bridge-entry.mjs", "t09-live-isolated-world.json"],
+  "queue-future": ["live-queue-future-entry.mjs", "queue-future.json"],
+  "queue-tune": ["live-queue-tune-entry.mjs", "queue-tune.json"],
+};
+if (!ENTRIES[entryName]) {
+  console.error(`Unknown --entry ${entryName}; expected one of ${Object.keys(ENTRIES).join(", ")}`);
+  process.exit(2);
+}
+const [entryFile, reportFile_] = ENTRIES[entryName];
+const reportPath = resolve(reportDir, reportFile_);
 
 for (const [what, path] of [
   ["electron", electronBin],
@@ -65,7 +81,7 @@ try {
   }
   nullModule = load.stdout.trim();
 
-  const res = spawnSync(electronBin, [resolve(import.meta.dirname, "live-bridge-entry.mjs")], {
+  const res = spawnSync(electronBin, [resolve(import.meta.dirname, entryFile)], {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -77,6 +93,7 @@ try {
       YTMCP_LIVE_MAIN_MODULE: join(distDir, "main.mjs"),
       YTMCP_LIVE_HOST_MODULE: join(distDir, "rust-host.mjs"),
       YTMCP_LIVE_MODE: "isolated-world",
+      YTMCP_LIVE_TUNE_VIA: process.env.YTMCP_LIVE_TUNE_VIA ?? "",
       YTMCP_LIVE_REPORT: join(tempRoot, "report.json"),
     },
     encoding: "utf8",

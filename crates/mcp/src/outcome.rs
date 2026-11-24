@@ -6,8 +6,9 @@ use rmcp::model::JsonObject;
 use ytm_control_api::{
     AccountHandoffState, ControlError, ControlResponse, DjCue, DjPreferenceStance,
     DjPreferenceSubject, DjTrack, DjTrackOutcome, ErrorCode, InterruptResumeState, ItemPhase,
-    ListeningIntentBasis, ListeningIntentInstruction, ListeningIntentScope, MomentSectionStatus,
-    MomentView, OperationPhase, OperationReceipt, OperationResource, RetryDisposition,
+    ListenerAction, ListenerProfile, ListeningIntentBasis, ListeningIntentInstruction,
+    ListeningIntentScope, MomentSectionStatus, MomentView, OperationPhase, OperationReceipt,
+    OperationResource, ProfileSample, RetryDisposition, Script, UpcomingStatus,
 };
 
 use crate::MusicTool;
@@ -355,7 +356,9 @@ pub fn cue_text(cue: &DjCue) -> String {
             track_label(&now.track)
         ));
     }
-    lines.push(if cue.up_next.is_empty() {
+    lines.push(if cue.upcoming == UpcomingStatus::Unknown {
+        "Up next: not known right now.".to_owned()
+    } else if cue.up_next.is_empty() {
         "Up next: nothing queued.".to_owned()
     } else {
         let next: Vec<_> = cue.up_next.iter().take(5).map(track_label).collect();
@@ -366,6 +369,14 @@ pub fn cue_text(cue: &DjCue) -> String {
         };
         format!("Up next: {}{more}.", next.join("; "))
     });
+    if let Some(official) = &cue.official_up_next {
+        lines.push(official_text(
+            official.status,
+            &official.tracks,
+            official.more,
+            official.filter.as_deref(),
+        ));
+    }
     if !cue.recent.is_empty() {
         let recent: Vec<_> = cue
             .recent
@@ -387,6 +398,10 @@ pub fn cue_text(cue: &DjCue) -> String {
         Some(ms) => format!("The listener has been quiet for {}.", minutes(ms)),
         None => "The listener has not done or said anything yet.".to_owned(),
     });
+    lines.extend(listener_actions_text(
+        &cue.listener.recent_actions,
+        cue.listener.actions_omitted,
+    ));
     if cue.preferences_unavailable {
         lines.push(
             "Recorded tastes: unavailable right now; keep any previously known tastes.".to_owned(),
@@ -570,6 +585,321 @@ fn expires_in(expires_at_ms: u64) -> String {
         (0, m) => format!("ends in {m} min"),
         (h, 0) => format!("ends in {h} h"),
         (h, m) => format!("ends in {h} h {m} min"),
+    }
+}
+
+/// One compact line on what YouTube Music plays on its own after the queued tracks, naming at
+/// most three suggestions; `more` says more are loaded than `tracks` holds, so observed
+/// suggestions cut to none by a zero limit still read as suggestions.
+pub fn official_text(
+    status: impl serde::Serialize,
+    tracks: &[DjTrack],
+    more: bool,
+    filter: Option<&str>,
+) -> String {
+    const NAMED: usize = 3;
+    let status = serde_json::to_value(status).unwrap_or_default();
+    let filter = filter
+        .map(|label| format!(" (filter: {label})"))
+        .unwrap_or_default();
+    let what = match status.as_str() {
+        Some("observed") if !tracks.is_empty() => {
+            let named: Vec<_> = tracks.iter().take(NAMED).map(track_label).collect();
+            let more = if more || tracks.len() > NAMED {
+                " and more"
+            } else {
+                ""
+            };
+            format!("{}{more}{filter}", named.join("; "))
+        }
+        Some("observed") if more => format!("its own suggestions (not listed){filter}"),
+        Some("off") => "autoplay is off".to_owned(),
+        Some("radio") => "a radio that refills itself".to_owned(),
+        Some("loading") => "loading".to_owned(),
+        _ => "no suggestions loaded".to_owned(),
+    };
+    format!("Then YouTube Music: {what}.")
+}
+
+/// Listener actions a text line names; the rest are counted as "and N more".
+const ACTIONS_NAMED: usize = 6;
+
+/// One line on what the listener did by hand, newest first, naming at most [`ACTIONS_NAMED`];
+/// `omitted` counts older actions the reply itself left out. `None` when there are none.
+pub fn listener_actions_text(actions: &[ListenerAction], omitted: u32) -> Option<String> {
+    if actions.is_empty() && omitted == 0 {
+        return None;
+    }
+    let named: Vec<_> = actions
+        .iter()
+        .take(ACTIONS_NAMED)
+        .map(action_words)
+        .collect();
+    let more = u32::try_from(actions.len().saturating_sub(named.len()))
+        .unwrap_or(u32::MAX)
+        .saturating_add(omitted);
+    let tail = match (named.is_empty(), more) {
+        (_, 0) => String::new(),
+        (true, more) => format!("{more} actions"),
+        (false, more) => format!("; and {more} more"),
+    };
+    Some(format!(
+        "The listener's own actions, newest first: {}{tail}.",
+        named.join("; ")
+    ))
+}
+
+/// One action in plain words, with the facts that matter and how long ago when over a minute.
+fn action_words(action: &ListenerAction) -> String {
+    use ytm_control_api::ListenerActionKind as Kind;
+    let playing = action
+        .during
+        .as_ref()
+        .map(|track| format!("\"{}\"", one_line(&track.title)));
+    let at = action.position_ms.map(position);
+    // Without a subject the player cannot name the track yet, so it is "a track", with what was
+    // playing then.
+    let about = action
+        .subject
+        .as_ref()
+        .map(quoted)
+        .unwrap_or_else(|| "a track".to_owned());
+    let unknown_subject = match (&action.subject, &playing) {
+        (None, Some(track)) => format!(" while {track} played"),
+        _ => String::new(),
+    };
+    let value = action.value.as_deref().map(one_line);
+    let words = match action.action {
+        Kind::Play => match &playing {
+            Some(track) => format!("pressed play on {track}"),
+            None => "pressed play".to_owned(),
+        },
+        Kind::Pause => match (&playing, &at) {
+            (Some(track), Some(at)) => format!("paused {track} at {at}"),
+            (Some(track), None) => format!("paused {track}"),
+            _ => "paused".to_owned(),
+        },
+        Kind::Stop => "stopped playback".to_owned(),
+        Kind::Next => match (&playing, action.position_ms) {
+            (Some(track), Some(ms)) => format!("skipped {track} {} in", position(ms)),
+            (Some(track), None) => format!("skipped {track}"),
+            _ => "skipped to the next track".to_owned(),
+        },
+        Kind::Previous => match (&playing, &at) {
+            (Some(track), Some(at)) => format!("pressed previous during {track} at {at}"),
+            (Some(track), None) => format!("pressed previous during {track}"),
+            _ => "pressed previous".to_owned(),
+        },
+        Kind::Seek => {
+            let to = action
+                .seek_to_ms
+                .map(|ms| format!(" to {}", position(ms)))
+                .unwrap_or_default();
+            let from = at
+                .as_ref()
+                .map(|at| format!(" from {at}"))
+                .unwrap_or_default();
+            let track = playing
+                .as_ref()
+                .map(|track| format!(" in {track}"))
+                .unwrap_or_default();
+            format!("moved the position{from}{to}{track}")
+        }
+        Kind::Volume => match (action.volume_from, action.volume_to) {
+            (Some(from), Some(to)) if to < from => {
+                format!("turned the volume down from {from} to {to}")
+            }
+            (Some(from), Some(to)) if to > from => {
+                format!("turned the volume up from {from} to {to}")
+            }
+            (_, Some(to)) => format!("set the volume to {to}"),
+            _ => "changed the volume".to_owned(),
+        },
+        Kind::Mute => match value.as_deref() {
+            Some("on") => "muted".to_owned(),
+            Some("off") => "unmuted".to_owned(),
+            _ => "changed mute".to_owned(),
+        },
+        Kind::Shuffle => setting("shuffle", value.as_deref()),
+        Kind::Autoplay => setting("autoplay", value.as_deref()),
+        Kind::Repeat => match value.as_deref() {
+            Some(mode) => format!("set repeat to {mode}"),
+            None => "changed repeat".to_owned(),
+        },
+        Kind::PlayTrack => format!("started {about}{unknown_subject}"),
+        Kind::PlayCollection => match &action.subject {
+            Some(track) => format!("started an album or playlist from {}", quoted(track)),
+            None => format!("started an album or playlist{unknown_subject}"),
+        },
+        Kind::PickFromQueue => format!("jumped to {about} in the queue{unknown_subject}"),
+        Kind::AddToQueue => format!("queued {about}{unknown_subject}"),
+        Kind::RemoveFromQueue => format!("removed {about} from the queue{unknown_subject}"),
+        Kind::ReorderQueue => format!("moved {about} in the queue{unknown_subject}"),
+        Kind::ClearUpcoming => "cleared what was queued next".to_owned(),
+        Kind::UpNextFilter => match value.as_deref() {
+            Some(label) => format!("chose the Up Next filter {label}"),
+            None => "chose another Up Next filter".to_owned(),
+        },
+        Kind::Rate => match value.as_deref() {
+            Some("liked") => format!("liked {about}{unknown_subject}"),
+            Some("disliked") => format!("disliked {about}{unknown_subject}"),
+            Some("neutral") => format!("cleared the rating of {about}{unknown_subject}"),
+            Some(other) => format!("rated {about} {other}{unknown_subject}"),
+            None => format!("rated {about}{unknown_subject}"),
+        },
+        Kind::AddToPlaylist => format!("added {about} to a playlist{unknown_subject}"),
+    };
+    if action.ago_ms >= 60_000 {
+        format!("{words} ({} ago)", minutes(action.ago_ms))
+    } else {
+        words
+    }
+}
+
+fn setting(name: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("turned {name} {value}"),
+        None => format!("changed {name}"),
+    }
+}
+
+/// A position in a track: seconds under a minute, otherwise minutes and seconds.
+fn position(ms: u64) -> String {
+    if ms < 60_000 {
+        format!("{} s", ms / 1000)
+    } else {
+        clock(ms)
+    }
+}
+
+/// A track as `"title" by artists`, on one line.
+fn quoted(track: &DjTrack) -> String {
+    let title = format!("\"{}\"", track.title);
+    one_line(&if track.artists.is_empty() {
+        title
+    } else {
+        format!("{title} by {}", track.artists.join(", "))
+    })
+}
+
+/// Page-supplied text with its line breaks turned into spaces, so a summary stays one line.
+fn one_line(text: &str) -> String {
+    text.replace(['\n', '\r'], " ")
+}
+
+/// A one-line summary of the listener profile: what it was built from, who appears most, the
+/// playlists by name, the scripts of what they listen to and what could not be read.
+pub fn profile_text(profile: &ListenerProfile) -> String {
+    const ARTISTS_NAMED: usize = 5;
+    const PLAYLISTS_NAMED: usize = 10;
+    let missing = |part: &str| profile.unavailable.iter().any(|name| name == part);
+    let read = |sample: &ProfileSample, noun: &str| match sample.total {
+        Some(total) if total > sample.sampled => format!("{} of {total} {noun}", sample.sampled),
+        Some(_) => format!("{} {noun}", sample.sampled),
+        None => format!("the first {} {noun} (more exist)", sample.sampled),
+    };
+    let mut sources = Vec::new();
+    if !missing("liked") {
+        sources.push(read(&profile.liked, "liked songs"));
+    }
+    if !missing("history") {
+        sources.push(read(&profile.history, "plays on this player"));
+    }
+    let mut out = vec![if sources.is_empty() {
+        "Listener profile with neither liked songs nor plays to go on.".to_owned()
+    } else {
+        format!("Listener profile from {}.", sources.join(" and "))
+    }];
+    let artists = |sample: &ProfileSample| -> Vec<String> {
+        sample
+            .top_artists
+            .iter()
+            .take(ARTISTS_NAMED)
+            .map(|artist| format!("{} ({})", one_line(&artist.name), artist.tracks))
+            .collect()
+    };
+    for (sample, label) in [
+        (&profile.liked, "Most liked artists"),
+        (&profile.history, "Most played artists"),
+    ] {
+        let named = artists(sample);
+        if !named.is_empty() {
+            out.push(format!("{label}: {}.", named.join(", ")));
+        }
+    }
+    if !missing("playlists") {
+        if profile.playlists.is_empty() {
+            out.push("No playlists.".to_owned());
+        } else {
+            let named: Vec<_> = profile
+                .playlists
+                .iter()
+                .take(PLAYLISTS_NAMED)
+                .map(|playlist| match playlist.track_count {
+                    Some(count) => format!("\"{}\" ({count})", one_line(&playlist.title)),
+                    None => format!("\"{}\"", one_line(&playlist.title)),
+                })
+                .collect();
+            let more = if profile.more_playlists || profile.playlists.len() > named.len() {
+                " and more"
+            } else {
+                ""
+            };
+            out.push(format!("Playlists: {}{more}.", named.join(", ")));
+        }
+    }
+    if profile.scripts_sampled > 0 && !profile.scripts.is_empty() {
+        let shares: Vec<_> = profile
+            .scripts
+            .iter()
+            .map(|share| match share.percent {
+                0 => format!("{} under 1%", script_name(share.script)),
+                percent => format!("{} {percent}%", script_name(share.script)),
+            })
+            .collect();
+        out.push(format!(
+            "Scripts of what they listen to: {} (from {} tracks).",
+            shares.join(", "),
+            profile.scripts_sampled
+        ));
+    }
+    if !missing("tasteNotes") {
+        out.push(match profile.taste_notes {
+            0 => "No taste notes are stored.".to_owned(),
+            1 => "1 taste note is stored.".to_owned(),
+            count => format!("{count} taste notes are stored."),
+        });
+    }
+    if !profile.unavailable.is_empty() {
+        let parts: Vec<_> = profile
+            .unavailable
+            .iter()
+            .map(|part| match part.as_str() {
+                "liked" => "liked songs",
+                "history" => "play history",
+                "playlists" => "playlists",
+                "tasteNotes" => "taste notes",
+                other => other,
+            })
+            .collect();
+        out.push(format!("Unavailable this time: {}.", parts.join(", ")));
+    }
+    out.join(" ")
+}
+
+fn script_name(script: Script) -> &'static str {
+    match script {
+        Script::Latin => "Latin",
+        Script::Han => "Han",
+        Script::Kana => "Kana",
+        Script::Hangul => "Hangul",
+        Script::Cyrillic => "Cyrillic",
+        Script::Arabic => "Arabic",
+        Script::Devanagari => "Devanagari",
+        Script::Thai => "Thai",
+        Script::Hebrew => "Hebrew",
+        Script::Greek => "Greek",
+        Script::Other => "other or none",
     }
 }
 
@@ -912,7 +1242,7 @@ mod tests {
             "prompt": "The current track ends soon.",
             "nowPlaying": {"track": track("a", "Alpha"), "playback": "playing",
                            "positionMs": 155000, "remainingMs": 45000},
-            "upNext": [track("b", "Beta")], "moreQueued": false,
+            "upcoming": "known", "upNext": [track("b", "Beta")], "moreQueued": false,
             "recent": [{"track": track("c", "Gamma"), "listenedMs": 30000,
                         "outcome": "skippedByListener", "endedAgoMs": 200000}],
             "listener": {"lastInteraction": "playerControl", "lastInteractionAgoMs": 720000,
@@ -931,11 +1261,51 @@ mod tests {
     }
 
     #[test]
+    fn cue_text_adds_one_line_for_youtube_musics_own_continuation() {
+        let song = |id: &str, artist: &str| json!({"videoId": id, "title": id, "artists": [artist], "album": null, "durationMs": null});
+        let cue = |official: serde_json::Value| -> String {
+            let cue: DjCue = serde_json::from_value(json!({
+                "seq": 3, "kind": "trackEnding", "reasons": [], "ageMs": 0, "prompt": "Ends soon.",
+                "nowPlaying": null, "upcoming": "known", "upNext": [], "moreQueued": false,
+                "officialUpNext": official, "recent": [],
+                "listener": {"lastInteraction": null, "lastInteractionAgoMs": null,
+                             "lastSpokenToAgoMs": null, "unansweredCheckIns": 0},
+                "chattiness": "normal", "preferences": [], "preferencesUnchanged": true
+            }))
+            .unwrap();
+            cue_text(&cue)
+        };
+        let observed = cue(json!({
+            "status": "observed",
+            "tracks": [song("autoAAAAAAA", "X"), song("autoBBBBBBB", "Y")],
+            "more": true, "filter": "Familiar"
+        }));
+        assert!(
+            observed.contains(
+                "Up next: nothing queued.\nThen YouTube Music: autoAAAAAAA by X; autoBBBBBBB by Y \
+                 and more (filter: Familiar)."
+            ),
+            "{observed}"
+        );
+        let off = cue(json!({"status": "off", "tracks": [], "more": false}));
+        assert!(
+            off.contains("Then YouTube Music: autoplay is off."),
+            "{off}"
+        );
+        let radio = cue(json!({"status": "radio", "tracks": [], "more": false}));
+        assert!(
+            radio.contains("Then YouTube Music: a radio that refills itself."),
+            "{radio}"
+        );
+        assert!(!cue(serde_json::Value::Null).contains("Then YouTube Music"));
+    }
+
+    #[test]
     fn cue_text_distinguishes_cleared_unavailable_and_paged_tastes_plus_moment() {
         let base = json!({
             "seq": 2, "kind": "checkIn", "reasons": ["routine"], "ageMs": 0,
             "prompt": "Check in.",
-            "nowPlaying": null, "upNext": [], "moreQueued": false, "recent": [],
+            "nowPlaying": null, "upcoming": "known", "upNext": [], "moreQueued": false, "recent": [],
             "listener": {"lastInteraction": null, "lastInteractionAgoMs": null,
                          "lastSpokenToAgoMs": null, "unansweredCheckIns": 0},
             "chattiness": "normal", "preferences": [], "preferencesUnchanged": false
@@ -982,5 +1352,123 @@ mod tests {
         );
         assert!(txt.contains("scene city: Tokyo"), "{txt}");
         assert!(txt.contains("Listening intents: not shared."), "{txt}");
+    }
+
+    fn song(id: &str, title: &str) -> serde_json::Value {
+        json!({"videoId": id, "title": title, "artists": ["Band"], "album": null,
+               "durationMs": 200000})
+    }
+
+    #[test]
+    fn listener_actions_read_as_plain_facts_newest_first_and_capped() {
+        let actions: Vec<ListenerAction> = serde_json::from_value(json!([
+            {"action": "next", "agoMs": 2000, "during": song("x", "X"), "positionMs": 12400},
+            {"action": "volume", "agoMs": 9000, "volumeFrom": 70, "volumeTo": 30},
+            {"action": "upNextFilter", "agoMs": 20000, "value": "Familiar"},
+            {"action": "rate", "agoMs": 30000, "during": song("x", "X"),
+             "subject": song("y", "Y\nline"), "value": "liked"},
+            {"action": "seek", "agoMs": 40000, "during": song("x", "X"), "positionMs": 61000,
+             "seekToMs": 5000},
+            {"action": "pause", "agoMs": 125000, "during": song("x", "X"), "positionMs": 83000},
+            {"action": "mute", "agoMs": 130000, "value": "on"},
+            {"action": "stop", "agoMs": 140000}
+        ]))
+        .unwrap();
+        assert_eq!(
+            listener_actions_text(&actions, 3).as_deref(),
+            Some(
+                "The listener's own actions, newest first: skipped \"X\" 12 s in; turned the \
+                 volume down from 70 to 30; chose the Up Next filter Familiar; liked \"Y line\" \
+                 by Band; moved the position from 1:01 to 5 s in \"X\"; paused \"X\" at 1:23 \
+                 (2 minutes ago); and 5 more."
+            )
+        );
+        assert_eq!(listener_actions_text(&[], 0), None);
+        // Without a subject the action is not pinned on the track that was playing.
+        let unknown: Vec<ListenerAction> = serde_json::from_value(json!([
+            {"action": "rate", "agoMs": 1000, "during": song("x", "X"), "value": "liked"},
+            {"action": "playTrack", "agoMs": 2000, "during": song("x", "X")}
+        ]))
+        .unwrap();
+        assert_eq!(
+            listener_actions_text(&unknown, 0).as_deref(),
+            Some(
+                "The listener's own actions, newest first: liked a track while \"X\" played; \
+                 started a track while \"X\" played."
+            )
+        );
+        assert_eq!(
+            listener_actions_text(&[], 4).as_deref(),
+            Some("The listener's own actions, newest first: 4 actions.")
+        );
+    }
+
+    #[test]
+    fn a_listener_signal_prompt_lists_what_the_listener_did() {
+        let cue: DjCue = serde_json::from_value(json!({
+            "seq": 7, "kind": "listenerSignal", "reasons": ["skipStreak"], "ageMs": 0,
+            "prompt": "By hand, the listener just skipped 2 tracks in a row.",
+            "nowPlaying": null, "upcoming": "known", "upNext": [], "moreQueued": false,
+            "recent": [],
+            "listener": {"lastInteraction": "playerControl", "lastInteractionAgoMs": 4000,
+                         "lastSpokenToAgoMs": null, "unansweredCheckIns": 0,
+                         "recentActions": [
+                             {"action": "next", "agoMs": 4000, "during": song("b", "B"),
+                              "positionMs": 8000},
+                             {"action": "next", "agoMs": 9000, "during": song("a", "A"),
+                              "positionMs": 75000}
+                         ],
+                         "actionsOmitted": 1},
+            "chattiness": "off", "preferences": [], "preferencesUnchanged": true
+        }))
+        .unwrap();
+        assert_eq!(
+            cue_text(&cue),
+            "By hand, the listener just skipped 2 tracks in a row.\n\n\
+             Up next: nothing queued.\n\
+             The listener has been quiet for under a minute.\n\
+             The listener's own actions, newest first: skipped \"B\" 8 s in; skipped \"A\" \
+             1:15 in; and 1 more."
+        );
+    }
+
+    #[test]
+    fn profile_text_names_its_sources_scripts_and_what_could_not_be_read() {
+        let profile: ListenerProfile = serde_json::from_value(json!({
+            "generatedAtMs": 1,
+            "liked": {"total": null, "sampled": 200,
+                      "topArtists": [{"name": "A", "tracks": 12}, {"name": "B", "tracks": 9}],
+                      "recent": []},
+            "history": {"total": 1530, "sampled": 200,
+                        "topArtists": [{"name": "C", "tracks": 30}], "recent": []},
+            "playlists": [{"playlistId": "PLfixture", "title": "Road trip", "trackCount": 40},
+                          {"playlistId": "PLother", "title": "Late", "trackCount": null}],
+            "morePlaylists": true,
+            "scripts": [{"script": "latin", "tracks": 218, "percent": 91},
+                        {"script": "kana", "tracks": 15, "percent": 6},
+                        {"script": "han", "tracks": 7, "percent": 3}],
+            "scriptsSampled": 240, "tasteNotes": 0, "unavailable": ["tasteNotes"]
+        }))
+        .unwrap();
+        assert_eq!(
+            profile_text(&profile),
+            "Listener profile from the first 200 liked songs (more exist) and 200 of 1530 plays \
+             on this player. Most liked artists: A (12), B (9). Most played artists: C (30). \
+             Playlists: \"Road trip\" (40), \"Late\" and more. Scripts of what they listen to: \
+             Latin 91%, Kana 6%, Han 3% (from 240 tracks). Unavailable this time: taste notes."
+        );
+        let unread: ListenerProfile = serde_json::from_value(json!({
+            "generatedAtMs": 1,
+            "liked": {"total": null, "sampled": 0, "topArtists": [], "recent": []},
+            "history": {"total": 0, "sampled": 0, "topArtists": [], "recent": []},
+            "playlists": [], "morePlaylists": false, "scripts": [], "scriptsSampled": 0,
+            "tasteNotes": 2, "unavailable": ["liked", "playlists"]
+        }))
+        .unwrap();
+        assert_eq!(
+            profile_text(&unread),
+            "Listener profile from 0 plays on this player. 2 taste notes are stored. \
+             Unavailable this time: liked songs, playlists."
+        );
     }
 }

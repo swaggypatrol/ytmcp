@@ -2,7 +2,8 @@
   /**
    * Seek and volume: a flat rounded bar with no thumb. White (the surface's text colour) up to
    * the value, a lighter grey up to `buffered` when given, a dark grey track for the rest. It gets
-   * a little thicker while pressed.
+   * a little thicker while pressed. With `busy` (media still loading) a soft light flows along
+   * the loaded segment ahead of the value.
    *
    * Interaction, keyboard and screen readers go through a transparent native range input laid
    * over the bar, so it behaves exactly like one; under forced colours that input is shown as it
@@ -20,6 +21,8 @@
     title?: string;
     /** How far the media has loaded, in the same units as `value`. */
     buffered?: number | null;
+    /** The media is loading: a light flows along the loaded segment ahead of the value. */
+    busy?: boolean;
     class?: string;
     testid?: string;
     oninput?: (value: number) => void;
@@ -38,6 +41,7 @@
     valueText,
     title,
     buffered = null,
+    busy = false,
     class: className = "",
     testid,
     oninput,
@@ -81,11 +85,13 @@
   class="scrub {className}"
   class:is-pressed={pressed}
   class:is-disabled={disabled}
+  class:is-busy={busy}
   style="--fill: {(fill * 100).toFixed(3)}%; --buffered: {(loaded * 100).toFixed(3)}%;"
 >
   <div class="scrub-track" aria-hidden="true">
     <div class="scrub-buffered"></div>
     <div class="scrub-fill"></div>
+    <div class="scrub-flow"></div>
   </div>
   <input
     type="range"

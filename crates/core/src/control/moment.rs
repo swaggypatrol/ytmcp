@@ -6,8 +6,8 @@ use ytm_control_api::{
     ListeningIntentBasis, ListeningIntentChange, ListeningIntentDuration,
     ListeningIntentInstruction, ListeningIntentScope, ListeningIntentsView, MomentDayPart,
     MomentOccasion, MomentOccasionKind, MomentOccasionPhase, MomentSectionStatus, MomentTime,
-    MomentView, OperationPhase, OperationResource, RetryDisposition, SceneCity, SceneCitySource,
-    VerificationLevel, VocalsMode, WriteAction,
+    MomentView, OperationPhase, OperationResource, ReportedIntentBasis, RetryDisposition,
+    SceneCity, SceneCitySource, VerificationLevel, VocalsMode, WriteAction,
 };
 use ytm_protocol::{
     AccountEpoch, AccountScope, HostEnvironmentSnapshotPayload, HostOccasion, MomentDesktopRequest,
@@ -400,6 +400,21 @@ impl ControlService {
     }
 }
 
+/// An inference is decided on what the assistant read, so it must say which Moment revision
+/// that was: a change the listener made since then makes it stale rather than overwritten. A
+/// stale inference is decided again on a new read, not replayed with the latest revision.
+fn require_decision_revision(
+    basis: ReportedIntentBasis,
+    expected_moment_revision: Option<u64>,
+) -> Result<(), ControlError> {
+    if basis == ReportedIntentBasis::Inference && expected_moment_revision.is_none() {
+        return Err(invalid(
+            "an inferred listening intent change needs expectedMomentRevision from the moment it was decided on",
+        ));
+    }
+    Ok(())
+}
+
 impl MusicOperation {
     pub(super) async fn set_listening_intent(&mut self) -> Result<Transition, ControlError> {
         if self.state.snapshot.account_epoch.is_none()
@@ -439,6 +454,7 @@ impl MusicOperation {
                 basis,
                 expected_moment_revision,
             } => {
+                require_decision_revision(basis, expected_moment_revision)?;
                 let instruction = validate_instruction(instruction)?;
                 let intent_key = instruction.canonical_key();
                 let (scope_kind, expires_at_ms, time_zone) =
@@ -503,13 +519,20 @@ impl MusicOperation {
             }
             ListeningIntentChange::Clear {
                 intent_key,
+                intent_id,
                 basis,
                 expected_moment_revision,
             } => {
+                require_decision_revision(basis, expected_moment_revision)?;
                 let key = intent_key.trim().to_owned();
                 if key.is_empty() || key.chars().count() > 128 || key.chars().any(char::is_control)
                 {
                     return Err(invalid("invalid listening intent key"));
+                }
+                if intent_id.as_ref().is_some_and(|id| {
+                    id.is_empty() || id.chars().count() > 64 || id.chars().any(char::is_control)
+                }) {
+                    return Err(invalid("invalid listening intent id"));
                 }
                 let expected_store_rev = expected_moment_revision
                     .map(|rev| expected_store_revision(rev, cfg_rev))
@@ -527,7 +550,14 @@ impl MusicOperation {
                     return Ok(Transition::Cancelled);
                 }
                 let (cleared_id, store_rev) = match store
-                    .clear_intent(scope, key.clone(), basis, expected_store_rev, now_ms)
+                    .clear_intent(
+                        scope,
+                        key.clone(),
+                        intent_id,
+                        basis,
+                        expected_store_rev,
+                        now_ms,
+                    )
                     .await
                 {
                     Ok(Some(res)) => res,

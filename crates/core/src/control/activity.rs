@@ -82,7 +82,10 @@ impl ControlService {
                         .await;
                 }
             }
-            AgentActivityRequest::ClearListeningIntent { intent_key } => {
+            AgentActivityRequest::ClearListeningIntent {
+                intent_key,
+                intent_id,
+            } => {
                 self.check_activity_account(&state).await?;
                 let scope = scope
                     .clone()
@@ -92,6 +95,7 @@ impl ControlService {
                     .clear_intent(
                         scope,
                         intent_key,
+                        intent_id,
                         ListeningIntentBasis::OwnerInput,
                         None,
                         now_ms,
@@ -269,6 +273,7 @@ fn operation_action(receipt: &ytm_control_api::OperationReceipt) -> Option<Strin
             PlayerOp::Seek => "seek",
             PlayerOp::SetVolume | PlayerOp::SetMuted => "volume",
             PlayerOp::SetShuffle | PlayerOp::SetRepeat | PlayerOp::SetAutoplay => "playbackMode",
+            PlayerOp::SetQueueFilter => "upNextFilter",
             PlayerOp::Enqueue => "enqueue",
             PlayerOp::SelectQueueEntry
             | PlayerOp::RemoveQueueEntry

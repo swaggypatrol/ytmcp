@@ -1,0 +1,14 @@
+/* Page transitions. */
+
+/* A page change cross-fades the scroll region alone: App.svelte starts the view transition on it
+   (Element.startViewTransition), not on the document. Its snapshots then paint inside the scroll
+   region, in its place in the layer order, under the glass. Nothing above it is captured, so the
+   sidebar, the player bar and toasts keep refracting the live page and ambient light on every
+   frame (a captured glass surface has no backdrop and turns into an opaque slab), and the ambient
+   light runs its own 900ms cross-fade. Nothing here needs a view-transition name: a name on an
+   ancestor of a glass surface would make it a backdrop root and leave the glass nothing to blur. */
+.app-scroll::view-transition-old(root),
+.app-scroll::view-transition-new(root) {
+  animation-duration: var(--duration-normal);
+  animation-timing-function: var(--ease-standard);
+}

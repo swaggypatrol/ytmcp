@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { AppInstance, ELECTRON, REPO, waitAppReady } from "./lib/app.mjs";
 import { check, gateDoc, writeEvidence } from "./lib/evidence.mjs";
 import { ensureNullSink, fileSha256, NULL_SINK, run, sha256Short, sinkInputsFor, unloadNullSink } from "./lib/sys.mjs";
-import { navigate, pageMedia, sinceSeq } from "./gates/common.mjs";
+import { navigate, nextCatalogPage, pageMedia, sinceSeq } from "./gates/common.mjs";
 import { quitViaMpris } from "./gates/g2.mjs";
 
 if (process.env.YTMCP_ALLOW_LIVE !== "1") {
@@ -27,9 +27,11 @@ const ALTERNATE_LYRIC_TRACK = "Adele Someone Like You";
 const ARTIST_LINK = '[data-testid="album-artist-link"]';
 const SEARCH_PLAYLIST = `${SEARCH_VIEW} button[data-testid^="search-playlist-"]`;
 const PLAYLIST_ROW = '[data-testid="view-playlist"] button[data-row-index]:not([aria-disabled="true"])';
+const TRACK_MENU = '[data-testid="track-actions-menu"]';
+const LIKED_TAIL = '[data-testid="view-liked"] [data-testid="track-list-tail"]';
 
 async function catalogExchange(app, since, kind, initiated, query = null) {
-  const request = initiated ? await app.waitForEvent((e) => e.kind === "ui.catalogQuery" && e.query?.kind === kind &&
+  const request = initiated ? await app.waitForEvent((e) => e.kind === "ui.catalogQuery" && e.query?.kind === kind && e.query.cursor === false &&
     (query === null || e.query.q === query), {
     since, types: ["ui->host"], timeoutMs: 8_000,
   }) : null;
@@ -73,7 +75,7 @@ async function publicSearch(app, query) {
 async function catalogView(app, view, queryKind, open) {
   const since = await sinceSeq(app);
   const clicked = (await open()).clicked === true;
-  const { evidence, reply } = await catalogExchange(app, since, queryKind, clicked);
+  const { evidence, request, reply } = await catalogExchange(app, since, queryKind, clicked);
   const body = await app.waitFor(() => app.evalMain(`(() => {
     const view = document.querySelector('[data-testid="view-${view}"]');
     if (!view) return null;
@@ -84,7 +86,7 @@ async function catalogView(app, view, queryKind, open) {
     const errorVisible = Boolean(view.querySelector('[data-testid$="-state-error"], [data-testid$="-state-unsupported"], [data-testid$="-state-auth-expired"]'));
     return renderedRows || relatedAlbums || collectionTiles || empty || errorVisible ? { renderedRows, relatedAlbums, collectionTiles, empty, errorVisible } : null;
   })()`), { timeoutMs: 6_000 });
-  return { evidence: { clicked, ...evidence, render: body.value ?? null }, reply };
+  return { evidence: { clicked, ...evidence, render: body.value ?? null }, request, reply };
 }
 
 async function rowDetailAction(app, view, action) {
@@ -93,10 +95,13 @@ async function rowDetailAction(app, view, action) {
   for (const index of rows) {
     const opened = await app.click(`[data-testid="view-${view}"] ${ROWS}:has([data-row-index="${index}"]) [data-testid="track-actions-btn"]`);
     if (!opened.clicked) continue;
-    const dialog = await app.waitFor(() => app.exists('[data-testid="accessible-dialog"]'), { timeoutMs: 2_000 });
-    if (!dialog.ok) continue;
-    if (await app.exists(action)) return action;
-    await app.click('[data-testid="dialog-close-btn"]');
+    const menu = await app.waitFor(() => app.exists(TRACK_MENU), { timeoutMs: 2_000 });
+    if (!menu.ok) continue;
+    const scopedAction = `${TRACK_MENU} ${action}:enabled`;
+    if (await app.exists(scopedAction)) return scopedAction;
+    if ((await app.pressKey("Escape")).sent !== 2) return null;
+    const closed = await app.waitFor(async () => !await app.exists(TRACK_MENU), { timeoutMs: 2_000 });
+    if (!closed.ok) return null;
   }
   return null;
 }
@@ -138,42 +143,58 @@ async function detailCheck(app, view, search) {
 }
 
 async function likedCheck(app) {
-  const { evidence, reply } = await catalogView(app, "liked", "likedSongs", () => navigate(app, "liked"));
+  const { evidence, request, reply } = await catalogView(app, "liked", "likedSongs", () => navigate(app, "liked"));
   const snapshot = await app.snapshot();
   const accountScope = sha256Short(snapshot?.authState?.accountScope ?? null);
   const accountMatched = Boolean(accountScope && accountScope === reply?.catalog?.accountScope &&
     snapshot.authState.playerCatalogMatched === true);
   const count = evidence.itemCount;
+  const firstPageCursorless = request?.query?.cursor === false;
   const consistentRender = Number.isInteger(count) &&
     (count > 0 ? evidence.render?.renderedRows > 0 : evidence.render?.empty === true);
-  return check("V1.likedSongs", "current-account liked songs returns a fresh typed result and the UI reflects its populated or empty state", {
-    measured: { ...evidence, accountMatched, hasNextCursor: reply?.catalog?.hasNextCursor ?? null },
-    pass: evidence.queryAccepted && evidence.resultType === "likedSongs" &&
+  const report = check("V1.likedSongs", "current-account liked songs returns a fresh typed result and the UI reflects its populated or empty state", {
+    measured: { ...evidence, firstPageCursorless, accountMatched, hasNextCursor: reply?.catalog?.hasNextCursor ?? null },
+    pass: firstPageCursorless && evidence.queryAccepted && evidence.resultType === "likedSongs" &&
       evidence.freshness === "fresh" && accountMatched && consistentRender,
   });
+  return { report, reply, snapshot };
 }
 
-async function likedContinuationCheck(app, firstPage) {
-  const control = '[data-testid="liked-load-more"]';
-  const snapshot = await app.snapshot();
+async function likedContinuationCheck(app, first) {
+  const { snapshot } = first;
   const accountScope = sha256Short(snapshot?.authState?.accountScope ?? null);
   const pages = [];
-  let hasNext = firstPage.measured.hasNextCursor === true;
-  for (let page = 2; hasNext && page <= 5; page++) {
-    const ready = await app.waitFor(() => app.evalMain(`Boolean(document.querySelector(${JSON.stringify(control + ":enabled")}))`),
-      { timeoutMs: 5_000 });
-    const since = await sinceSeq(app);
-    const clicked = ready.ok && (await app.click(control)).clicked === true;
-    const { request, reply, evidence } = await catalogExchange(app, since, "likedSongs", clicked);
+  if (first.report.status !== "PASS_TARGET") {
+    return check("V1.likedContinuation", "read up to five fresh liked songs pages from the same account", {
+      measured: { pages }, blocked: "the first Liked songs page was not verified",
+    });
+  }
+  const cursors = new Set();
+  let previous = { reply: first.reply, page: first.reply?.catalog };
+  for (let number = 2; previous.page?.hasNextCursor && number <= 5; number++) {
+    const cursorId = previous.page.nextCursorId;
+    if (!cursorId || cursors.has(cursorId)) {
+      pages.push({ page: number, cursorRequested: false, pass: false });
+      break;
+    }
+    cursors.add(cursorId);
+    const exchange = await nextCatalogPage(app, previous, { kind: "likedSongs", tail: LIKED_TAIL });
+    const { request, reply, page, scrolledToTail } = exchange;
     const current = await app.snapshot();
     const accountMatched = Boolean(accountScope && current?.accountEpoch === snapshot?.accountEpoch &&
-      current?.authState?.playerCatalogMatched === true && reply?.catalog?.accountScope === accountScope);
-    hasNext = reply?.catalog?.hasNextCursor ?? null;
-    const cursorRequested = request?.query?.cursor === true;
-    const pass = cursorRequested && evidence.queryAccepted && evidence.resultType === "likedSongs" &&
-      evidence.freshness === "fresh" && accountMatched && Number.isInteger(evidence.itemCount) && typeof hasNext === "boolean";
-    pages.push({ page, ...evidence, cursorRequested, accountMatched, hasNext, pass });
+      current?.authState?.playerCatalogMatched === true && page?.accountScope === accountScope);
+    const cursorRequested = request?.query?.cursorId === cursorId;
+    const queryAccepted = request?.ack?.ok === true;
+    const pass = cursorRequested && queryAccepted && page?.resultType === "likedSongs" &&
+      page.freshness === "fresh" && accountMatched && Number.isInteger(page.itemCount) &&
+      typeof page.hasNextCursor === "boolean";
+    pages.push({
+      page: number, queryAccepted, resultType: page?.resultType ?? null, freshness: page?.freshness ?? null,
+      itemCount: page?.itemCount ?? null, errorCode: reply?.error?.code ?? page?.error?.code ?? null,
+      cursorRequested, scrolledToTail, accountMatched, hasNext: page?.hasNextCursor ?? null, pass,
+    });
     if (!pass) break;
+    previous = exchange;
   }
   return check("V1.likedContinuation", "read up to five fresh liked songs pages from the same account", {
     measured: { pages },
@@ -229,17 +250,9 @@ async function lyricsChecks(app, track, since) {
     const root = document.querySelector('[data-testid="view-lyrics"]');
     const read = (id) => root?.querySelector('[data-testid="' + id + '"]');
     if (!root || root.querySelector('[aria-busy="true"]')) return null;
-    const kind = {
-      "Synced lyrics": "synced",
-      "Plain lyrics": "plain",
-      "Instrumental, no lyrics": "instrumental",
-      "No matching lyrics found": "notFound",
-      "The lyrics service is unavailable": "unavailable",
-      "Lyrics matching is turned off in Settings": "disabled",
-    }[read("lyrics-kind-badge")?.textContent?.trim()] ?? null;
-    const source = read("lyrics-source")?.textContent?.trim() ?? "";
+    const source = read("lyrics-source")?.textContent?.trim();
+    if (!source) return null;
     return {
-      kind,
       providerSource: /lrclib/i.test(source),
       disabledSource: /disabled/i.test(source),
       seekableLineCount: root.querySelectorAll('[data-testid="lyrics-seek-line"]:enabled').length,
@@ -249,7 +262,10 @@ async function lyricsChecks(app, track, since) {
   })()`), { timeoutMs: 6_000 });
   const snapshot = await app.snapshot();
   const currentMatches = snapshot?.player?.currentTrack?.videoId === track;
-  const measured = { ...view.value, responseObserved: Boolean(reply), providerResult: reply?.lyrics ?? null, currentMatches };
+  const measured = {
+    ...view.value, kind: reply?.lyrics?.kind ?? null,
+    responseObserved: Boolean(reply), providerResult: reply?.lyrics ?? null, currentMatches,
+  };
   const synced = measured.kind === "synced" && measured.seekableLineCount > 0;
   const plain = measured.kind === "plain" && measured.plainLineCount > 0 && measured.seekableLineCount === 0;
   const fallback = ["instrumental", "notFound", "unavailable", "disabled"].includes(measured.kind) &&
@@ -473,7 +489,7 @@ if (canLaunch) {
     }));
     if (live) {
       const liked = await likedCheck(app);
-      checks.push(liked, await likedContinuationCheck(app, liked));
+      checks.push(liked.report, await likedContinuationCheck(app, liked));
       const songSearch = await publicSearch(app, PUBLIC_TRACK);
       checks.push(await detailCheck(app, "album", songSearch));
       checks.push(await detailCheck(app, "artist", songSearch));

@@ -1,11 +1,27 @@
-import type { BridgeEpoch, QueueCompleteness, QueueEntry, QueueEntryId, QueueSnapshot } from "@ytmcp/protocol";
+import type {
+  BridgeEpoch,
+  OfficialUpcoming,
+  QueueCompleteness,
+  QueueEntry,
+  QueueEntryId,
+  QueueFilter,
+  QueueSnapshot,
+  Track,
+} from "@ytmcp/protocol";
 import { sanitizeTrack } from "./guard.js";
-import type { PageQueue } from "./types.js";
+import type { PageQueue, PageTrack } from "./types.js";
+
+const MAX_OFFICIAL_UPCOMING = 50;
+const MAX_QUEUE_FILTERS = 24;
 
 interface MappedEntry {
   readonly entryId: QueueEntryId;
   readonly key: string;
   readonly index: number;
+}
+
+function toTrack(item: PageTrack): Track {
+  return sanitizeTrack({ ...item, availability: item.available ? "available" : "unavailable" });
 }
 
 function countKeys(keys: readonly string[]): Map<string, number> {
@@ -21,12 +37,17 @@ function countKeys(keys: readonly string[]): Map<string, number> {
  * window is unchanged (same start and key sequence). Otherwise ambiguous or unparsable
  * occurrences get fresh ids rather than a guessed mapping. Duplicate videoIds always
  * receive distinct ids.
+ *
+ * `queueRevision` describes the explicit list only. The page's own continuation and its
+ * filters are re-emitted when their content changes, under the same revision, so edits bound
+ * to the explicit list stay valid while suggestions reload.
  */
 export class QueueMapper {
   private readonly bridgeEpoch: BridgeEpoch;
   private counter = 0;
   private revision = 0;
   private signature = "";
+  private officialSignature = "";
   private entries: MappedEntry[] = [];
   private last: QueueSnapshot | null = null;
 
@@ -64,9 +85,8 @@ export class QueueMapper {
         : (reusable ? oldIdByKey.get(item.key) : undefined) ?? this.allocate();
       const index = start + i;
       mapped.push({ entryId, key: item.key, index });
-      const availability = item.available ? "available" : "unavailable";
-      const track = sanitizeTrack({ ...item, availability });
-      entries.push({ entryId, videoId: track.videoId, track, availability });
+      const track = toTrack(item);
+      entries.push({ entryId, videoId: track.videoId, track, availability: track.availability });
     });
 
     const selected = queue?.selectedIndex ?? null;
@@ -98,11 +118,20 @@ export class QueueMapper {
       loadedRange,
       entries.map((e) => [e.entryId, e.videoId, e.track.title, e.availability, e.track.durationMs ?? null]),
     ]);
-    const changed = signature !== this.signature || this.last === null;
-    if (changed) {
+    const official = queue?.officialUpcoming;
+    const officialUpcoming: OfficialUpcoming | undefined = official
+      ? { status: official.status, tracks: official.tracks.slice(0, MAX_OFFICIAL_UPCOMING).map(toTrack) }
+      : undefined;
+    const filters: QueueFilter[] | undefined = queue?.filters?.slice(0, MAX_QUEUE_FILTERS).map((f) => ({ ...f }));
+    const officialSignature = JSON.stringify([officialUpcoming ?? null, filters ?? null]);
+
+    const explicitChanged = signature !== this.signature || this.last === null;
+    if (explicitChanged) {
       this.revision += 1;
       this.signature = signature;
     }
+    const changed = explicitChanged || officialSignature !== this.officialSignature;
+    this.officialSignature = officialSignature;
     this.entries = mapped;
     this.last = {
       bridgeEpoch: this.bridgeEpoch,
@@ -114,6 +143,8 @@ export class QueueMapper {
       hasMore,
       explicitComplete,
       mayLoadMore,
+      ...(officialUpcoming ? { officialUpcoming } : {}),
+      ...(filters && filters.length > 0 ? { filters } : {}),
     };
     return { snapshot: this.last, changed };
   }

@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { LUMA, toneMatrix, type ToneTokens } from "../liquid-glass.js";
+import { LUMA, rimGainMatrix, toneMatrix, type ToneTokens } from "../liquid-glass.js";
 
 /**
  * Tone audit: the worst-case contrast of everything written on glass, derived from the token
@@ -21,6 +21,7 @@ type Scheme = "dark" | "light";
 type Variant = "sidebar" | "bar" | "popover";
 
 const glassCss = readFileSync(resolve(import.meta.dirname, "../glass.css"), "utf8");
+const focusCss = readFileSync(resolve(import.meta.dirname, "../../../styles/motion-a11y.css"), "utf8");
 
 /** Custom properties declared by the top-level rule with exactly this selector. */
 function declarations(css: string, selector: string): Record<string, string> {
@@ -120,8 +121,11 @@ function tokensFor(scheme: Scheme, variant: Variant): Record<string, string> {
 
 type Material = "lens" | "plainBlur" | "solid";
 
-/** Luminance range of the surface behind glyphs, over every backdrop colour and fill state. */
-function glassLuminanceRange(tokens: Record<string, string>, material: Material): { min: number; max: number } {
+/**
+ * Luminance range of the surface behind glyphs, over every backdrop colour and fill state;
+ * `overlay` is laid over each state (the focus halo).
+ */
+function glassLuminanceRange(tokens: Record<string, string>, material: Material, overlay?: Rgba): { min: number; max: number } {
   const tone: ToneTokens = {
     scheme: tokens["--lg-scheme"] === "light" ? "light" : "dark",
     gain: Number(tokens["--lg-tone-gain"]),
@@ -138,7 +142,8 @@ function glassLuminanceRange(tokens: Record<string, string>, material: Material)
   const visit = (base: readonly number[], withSheen: boolean) => {
     for (const surface of withSheen ? [base, over(base, sheen)] : [base]) {
       for (const fill of fills) {
-        const y = luminance(over(surface, fill));
+        const filled = over(surface, fill);
+        const y = luminance(overlay ? over(filled, overlay) : filled);
         min = Math.min(min, y);
         max = Math.max(max, y);
       }
@@ -216,14 +221,91 @@ describe("liquid glass tone audit", () => {
     expect(ratio(inkLuminance(tokens, "--lg-on-accent-fill"), fill)).toBeGreaterThanOrEqual(4.5);
   });
 
+  it.each(cases)("%s %s (%s): the focus ring keeps 3:1 over its own halo", (scheme, variant, material) => {
+    const tokens = tokensFor(scheme, variant);
+    // Every halo the app draws is the ring's own colour at some strength; take the strongest.
+    const strengths = [...focusCss.matchAll(/color-mix\(in oklch, var\(--focus-ring\) ([\d.]+)%, transparent\)/g)].map((m) => Number(m[1]) / 100);
+    expect(strengths.length).toBeGreaterThan(0);
+    const ring = color(tokens, "--lg-focus-ring");
+    const halo: Rgba = [ring[0], ring[1], ring[2], Math.max(...strengths)];
+    const range = glassLuminanceRange(tokens, material, halo);
+    expect(worstRatio(inkLuminance(tokens, "--lg-focus-ring"), range)).toBeGreaterThanOrEqual(3 * MODEL_MARGIN);
+  });
+
   it("maps every generic content token used on glass to the audited palette", () => {
     const remap = declarations(glassCss, ".lg");
     for (const name of ["--text-primary", "--text-secondary", "--text-muted", "--accent", "--status-success", "--status-warning", "--status-danger", "--status-info", "--focus-ring"]) {
       expect(remap[name], name).toMatch(/^var\(--lg-/);
     }
-    for (const name of ["--bg-subtle", "--bg-elevated-hover", "--accent-soft"]) {
+    for (const name of ["--bg-subtle", "--bg-elevated-hover", "--accent-soft", "--control-fill-hover", "--control-fill-active"]) {
       expect(remap[name], name).toMatch(/^var\(--lg-fill-(hover|active)\)$/);
     }
     expect(remap["--bg-elevated"]).toBe("transparent");
+  });
+});
+
+/** Opacity of a colour token. */
+const alphaOf = (tokens: Record<string, string>, name: string) => parse(tokens, name).alpha;
+
+describe("liquid glass edge", () => {
+  // The edge tokens at 97a195b, before phase 2. Highlights only ever go down from here.
+  const BASELINE = {
+    dark: { "--lg-rim-bright": 0.24, "--lg-bezel-light": 0.16, "--lg-sheen": 0.1, "--lg-bezel-shade": 0.28, glint: 0.5 },
+    light: { "--lg-rim-bright": 0.6, "--lg-bezel-light": 0.5, "--lg-sheen": 0.3, "--lg-bezel-shade": 0.14, glint: 0.9 },
+  } as const;
+
+  it.each(["dark", "light"] as const)("%s: no highlight is brighter than it was at 97a195b", (scheme) => {
+    const tokens = tokensFor(scheme, "bar");
+    const base = BASELINE[scheme];
+    for (const name of ["--lg-rim-bright", "--lg-bezel-light", "--lg-sheen", "--lg-bezel-shade"] as const) {
+      expect(alphaOf(tokens, name), name).toBeLessThanOrEqual(base[name] + 1e-9);
+    }
+    // The lens's glint at its strongest, over a black backdrop.
+    expect(Number(tokens["--lg-glint"]) * Number(tokens["--lg-rim-over-dark"])).toBeLessThanOrEqual(base.glint + 1e-9);
+  });
+
+  it.each(["dark", "light"] as const)("%s: one light at the upper left; the far side returns at most a quarter", (scheme) => {
+    const tokens = tokensFor(scheme, "bar");
+    expect(alphaOf(tokens, "--lg-rim-return")).toBeLessThanOrEqual(alphaOf(tokens, "--lg-rim-bright") / 4 + 1e-9);
+    expect(Number(tokens["--lg-glint-return"])).toBeLessThanOrEqual(0.25);
+    expect(Number(tokens["--lg-glint-return"])).toBeGreaterThan(0);
+  });
+
+  it.each(["dark", "light"] as const)("%s: overlays are more solid than the sidebar and the bar", (scheme) => {
+    for (const variant of ["sidebar", "bar"] as const) {
+      expect(alphaOf(tokensFor(scheme, "popover"), "--lg-tint")).toBeGreaterThan(alphaOf(tokensFor(scheme, variant), "--lg-tint"));
+    }
+  });
+
+  it("draws hairlines one device pixel wide at 100%, 125%, 150% and 200%", () => {
+    expect(declarations(glassCss, ":root")["--lg-px"]).toBe("1px");
+    const steps = new Map<number, number>();
+    for (const m of glassCss.matchAll(/@media \(min-resolution: ([\d.]+)dppx\) \{ :root \{ --lg-px: ([\d.]+)px; \} \}/g)) {
+      steps.set(Number(m[1]), Number(m[2]));
+    }
+    for (const dppx of [1.25, 1.5, 2]) {
+      expect(steps.get(dppx), `${dppx}dppx`).toBeDefined();
+      expect(steps.get(dppx)! * dppx).toBeCloseTo(1, 3);
+    }
+  });
+
+  it("scales the glint from over-dark to over-bright with the local mean, within what a filter can hold", () => {
+    const tokens = tokensFor("dark", "bar");
+    const overDark = Number(tokens["--lg-rim-over-dark"]);
+    const overBright = Number(tokens["--lg-rim-over-bright"]);
+    expect(overDark).toBe(1.15);
+    expect(overBright).toBe(0.7);
+    const m = rimGainMatrix(overDark, overBright);
+    expect(m).toHaveLength(20);
+    expect(m.slice(0, 15).every((v) => v === 0)).toBe(true);
+    const alpha = (rgb: readonly number[]) => m[15]! * rgb[0]! + m[16]! * rgb[1]! + m[17]! * rgb[2]! + m[19]!;
+    // The amplitude carries overDark, the row the rest: their product is the strength.
+    expect(alpha([0, 0, 0]) * overDark).toBeCloseTo(1.15, 6);
+    expect(alpha([1, 1, 1]) * overDark).toBeCloseTo(0.7, 6);
+    for (const scheme of ["dark", "light"] as const) {
+      const t = tokensFor(scheme, "bar");
+      // feFuncA clamps to 1: the peak must fit, or the dark end would be cut off unseen.
+      expect(Number(t["--lg-glint"]) * Number(t["--lg-rim-over-dark"])).toBeLessThanOrEqual(1);
+    }
   });
 });

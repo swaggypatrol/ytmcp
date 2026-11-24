@@ -4,6 +4,7 @@
   import { t } from "../i18n/index.svelte.js";
   import TileGrid from "./TileGrid.svelte";
   import TrackCollectionView from "./TrackCollectionView.svelte";
+  import type { TrackRowLike, TrackRowPlayback } from "./VirtualizedTrackList.svelte";
 
   interface Props {
     artistId: string;
@@ -12,6 +13,8 @@
     tracks: readonly Track[];
     currentVideoId: string | null;
     mockMode: boolean;
+    like?: TrackRowLike;
+    nowPlaying?: TrackRowPlayback;
     onBack?: () => void;
     onRetry: () => void;
     onOpenOfficialPlayer: () => void;
@@ -27,6 +30,8 @@
     tracks,
     currentVideoId,
     mockMode,
+    like,
+    nowPlaying,
     onBack,
     onRetry,
     onOpenOfficialPlayer,
@@ -43,11 +48,14 @@
   );
 </script>
 
+<!-- No Play: an artist's top songs play one at a time (there is no artist playback context). -->
 <TrackCollectionView
   name="artist"
   title={artist?.name ?? t.artist.title}
   cover={artist?.cover}
   coverSeed={artistId}
+  roundCover
+  listHeading={t.artist.topSongs}
   {view}
   {tracks}
   hasMore={false}
@@ -55,6 +63,8 @@
   moreError={null}
   {currentVideoId}
   {mockMode}
+  {like}
+  {nowPlaying}
   {onBack}
   {onRetry}
   {onOpenOfficialPlayer}

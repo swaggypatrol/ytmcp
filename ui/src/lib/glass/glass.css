@@ -1,19 +1,28 @@
 /*
  * Liquid glass: the app's only translucent material. Used by the sidebar, the floating player
- * bar and overlays (dialogs, menus), nowhere else.
+ * bar and overlays (dialogs, menus, toasts), nowhere else. Three levels of one material: the
+ * sidebar and the player bar (radius 22), and overlays (radius 16), which float higher and are
+ * more solid so that what is written on them stays readable over any content.
  *
  * liquid-glass.ts reads the --lg-* optics tokens and builds one SVG filter per surface; this
  * file owns everything that needs no per-element geometry: tint, rim, shadow, the palette for
- * content placed on glass, press/morph motion and the opaque fallbacks.
+ * content placed on glass, morph motion and the opaque fallbacks. How controls react on glass
+ * lives with the controls (styles/controls.css).
+ *
+ * Edge rules: one light source at the upper left with a long falloff; the far corner returns at
+ * most a quarter of it; highlights are only ever reduced, never raised to make an edge clearer.
  *
  * After changing a colour, tone or fill token run the tone audit (__tests__/tone.test.ts): it
  * derives the worst-case contrast of everything written on glass from these values.
  */
 
-@property --lg-light-x { syntax: "<percentage>"; inherits: true; initial-value: 28%; }
-@property --lg-light-y { syntax: "<percentage>"; inherits: true; initial-value: 0%; }
+@property --lg-light-x { syntax: "<percentage>"; inherits: true; initial-value: 16%; }
+@property --lg-light-y { syntax: "<percentage>"; inherits: true; initial-value: -8%; }
 
 :root {
+  /* One device pixel, for hairlines that must stay crisp at every UI scale (set below). */
+  --lg-px: 1px;
+
   /* Optics (read by liquid-glass.ts). Lengths are CSS px. */
   --lg-bezel: 22px;            /* width of the curved rim that bends light */
   --lg-reach: 30px;            /* how far a ray entering at the outline lands inside; about 1.4x
@@ -26,7 +35,11 @@
   --lg-tone-gain: 0.8;         /* brightness kept where the backdrop is at the scheme's own end */
   --lg-tone-adapt: 0.6;        /* how much is taken away as the local mean moves to the far end */
 
-  --lg-glint: 0.5;             /* peak opacity of the specular line along the outline */
+  --lg-glint: 0.4;             /* opacity of the lens's specular line on the edges facing the light */
+  --lg-glint-return: 0.25;     /* the opposite edges, as a share of it */
+  --lg-rim-over-dark: 1.15;    /* the line's strength where the local backdrop is black ... */
+  --lg-rim-over-bright: 0.7;   /* ... and where it is white: no glare over bright covers, still
+                                  there over dark ones */
 
   /* Surface colours (dark scheme). */
   --lg-scheme: dark;
@@ -36,16 +49,22 @@
   --lg-fill-hover: oklch(1 0 0 / 0.07);
   --lg-fill-active: oklch(1 0 0 / 0.12);
   --lg-hairline: oklch(1 0 0 / 0.12);
+  /* The CSS rim: a light centred above the upper-left corner fading along both edges, a return
+     on the far corner of at most a quarter of it, and a faint line that closes the ring. */
   --lg-rim-bright: oklch(1 0 0 / 0.24);
-  --lg-rim-mid: oklch(1 0 0 / 0.1);
-  --lg-rim-dim: oklch(1 0 0 / 0.04);
-  --lg-sheen: oklch(1 0 0 / 0.1);
-  --lg-sheen-strength: 0.25;   /* opacity of the broad sheen; counted by the tone audit */
-  --lg-bezel-light: oklch(1 0 0 / 0.16);
-  --lg-bezel-shade: oklch(0 0 0 / 0.28);
-  --lg-shadow: 0 0 0 0.5px oklch(0 0 0 / 0.35), 0 1px 2px oklch(0 0 0 / 0.3), 0 10px 28px -6px oklch(0 0 0 / 0.5);
-  --lg-shadow-raised: 0 0 0 0.5px oklch(0 0 0 / 0.4), 0 2px 4px oklch(0 0 0 / 0.32), 0 22px 54px -10px oklch(0 0 0 / 0.62);
-  --lg-rim-width: 1px;
+  --lg-rim-mid: oklch(1 0 0 / 0.08);
+  --lg-rim-return: oklch(1 0 0 / 0.06);
+  --lg-rim-close: oklch(1 0 0 / 0.05);
+  --lg-sheen: oklch(1 0 0 / 0.07);  /* the inner glow along the rim; there is no face light */
+  /* Share of that glow the tone audit counts under glyphs: its peak, at the outline. The glow is
+     an inset shadow whose edge lies 0.6 bezel outside the surface, blurred with sigma 0.45 bezel,
+     so the outline gets Φ(−1.33) ≈ 0.09 of it and glyphs, further in, less. */
+  --lg-sheen-strength: 0.1;
+  --lg-bezel-light: oklch(1 0 0 / 0.12);   /* top light line, one device pixel, unblurred */
+  --lg-bezel-shade: oklch(0 0 0 / 0.18);   /* bottom dark line */
+  --lg-shadow: 0 0 0 var(--lg-px) oklch(0 0 0 / 0.28), 0 1px 2px oklch(0 0 0 / 0.22), 0 18px 44px -14px oklch(0 0 0 / 0.42);
+  --lg-shadow-raised: 0 0 0 var(--lg-px) oklch(0 0 0 / 0.32), 0 2px 4px oklch(0 0 0 / 0.26), 0 26px 60px -16px oklch(0 0 0 / 0.56);
+  --lg-rim-width: var(--lg-px);
   --lg-fallback-blur: 22px;
 
   /* Palette for content on glass. Body text needs 4.5:1, icons and marks 3:1, on any backdrop. */
@@ -66,21 +85,35 @@
 
 
   /* Motion */
-  --lg-duration-press: 520ms;   /* spring back after release */
-  --lg-duration-morph: 460ms;   /* overlay settling to full size */
+  --lg-duration-press: 240ms;   /* spring back after release: one overshoot and home */
+  --lg-duration-morph: 280ms;   /* overlay settling to full size */
   --lg-duration-hover: 160ms;
-  --lg-duration-quick: 90ms;    /* press-in, overlay fade-in */
+  --lg-duration-quick: 90ms;    /* press-in */
   --lg-press-scale: 0.94;
-  --lg-morph-from: 0.86;
-  --lg-ease-spring: linear(0, 0.1, 0.336, 0.617, 0.877, 1.073, 1.19, 1.233, 1.217, 1.166, 1.101, 1.039,
-      0.99, 0.959, 0.946, 0.948, 0.959, 0.974, 0.988, 1.001, 1.009, 1.012, 1.012, 1.01, 1.007, 1.003, 1);
+  --lg-morph-from: 0.92;
+  --lg-morph-to: 0.91;
+  --lg-duration-dissolve: 360ms;
+  --lg-duration-dismiss: 160ms;
+  --lg-morph-content-blur: 3px;
+  /* The first 12 of the spring's 20 ms steps, ended on 1: same frequency and 23% overshoot, without
+     the tail after about 236 ms, which moves a small control by less than a third of a pixel. For
+     a large surface (a 300 px card) keep the spring to its second return, about 380 ms. */
+  --lg-ease-spring: linear(0, 0.1, 0.336, 0.617, 0.877, 1.073, 1.19, 1.233, 1.217, 1.166, 1.101, 1.039, 1);
+  /* The brand ring settles after one full turn. */
   --lg-ease-settle: linear(0, 0.064, 0.211, 0.388, 0.562, 0.713, 0.835, 0.924, 0.984, 1.021, 1.04, 1.046,
       1.044, 1.038, 1.03, 1.022, 1.014, 1.009, 1.004, 1.001, 1);
 }
 
+/* One device pixel at the UI scales in use (Settings' UI scale is a window zoom, so it shows up
+   here too). Between these steps the line is slightly over one device pixel, never under. */
+@media (min-resolution: 1.25dppx) { :root { --lg-px: 0.8px; } }
+@media (min-resolution: 1.5dppx) { :root { --lg-px: 0.6667px; } }
+@media (min-resolution: 2dppx) { :root { --lg-px: 0.5px; } }
+@media (min-resolution: 3dppx) { :root { --lg-px: 0.3334px; } }
+
 :root[data-theme="light"] {
   --lg-scheme: light;
-  --lg-glint: 0.9;
+  --lg-glint: 0.75;
   --lg-tint: oklch(0.985 0.004 91.4 / 0.36);
   --lg-tint-plain: oklch(0.96 0.004 91.4 / 0.86);
   --lg-solid: oklch(0.975 0.003 91.4);
@@ -88,13 +121,14 @@
   --lg-fill-active: oklch(0 0 0 / 0.08);
   --lg-hairline: oklch(0 0 0 / 0.1);
   --lg-rim-bright: oklch(1 0 0 / 0.6);
-  --lg-rim-mid: oklch(1 0 0 / 0.25);
-  --lg-rim-dim: oklch(1 0 0 / 0.1);
-  --lg-sheen: oklch(1 0 0 / 0.3);
+  --lg-rim-mid: oklch(1 0 0 / 0.22);
+  --lg-rim-return: oklch(1 0 0 / 0.15);
+  --lg-rim-close: oklch(1 0 0 / 0.1);
+  --lg-sheen: oklch(1 0 0 / 0.21);
   --lg-bezel-light: oklch(1 0 0 / 0.5);
-  --lg-bezel-shade: oklch(0.3 0.01 286 / 0.14);
-  --lg-shadow: 0 0 0 0.5px oklch(0.24 0.01 286 / 0.14), 0 1px 2px oklch(0.24 0.01 286 / 0.12), 0 10px 28px -6px oklch(0.24 0.01 286 / 0.2);
-  --lg-shadow-raised: 0 0 0 0.5px oklch(0.24 0.01 286 / 0.16), 0 2px 4px oklch(0.24 0.01 286 / 0.14), 0 22px 54px -10px oklch(0.24 0.01 286 / 0.28);
+  --lg-bezel-shade: oklch(0.3 0.01 286 / 0.09);
+  --lg-shadow: 0 0 0 var(--lg-px) oklch(0.24 0.01 286 / 0.12), 0 1px 2px oklch(0.24 0.01 286 / 0.1), 0 18px 44px -14px oklch(0.24 0.01 286 / 0.2);
+  --lg-shadow-raised: 0 0 0 var(--lg-px) oklch(0.24 0.01 286 / 0.14), 0 2px 4px oklch(0.24 0.01 286 / 0.12), 0 26px 60px -16px oklch(0.24 0.01 286 / 0.28);
 
   --lg-text-primary: oklch(0.2 0.01 286);
   --lg-text-secondary: oklch(0.36 0.01 286);
@@ -122,15 +156,17 @@
      because nothing bounds the brightness of what shows through. */
   background-color: var(--lg-tint-plain);
   backdrop-filter: var(--lg-backdrop, blur(var(--lg-fallback-blur)) saturate(var(--lg-saturation)));
+  /* Elevation, then the bevel: a top light line, a bottom dark line and a glow close to the rim. */
   box-shadow:
-    var(--lg-shadow),
-    inset 0 1px 1px -0.5px var(--lg-bezel-light),
-    inset 0 -1px 2px -1px var(--lg-bezel-shade),
-    inset 0 0 calc(var(--lg-bezel) * 0.9) calc(var(--lg-bezel) * -0.45) var(--lg-sheen);
+    var(--lg-elevation, var(--lg-shadow)),
+    inset 0 var(--lg-px) 0 0 var(--lg-bezel-light),
+    inset 0 -1px 1px -1px var(--lg-bezel-shade),
+    inset 0 0 calc(var(--lg-bezel) * 0.9) calc(var(--lg-bezel) * -0.6) var(--lg-sheen);
 
   /* Content on glass uses the app's generic tokens; here they resolve to the glass palette, so
      a component placed on glass cannot pick a colour the tone audit does not cover. Fills never
-     stack beyond --lg-fill-active: resting cards are transparent, hover and selection share it. */
+     stack beyond --lg-fill-active: resting controls are transparent, hover is the light fill,
+     pressed and selected share the strong one. */
   --text-primary: var(--lg-text-primary);
   --text-secondary: var(--lg-text-secondary);
   --text-muted: var(--lg-text-secondary);
@@ -141,7 +177,9 @@
   --agent-soft: var(--lg-fill-active);
   --bg-elevated: transparent;
   --bg-subtle: var(--lg-fill-hover);
-  --bg-elevated-hover: var(--lg-fill-active);
+  --bg-elevated-hover: var(--lg-fill-hover);
+  --control-fill-hover: var(--lg-fill-hover);
+  --control-fill-active: var(--lg-fill-active);
   --border-subtle: var(--lg-hairline);
   --border-strong: var(--lg-hairline);
   --status-success: var(--lg-status-success);
@@ -153,8 +191,8 @@
   scrollbar-color: var(--lg-hairline) transparent;
 }
 
-/* Specular rim: a hairline ring lit from the upper left, with a weaker return on the far corner.
-   The broad sheen follows --lg-light-x/y, which pointer tracking nudges. */
+/* Specular rim, one device pixel wide. The pointer nudges the light a little sideways
+   (--lg-light-shift, set by liquid-glass.ts); it never leaves the upper left. */
 .lg::before {
   content: "";
   position: absolute;
@@ -165,21 +203,11 @@
   padding: var(--lg-rim-width);
   pointer-events: none;
   background:
-    radial-gradient(60% 140% at var(--lg-light-x) var(--lg-light-y), var(--lg-rim-bright), transparent 70%),
-    linear-gradient(135deg, var(--lg-rim-mid) 0%, var(--lg-rim-dim) 38%, var(--lg-rim-dim) 62%, var(--lg-rim-mid) 100%);
+    radial-gradient(120% 90% at calc(var(--lg-light-x) + var(--lg-light-shift, 0%)) var(--lg-light-y),
+      var(--lg-rim-bright), var(--lg-rim-mid) 36%, transparent 70%),
+    radial-gradient(80% 60% at 94% 108%, var(--lg-rim-return), transparent 62%),
+    linear-gradient(var(--lg-rim-close), var(--lg-rim-close));
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-}
-
-.lg::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  corner-shape: inherit;
-  pointer-events: none;
-  background: radial-gradient(90% 120% at var(--lg-light-x) var(--lg-light-y), var(--lg-sheen), transparent 60%);
-  opacity: var(--lg-sheen-strength);
 }
 
 .lg[data-lg-lens] { background-color: var(--lg-tint); }
@@ -197,20 +225,17 @@
 .lg--popover {
   --lg-bezel: 24px;
   --lg-reach: 33px;
-  --lg-tint: color-mix(in oklch, var(--lg-solid) 46%, transparent);
-  box-shadow:
-    var(--lg-shadow-raised),
-    inset 0 1px 1px -0.5px var(--lg-bezel-light),
-    inset 0 -1px 2px -1px var(--lg-bezel-shade),
-    inset 0 0 calc(var(--lg-bezel) * 0.9) calc(var(--lg-bezel) * -0.45) var(--lg-sheen);
+  --lg-tint: color-mix(in oklch, var(--lg-solid) 60%, transparent);
+  --lg-elevation: var(--lg-shadow-raised);
 }
+/* Overlays are the small level of the material: radius 16 unless the overlay sets its own
+   shape (a toast is a capsule), so this stays at one class; the dialog panel's generic xl
+   rounding is the one shape it replaces. */
+.lg--popover:where(.lg),
+.lg--popover.surface-rounded-xl { border-radius: var(--radius-lg); }
 
-/* Controls on glass are capsules. The accent is not a body-text colour here, and white on the
-   app accent is too weak, so accent chips keep primary text and the prominent button gets its
-   own fill. */
-.lg .btn-icon,
-.lg .btn-secondary,
-.lg .btn-primary { border-radius: 9999px; border-color: transparent; }
+/* The accent is not a body-text colour on glass, and white on the app accent is too weak, so
+   accent chips keep primary text and the prominent button gets its own fill. */
 .lg .chip-accent { color: var(--lg-text-primary); }
 .lg .btn-primary,
 .lg .btn-primary:hover:not(:disabled) { background-color: var(--lg-accent-fill); color: var(--lg-on-accent-fill); }
@@ -219,56 +244,125 @@
    soft shade on dark glass. */
 .lg .icon { filter: var(--lg-icon-lift); }
 
-/* ---- interaction -------------------------------------------------------------------------- */
+/* ---- motion ------------------------------------------------------------------------------- */
 
-/* A control on glass: fills on hover, sinks while pressed, springs back on release. */
-.lg-press {
-  transition:
-    transform var(--lg-duration-press) var(--lg-ease-spring),
-    background-color var(--lg-duration-hover) ease-out;
+/* The optical tracks also drive the per-surface SVG filter while they transition. */
+@property --lg-morph-frost {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
 }
-.lg-press:hover:not(:disabled) { background-color: var(--lg-fill-hover); }
-.lg-press:active:not(:disabled) {
-  transform: scale(var(--lg-press-scale));
-  background-color: var(--lg-fill-active);
-  transition-duration: var(--lg-duration-quick), var(--lg-duration-hover);
-  transition-timing-function: ease-out, ease-out;
+@property --lg-morph-tint {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
 }
-.lg-press[aria-current="page"],
-.lg-press[aria-pressed="true"] { background-color: var(--lg-fill-active); }
+@property --lg-morph-rim {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
 
-/* An overlay that grows out of where it was summoned. The fade is kept short: while opacity is
-   below 1 the unfiltered content shows through. */
-.lg-morph {
-  transform-origin: var(--lg-morph-origin, 50% 60%);
-  transition:
-    transform var(--lg-duration-morph) var(--lg-ease-settle),
-    opacity var(--lg-duration-quick) ease-out;
+/* Solid and reduced-motion overlays fade in place. The full material tracks are opt-in below. */
+:root .lg-overlay {
+  --lg-overlay-exit-duration: var(--duration-fast);
+  opacity: 1;
+  transition: opacity var(--duration-fast) ease-out !important;
 }
+:root .lg-overlay[data-leaving] { opacity: 0; pointer-events: none; }
 @starting-style {
-  .lg-morph { opacity: 0; transform: scale(var(--lg-morph-from)); }
+  :root .lg-overlay { opacity: 0; }
+}
+:root[data-reduce-motion="true"] .lg-overlay {
+  transition-duration: var(--duration-fast) !important;
+}
+
+@media (prefers-reduced-motion: no-preference) and (prefers-reduced-transparency: no-preference) and (forced-colors: none) {
+  :root:not([data-reduce-motion="true"], [data-reduce-transparency="true"]) {
+    & .lg-overlay {
+      --lg-overlay-exit-duration: var(--lg-duration-dismiss);
+      --lg-overlay-tint: var(--lg-tint-plain);
+      opacity: 1;
+      background-color: color-mix(in oklch, var(--lg-overlay-tint) calc(var(--lg-morph-tint) * 100%), transparent);
+      transform-origin: var(--lg-morph-origin, 50% 60%);
+      transition:
+        transform 245ms cubic-bezier(0.1, 0.8, 0.3, 1),
+        box-shadow var(--lg-duration-morph) ease-out,
+        --lg-morph-frost 150ms cubic-bezier(0, 0.9, 0.2, 1),
+        --lg-morph-tint var(--lg-duration-morph) cubic-bezier(0.3, 0.2, 0.6, 1),
+        --lg-morph-rim var(--lg-duration-morph) linear !important;
+    }
+    & .lg-overlay[data-lg-lens] {
+      --lg-overlay-tint: var(--lg-tint);
+      background-color: color-mix(in oklch, var(--lg-overlay-tint) calc(var(--lg-morph-tint) * 100%), transparent);
+    }
+    & .lg-overlay:not([data-lg-lens]) {
+      backdrop-filter: blur(calc(var(--lg-morph-frost) * var(--lg-fallback-blur)))
+        saturate(calc(1 + var(--lg-morph-tint) * (var(--lg-saturation) - 1)));
+    }
+    & .lg-overlay::before { opacity: var(--lg-morph-rim); }
+    & .lg-overlay > .lg-overlay-content {
+      opacity: 1;
+      filter: blur(0);
+      transition: opacity 245ms cubic-bezier(0.3, 0.3, 0.6, 1), filter 180ms ease-out;
+    }
+    @starting-style {
+      & .lg-overlay {
+        --lg-morph-frost: 0;
+        --lg-morph-tint: 0;
+        --lg-morph-rim: 0;
+        box-shadow: none;
+        transform: scale(var(--lg-morph-from));
+      }
+      & .lg-overlay > .lg-overlay-content { opacity: 0; filter: blur(var(--lg-morph-content-blur)); }
+    }
+    & .lg-overlay[data-leaving] {
+      --lg-exit-ratio: calc(var(--lg-overlay-exit-duration) / var(--lg-duration-dissolve));
+      --lg-morph-frost: 0;
+      --lg-morph-tint: 0;
+      --lg-morph-rim: 0;
+      box-shadow: none;
+      transform: scale(var(--lg-morph-to));
+      transition:
+        transform calc(190ms * var(--lg-exit-ratio)) cubic-bezier(0.45, 0, 0.55, 1),
+        box-shadow calc(190ms * var(--lg-exit-ratio)) ease-out,
+        --lg-morph-frost calc(260ms * var(--lg-exit-ratio)) cubic-bezier(0.5, 0.1, 0.6, 0.9) calc(20ms * var(--lg-exit-ratio)),
+        --lg-morph-tint calc(190ms * var(--lg-exit-ratio)) cubic-bezier(0.2, 0.6, 0.4, 1),
+        --lg-morph-rim var(--lg-overlay-exit-duration) cubic-bezier(0.05, 0.7, 0.2, 1) !important;
+    }
+    & .lg-overlay[data-leaving="dissolve"] { --lg-overlay-exit-duration: var(--lg-duration-dissolve); }
+    /* Keep the dialog's large shadow static so its five motion tracks stay within frame budget. */
+    & .app-dialog-layer > .lg-overlay { box-shadow: var(--lg-elevation); }
+    & .lg-overlay[data-leaving] > .lg-overlay-content {
+      opacity: 0;
+      filter: blur(var(--lg-morph-content-blur));
+      transition: opacity calc(155ms * var(--lg-exit-ratio)) cubic-bezier(0.3, 0.3, 0.6, 1),
+        filter calc(155ms * var(--lg-exit-ratio)) ease-in;
+    }
+  }
 }
 
 /* ---- fallbacks ---------------------------------------------------------------------------- */
 
+/* Reduced transparency: a solid fill and a 1 px hairline, no highlights; the elevation stays. */
 @media (prefers-reduced-transparency: reduce) {
-  .lg, .lg[data-lg-lens] { backdrop-filter: none; background-color: var(--lg-solid); }
-  .lg::after { display: none; }
+  .lg, .lg[data-lg-lens] {
+    backdrop-filter: none;
+    background-color: var(--lg-solid);
+    box-shadow: var(--lg-elevation, var(--lg-shadow)), inset 0 0 0 1px var(--lg-hairline);
+  }
+  .lg::before { display: none; }
 }
-:root[data-reduce-transparency="true"] .lg { backdrop-filter: none; background-color: var(--lg-solid); }
-:root[data-reduce-transparency="true"] .lg::after { display: none; }
-
-/* Reduced motion: no scaling at all; colour and opacity changes stay. */
-@media (prefers-reduced-motion: reduce) {
-  .lg-press:active:not(:disabled) { transform: none; }
-  .lg-morph { transition-property: opacity; }
+:root[data-reduce-transparency="true"] .lg {
+  backdrop-filter: none;
+  background-color: var(--lg-solid);
+  box-shadow: var(--lg-elevation, var(--lg-shadow)), inset 0 0 0 1px var(--lg-hairline);
 }
-:root[data-reduce-motion="true"] .lg-press:active:not(:disabled) { transform: none; }
-:root[data-reduce-motion="true"] .lg-morph { transition-property: opacity; }
+:root[data-reduce-transparency="true"] .lg::before { display: none; }
 
 @media (forced-colors: active) {
   .lg, .lg[data-lg-lens] { backdrop-filter: none; background-color: Canvas; color: CanvasText; box-shadow: none; border: 1px solid CanvasText; }
-  .lg::before, .lg::after { display: none; }
+  .lg::before { display: none; }
   .lg .icon, .lg .btn-play-focal .icon { filter: none; }
   .lg-press[aria-current="page"], .lg-press[aria-pressed="true"] { outline: 1px solid Highlight; outline-offset: -1px; }
 }

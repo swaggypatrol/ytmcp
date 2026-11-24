@@ -10,6 +10,11 @@
 //!
 //! The DJ is on while an agent waits: with no wait call for a few minutes nothing accumulates
 //! and no prompt is made. The agent decides what to do with a prompt, including nothing.
+//!
+//! Every prompt lists what the listener did by hand since that client's previous prompt. A few
+//! of those actions say where the music should go (skipping track after track, picking
+//! something, going back to hear a track again, choosing another Up Next filter); a few seconds
+//! after such a burst the agent gets a listener-signal prompt, at most one every two minutes.
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -18,15 +23,17 @@ use std::time::Duration;
 
 use ytm_control_api::{
     ControlError, DjChattiness, DjCue, DjCueInput, DjCueKind, DjCueReason, DjCueReply,
-    DjInteraction, DjListener, DjNowPlaying, DjPreference, DjRecentTrack, DjTrack, DjTrackOutcome,
-    Track,
+    DjInteraction, DjListener, DjNowPlaying, DjOfficialUpNext, DjPreference, DjRecentTrack,
+    DjTrack, DjTrackOutcome, Track, UpcomingStatus,
 };
-use ytm_protocol::{AccountScope, PlaybackStatus, TrackInstanceId};
+use ytm_protocol::{AccountScope, OfficialUpcomingStatus, PlaybackStatus, TrackInstanceId};
 
+use super::listener_log::{self, LoggedAction};
 use super::state::track_projection;
 use super::{ControlService, ReadGrant, unavailable};
 use crate::CoreEngine;
 use crate::engine::ControlRead;
+use crate::queue_window::{Upcoming, upcoming};
 
 const SAMPLE_MS: u64 = 1_000;
 pub(crate) const TICK_MS: u64 = 15_000;
@@ -50,11 +57,33 @@ const ATTRIBUTION_MS: u64 = 8_000;
 const RECENT_LIMIT: usize = 8;
 const PENDING_LIMIT: usize = 8;
 const UP_NEXT_LIMIT: usize = 5;
+/// Official suggestions named in a prompt's text.
+const PROMPT_OFFICIAL_LIMIT: usize = 3;
+/// Unselected Up Next filters a prompt offers for steering those suggestions.
+const PROMPT_FILTER_LIMIT: usize = 4;
 /// Each unanswered check-in doubles the minimum and maximum gaps, at most this many times (8x).
 const UNANSWERED_DOUBLINGS: u32 = 3;
 /// At most this many check-ins within `CHECK_IN_WINDOW_MS` while nobody answers.
 const UNANSWERED_CHECK_IN_LIMIT: usize = 3;
 const CHECK_IN_WINDOW_MS: u64 = 60 * 60_000;
+/// A listener signal waits this long after the listener's last action, so a burst is one prompt.
+const SIGNAL_SETTLE_MS: u64 = 5_000;
+/// At most one listener signal this often.
+const SIGNAL_GAP_MS: u64 = 120_000;
+/// Listener skips this close together count as a streak.
+const SKIP_STREAK_MS: u64 = 180_000;
+/// Going back after this much of a track is hearing it again.
+const REPLAY_HEARD_MS: u64 = 10_000;
+/// Going back this early in a track goes to the previous one rather than restarting it.
+const PREVIOUS_TRACK_MS: u64 = 3_000;
+/// Actions a listener-signal prompt describes in words; the rest are only listed.
+const SIGNAL_NOTE_LIMIT: usize = 3;
+/// A signal prompt names at most this many of the tracks skipped in a row.
+const SKIPS_NAMED: usize = 3;
+/// A signal this soon after its first trigger says the listener "just" did it.
+const SIGNAL_JUST_MS: u64 = 15_000;
+/// Prompts per client whose action marks are kept for a lost reply.
+const HANDOUT_LIMIT: usize = 16;
 
 struct Pace {
     coefficient: f64,
@@ -171,9 +200,15 @@ impl Heartbeat {
     }
 }
 
+/// Whether at most one track is known to follow. Unknown is not little: it gets the normal
+/// lead and no low-queue reason.
+fn little_queued(queued_after: Option<usize>) -> bool {
+    queued_after.is_some_and(|count| count <= 1)
+}
+
 /// How long before the end of a track its prompt is due.
-pub(crate) fn ending_lead_ms(duration_ms: u64, queued_after: usize) -> u64 {
-    let lead = if queued_after <= 1 {
+pub(crate) fn ending_lead_ms(duration_ms: u64, queued_after: Option<usize>) -> u64 {
+    let lead = if little_queued(queued_after) {
         LOW_QUEUE_LEAD_MS
     } else {
         LEAD_MS
@@ -182,13 +217,17 @@ pub(crate) fn ending_lead_ms(duration_ms: u64, queued_after: usize) -> u64 {
 }
 
 /// From the ending prompt's lead until the track is over, including its very end.
-fn near_end(duration_ms: Option<u64>, position_ms: u64, queued_after: usize) -> bool {
+fn near_end(duration_ms: Option<u64>, position_ms: u64, queued_after: Option<usize>) -> bool {
     duration_ms.is_some_and(|duration| {
         position_ms.saturating_add(ending_lead_ms(duration, queued_after)) >= duration
     })
 }
 
-fn in_ending_window(duration_ms: Option<u64>, position_ms: u64, queued_after: usize) -> bool {
+fn in_ending_window(
+    duration_ms: Option<u64>,
+    position_ms: u64,
+    queued_after: Option<usize>,
+) -> bool {
     near_end(duration_ms, position_ms, queued_after)
         && duration_ms.is_some_and(|duration| position_ms < duration)
 }
@@ -201,33 +240,62 @@ pub(crate) struct Sample {
     pub track: Option<Track>,
     pub position_ms: u64,
     pub duration_ms: Option<u64>,
-    pub queued_after: usize,
+    /// Tracks queued after the current occurrence; `None` when the current occurrence is not
+    /// in the loaded window, so nothing is known about what follows.
+    pub queued_after: Option<usize>,
     pub up_next: Vec<Track>,
     pub more_queued: bool,
+    /// YouTube Music's own continuation after the explicit list; `None` when not readable.
+    pub official: Option<DjOfficialUpNext>,
+    /// Labels of the Up Next filters offered but not selected, at most [`PROMPT_FILTER_LIMIT`].
+    pub filter_choices: Vec<String>,
     pub last_manual_ms: Option<u64>,
+    /// What the listener did by hand, oldest first.
+    pub actions: Arc<[LoggedAction]>,
 }
 
 impl Sample {
     fn from_read(read: &ControlRead) -> Self {
         let player = &read.snapshot.player;
         let track = player.current_track.as_ref().map(track_projection);
-        let (mut after, mut has_more) = (Vec::new(), false);
-        if let Some(queue) = read.queue.as_ref() {
-            let start = queue
-                .current_entry_id
-                .as_ref()
-                .and_then(|current| {
-                    queue
-                        .entries
-                        .iter()
-                        .position(|entry| &entry.entry_id == current)
-                })
-                .map_or(0, |index| index + 1);
-            after = queue.entries.iter().skip(start).collect();
+        let (mut after, mut has_more, mut known) = (&[][..], false, false);
+        if let Some(queue) = read.queue.as_ref()
+            && let Upcoming::Known { after: loaded, .. } = upcoming(queue)
+        {
+            (after, known) = (loaded, true);
             // An autoplay tail after a fully loaded list is not queued music: YouTube Music only
             // adds suggestions there, which the prompt mentions separately.
             has_more = queue.has_more == Some(true) && queue.explicit_complete != Some(true);
         }
+        let official = read.queue.as_ref().and_then(|queue| {
+            let official = queue.official_upcoming.as_ref()?;
+            Some(DjOfficialUpNext {
+                status: official.status,
+                tracks: official
+                    .tracks
+                    .iter()
+                    .take(UP_NEXT_LIMIT)
+                    .map(|track| DjTrack::from(&track_projection(track)))
+                    .collect(),
+                more: official.tracks.len() > UP_NEXT_LIMIT,
+                filter: queue
+                    .filters
+                    .iter()
+                    .flatten()
+                    .find(|filter| filter.selected)
+                    .map(|filter| filter.label.clone()),
+            })
+        });
+        let filter_choices = read
+            .queue
+            .as_ref()
+            .and_then(|queue| queue.filters.as_ref())
+            .into_iter()
+            .flatten()
+            .filter(|filter| !filter.selected)
+            .take(PROMPT_FILTER_LIMIT)
+            .map(|filter| filter.label.clone())
+            .collect();
         let duration_ms = player
             .time_anchor
             .duration_ms
@@ -239,19 +307,24 @@ impl Sample {
             instance: player.track_instance_id.clone(),
             position_ms: player.time_anchor.position_ms,
             duration_ms,
-            queued_after: if has_more {
-                after.len().max(2)
-            } else {
-                after.len()
-            },
+            queued_after: known.then(|| {
+                if has_more {
+                    after.len().max(2)
+                } else {
+                    after.len()
+                }
+            }),
             more_queued: has_more || after.len() > UP_NEXT_LIMIT,
             up_next: after
                 .iter()
                 .take(UP_NEXT_LIMIT)
                 .map(|entry| track_projection(&entry.track))
                 .collect(),
+            official,
+            filter_choices,
             track,
             last_manual_ms: read.last_manual_command_ms,
+            actions: read.listener_actions.clone(),
         }
     }
 }
@@ -339,6 +412,119 @@ pub(crate) struct Pending {
     pub reasons: Vec<DjCueReason>,
     pub fired_ms: u64,
     instance: Option<TrackInstanceId>,
+    /// What the listener did, for a listener-signal prompt.
+    note: Option<String>,
+}
+
+/// A listener signal waiting for its burst to settle, or for the gap since the previous one.
+struct SignalDue {
+    due_ms: u64,
+    triggers: Vec<Trigger>,
+}
+
+/// What in a burst says where the music should go.
+enum Trigger {
+    /// The run of unfinished skips, as long as it has grown within the burst.
+    Streak {
+        at_ms: u64,
+        left: Vec<Option<DjTrack>>,
+    },
+    /// A pick, a filter choice or repeat-one, worded from the action as it stands when the
+    /// signal fires, when its subject is known.
+    Action(Box<LoggedAction>),
+    /// Going back to hear a track again, named when it happened.
+    Replay { at_ms: u64, title: String },
+}
+
+impl Trigger {
+    fn at_ms(&self) -> u64 {
+        match self {
+            Self::Streak { at_ms, .. } | Self::Replay { at_ms, .. } => *at_ms,
+            Self::Action(action) => action.at_ms,
+        }
+    }
+
+    /// The reason this trigger gives and what the listener did, in words.
+    fn words(&self, actions: &[LoggedAction]) -> (DjCueReason, String) {
+        use ytm_control_api::ListenerActionKind as Kind;
+        let action = match self {
+            Self::Streak { left, .. } => {
+                let names: Vec<_> = left.iter().flatten().map(track_title).collect();
+                let shown = &names[names.len().saturating_sub(SKIPS_NAMED)..];
+                let named = match names.len() - shown.len() {
+                    _ if shown.is_empty() => String::new(),
+                    0 => format!(" ({})", shown.join(", ")),
+                    more => format!(" ({}, and {more} before them)", shown.join(", ")),
+                };
+                return (
+                    DjCueReason::SkipStreak,
+                    format!(
+                        "skipped {} tracks in a row without finishing them{named}",
+                        left.len()
+                    ),
+                );
+            }
+            Self::Replay { title, .. } => {
+                return (
+                    DjCueReason::Replay,
+                    format!("went back to hear {title} again"),
+                );
+            }
+            Self::Action(held) => actions
+                .iter()
+                .find(|action| action.id == held.id)
+                .unwrap_or(held),
+        };
+        let subject = action.about().map(track_title);
+        match action.kind {
+            Kind::Repeat => (
+                DjCueReason::Replay,
+                "turned on repeat for the current track".to_owned(),
+            ),
+            Kind::UpNextFilter => (
+                DjCueReason::FilterChanged,
+                format!(
+                    "chose the Up Next filter {}",
+                    action.value.as_deref().unwrap_or("another one")
+                ),
+            ),
+            Kind::PlayCollection => (
+                DjCueReason::ManualPick,
+                match subject {
+                    Some(track) => format!("started an album or playlist from {track}"),
+                    None => "started an album or playlist".to_owned(),
+                },
+            ),
+            Kind::PickFromQueue => (
+                DjCueReason::ManualPick,
+                format!(
+                    "jumped to {} in the queue",
+                    subject.as_deref().unwrap_or("a track")
+                ),
+            ),
+            _ => (
+                DjCueReason::ManualPick,
+                format!("started {}", subject.as_deref().unwrap_or("a track")),
+            ),
+        }
+    }
+}
+
+/// The opening sentence of a listener-signal prompt; a signal held for the gap says how long
+/// ago it began.
+fn signal_sentence(age_ms: u64, what: &str) -> String {
+    if age_ms <= SIGNAL_JUST_MS {
+        return format!("By hand, the listener just {what}.");
+    }
+    let when = if age_ms < 60_000 {
+        format!("{} seconds", age_ms.div_ceil(10_000) * 10)
+    } else {
+        match minutes(age_ms) {
+            1 => "minute".to_owned(),
+            count => format!("{count} minutes"),
+        }
+    };
+    format!("In the last {when}, by hand, the listener {what}.")
 }
 
 pub(crate) struct CueState {
@@ -367,6 +553,17 @@ pub(crate) struct CueState {
     preference_revisions: HashMap<String, u64>,
     agent_write_ms: Option<u64>,
     manual_seen_ms: Option<u64>,
+    /// The newest listener action the signal detector has looked at.
+    signal_scanned: u64,
+    signal_due: Option<SignalDue>,
+    last_signal_ms: Option<u64>,
+    /// The listener's unfinished skips in a row: when, and the track left.
+    skips: Vec<(u64, Option<DjTrack>)>,
+    /// Per client, the newest listener action its prompts listed.
+    action_marks: HashMap<String, u64>,
+    /// Per client, each recent prompt's seq and the mark before it, so a prompt whose reply
+    /// never arrived lists its actions again.
+    handouts: HashMap<String, VecDeque<(u64, Option<u64>)>>,
     rng: u64,
 }
 
@@ -393,6 +590,12 @@ impl CueState {
             preference_revisions: HashMap::new(),
             agent_write_ms: None,
             manual_seen_ms: None,
+            signal_scanned: 0,
+            signal_due: None,
+            last_signal_ms: None,
+            skips: Vec::new(),
+            action_marks: HashMap::new(),
+            handouts: HashMap::new(),
             rng: seed | 1,
         }
     }
@@ -434,6 +637,9 @@ impl CueState {
             self.heartbeat.hold();
             // Likely a new conversation, which has not seen the tastes yet.
             self.preference_revisions.clear();
+            // What the listener did while nobody waited makes no prompt.
+            self.signal_due = None;
+            self.skips.clear();
         }
         self.last_wait_ms = Some(now_ms);
         if let Some(level) = input.chattiness {
@@ -468,6 +674,9 @@ impl CueState {
             self.manual_seen_ms = Some(at);
             self.listener_acted(DjInteraction::PlayerControl, at);
         }
+        // Before the track change is folded in, so `recent` still ends with the track a
+        // "previous" went back to.
+        self.scan_actions(now_ms, &sample.actions);
         if self.watch.as_ref().map(|watch| &watch.instance) != sample.instance.as_ref() {
             if let Some(previous) = self.watch.take() {
                 self.finish(previous, now_ms);
@@ -485,7 +694,7 @@ impl CueState {
         let ending = in_ending_window(sample.duration_ms, sample.position_ms, sample.queued_after);
         if playing && ending && sample.instance.is_some() && self.ending_sent != sample.instance {
             self.ending_sent = sample.instance.clone();
-            let reasons = if sample.queued_after <= 1 {
+            let reasons = if little_queued(sample.queued_after) {
                 vec![DjCueReason::LittleQueued]
             } else {
                 Vec::new()
@@ -590,6 +799,9 @@ impl CueState {
         } else {
             DjTrackOutcome::Skipped
         };
+        if finished {
+            self.skips.clear();
+        }
         self.recent.push_front(Ended {
             track: watch.track,
             listened_ms: watch.listened_ms,
@@ -606,6 +818,17 @@ impl CueState {
         now_ms: u64,
         instance: Option<TrackInstanceId>,
     ) {
+        self.push_noted(kind, reasons, now_ms, instance, None);
+    }
+
+    fn push_noted(
+        &mut self,
+        kind: DjCueKind,
+        reasons: Vec<DjCueReason>,
+        now_ms: u64,
+        instance: Option<TrackInstanceId>,
+        note: Option<String>,
+    ) {
         self.seq += 1;
         self.pending.push_back(Pending {
             seq: self.seq,
@@ -613,6 +836,7 @@ impl CueState {
             reasons,
             fired_ms: now_ms,
             instance,
+            note,
         });
         while self.pending.len() > PENDING_LIMIT {
             self.pending.pop_front();
@@ -621,17 +845,31 @@ impl CueState {
 
     /// The oldest prompt this client has not received that is still relevant. A track-ending
     /// prompt lapses once its track is no longer current, a check-in after a few minutes.
+    /// `received` is the last seq the client says it got: a prompt handed out after it (to a
+    /// wait whose reply never arrived) is offered again, with the tastes that reply may have
+    /// carried. It never skips a prompt.
     pub(crate) fn take(
         &mut self,
         principal: &str,
         now_ms: u64,
         current: Option<&TrackInstanceId>,
+        received: Option<u64>,
     ) -> Option<Pending> {
         self.pending.retain(|cue| match cue.kind {
             DjCueKind::TrackEnding => cue.instance.as_ref() == current,
-            DjCueKind::CheckIn => now_ms.saturating_sub(cue.fired_ms) < CHECK_IN_TTL_MS,
+            DjCueKind::CheckIn | DjCueKind::ListenerSignal => {
+                now_ms.saturating_sub(cue.fired_ms) < CHECK_IN_TTL_MS
+            }
         });
-        let after = self.delivered.get(principal).copied().unwrap_or(0);
+        let delivered = self.delivered.get(principal).copied().unwrap_or(0);
+        let after = match received {
+            Some(received) if received < delivered => {
+                self.preference_revisions.remove(principal);
+                self.rewind_actions(principal, received);
+                received
+            }
+            _ => delivered,
+        };
         let cue = self.pending.iter().find(|cue| cue.seq > after).cloned()?;
         self.delivered.insert(principal.to_owned(), cue.seq);
         Some(cue)
@@ -655,7 +893,215 @@ impl CueState {
             last_interaction_ago_ms: self.listener.map(|(_, at)| now_ms.saturating_sub(at)),
             last_spoken_to_ago_ms: self.spoke_ms.map(|at| now_ms.saturating_sub(at)),
             unanswered_check_ins: self.unanswered_streak(),
+            recent_actions: Vec::new(),
+            actions_omitted: 0,
         }
+    }
+
+    /// The listener's actions for prompt `seq` to this client: those after the ones its
+    /// previous prompt listed, or the last few minutes for its first, newest first. They count
+    /// as listed from here on.
+    fn actions_for(
+        &mut self,
+        principal: &str,
+        seq: u64,
+        actions: &[LoggedAction],
+        now_ms: u64,
+    ) -> (Vec<ytm_control_api::ListenerAction>, u32) {
+        let actions = listener_log::settled(actions, now_ms);
+        let mark = self.action_marks.get(principal).copied();
+        let handouts = self.handouts.entry(principal.to_owned()).or_default();
+        handouts.push_back((seq, mark));
+        while handouts.len() > HANDOUT_LIMIT {
+            handouts.pop_front();
+        }
+        let since = mark
+            .is_none()
+            .then(|| now_ms.saturating_sub(listener_log::RECENT_WINDOW_MS));
+        let listed = listener_log::newest(actions, mark, since, now_ms);
+        if let Some(newest) = actions.last() {
+            self.action_marks
+                .insert(principal.to_owned(), newest.id.max(mark.unwrap_or(0)));
+        }
+        listed
+    }
+
+    /// Takes back what the prompts after `received` listed, since the client never got them.
+    fn rewind_actions(&mut self, principal: &str, received: u64) {
+        let Some(handouts) = self.handouts.get_mut(principal) else {
+            return;
+        };
+        let Some(lost) = handouts.iter().position(|(seq, _)| *seq > received) else {
+            return;
+        };
+        let (_, mark) = handouts[lost];
+        handouts.truncate(lost);
+        match mark {
+            Some(mark) => self.action_marks.insert(principal.to_owned(), mark),
+            None => self.action_marks.remove(principal),
+        };
+    }
+
+    /// Looks at the listener actions not seen yet and fires a listener signal once a burst that
+    /// says where the music should go has settled and the previous signal is at least the gap
+    /// ago; inside the gap the burst is held and keeps growing. Only actions made while a DJ
+    /// waits count. The words are written when it fires, from the actions as they stand then.
+    fn scan_actions(&mut self, now_ms: u64, actions: &[LoggedAction]) {
+        let active = self.active(now_ms);
+        let since = self.started_ms.unwrap_or(0);
+        for action in actions {
+            if action.id <= self.signal_scanned {
+                continue;
+            }
+            self.signal_scanned = action.id;
+            if active && action.at_ms >= since {
+                self.add_to_burst(action);
+            }
+        }
+        if !active {
+            self.signal_due = None;
+            self.skips.clear();
+            return;
+        }
+        let Some(due) = self.signal_due.as_ref().filter(|due| due.due_ms <= now_ms) else {
+            return;
+        };
+        if due.triggers.is_empty() {
+            // Undone within the burst, as repeat-one turned off again.
+            self.signal_due = None;
+            return;
+        }
+        if self
+            .last_signal_ms
+            .is_some_and(|at| now_ms.saturating_sub(at) < SIGNAL_GAP_MS)
+        {
+            return;
+        }
+        let due = self.signal_due.take().expect("checked above");
+        self.last_signal_ms = Some(now_ms);
+        self.skips.clear();
+        let mut reasons = Vec::new();
+        let mut notes = Vec::new();
+        for trigger in &due.triggers {
+            let (reason, note) = trigger.words(actions);
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+            notes.push(note);
+        }
+        let first_ms = due
+            .triggers
+            .iter()
+            .map(Trigger::at_ms)
+            .min()
+            .unwrap_or(now_ms);
+        let what = notes[notes.len().saturating_sub(SIGNAL_NOTE_LIMIT)..].join("; then ");
+        let note = signal_sentence(now_ms.saturating_sub(first_ms), &what);
+        self.push_noted(DjCueKind::ListenerSignal, reasons, now_ms, None, Some(note));
+    }
+
+    /// Adds one listener action to the burst: it moves the burst's settling time and, when it
+    /// says where the music should go, becomes one of its triggers.
+    fn add_to_burst(&mut self, action: &LoggedAction) {
+        use ytm_control_api::ListenerActionKind as Kind;
+        let settles = action.at_ms.saturating_add(SIGNAL_SETTLE_MS);
+        if let Some(due) = self.signal_due.as_mut() {
+            due.due_ms = due.due_ms.max(settles);
+        }
+        // Choosing what to hear breaks a run of skips.
+        if matches!(
+            action.kind,
+            Kind::PlayTrack | Kind::PlayCollection | Kind::PickFromQueue | Kind::Previous
+        ) {
+            self.skips.clear();
+        }
+        let trigger = match action.kind {
+            Kind::Next => {
+                if !left_unfinished(action) {
+                    self.skips.clear();
+                    return;
+                }
+                self.skips
+                    .retain(|(at, _)| action.at_ms.saturating_sub(*at) <= SKIP_STREAK_MS);
+                self.skips.push((action.at_ms, action.during.clone()));
+                if self.skips.len() < 2 {
+                    return;
+                }
+                let run: Vec<_> = self.skips.iter().map(|(_, track)| track.clone()).collect();
+                // The run growing within the same burst is still one streak; a run that started
+                // over after a pick or a finished track is another.
+                let held = self.signal_due.as_mut().and_then(|due| {
+                    due.triggers
+                        .iter_mut()
+                        .rev()
+                        .find_map(|trigger| match trigger {
+                            Trigger::Streak { left, .. } if left.len() < run.len() => Some(left),
+                            _ => None,
+                        })
+                });
+                if let Some(left) = held {
+                    *left = run;
+                    return;
+                }
+                Trigger::Streak {
+                    at_ms: action.at_ms,
+                    left: run,
+                }
+            }
+            Kind::PlayTrack | Kind::PlayCollection | Kind::PickFromQueue | Kind::UpNextFilter => {
+                Trigger::Action(Box::new(action.clone()))
+            }
+            Kind::Repeat => {
+                // Only where repeat ends up counts: the player bar turns repeat off by way of
+                // repeat-one.
+                if let Some(due) = self.signal_due.as_mut() {
+                    due.triggers.retain(|trigger| {
+                        !matches!(trigger, Trigger::Action(earlier) if earlier.kind == Kind::Repeat)
+                    });
+                }
+                if action.value.as_deref() != Some("one") {
+                    return;
+                }
+                Trigger::Action(Box::new(action.clone()))
+            }
+            Kind::Previous => {
+                // Late in a track "previous" restarts it; at its very start it goes to the
+                // track before, which counts when they had heard some of it.
+                let position = action.position_ms.unwrap_or(0);
+                let back = if position >= REPLAY_HEARD_MS {
+                    action.during.as_ref().map(track_title)
+                } else if position < PREVIOUS_TRACK_MS {
+                    self.recent
+                        .front()
+                        .filter(|ended| ended.listened_ms >= REPLAY_HEARD_MS)
+                        .map(|ended| track_title(&DjTrack::from(&ended.track)))
+                } else {
+                    None
+                };
+                let Some(title) = back else { return };
+                Trigger::Replay {
+                    at_ms: action.at_ms,
+                    title,
+                }
+            }
+            _ => return,
+        };
+        self.signal_due
+            .get_or_insert(SignalDue {
+                due_ms: settles,
+                triggers: Vec::new(),
+            })
+            .triggers
+            .push(trigger);
+    }
+}
+
+/// A skip left the track before its last stretch; with no known duration, it did.
+fn left_unfinished(action: &LoggedAction) -> bool {
+    let duration = action.during.as_ref().and_then(|track| track.duration_ms);
+    match (duration, action.position_ms) {
+        (Some(duration), Some(position)) => position.saturating_add(FINISH_SLACK_MS) < duration,
+        _ => true,
     }
 }
 
@@ -728,12 +1174,23 @@ impl ControlService {
             cues.observe(now, &sample);
             let start = !cues.observing;
             cues.observing = true;
-            let pending = cues.take(&grant.principal, now, sample.instance.as_ref());
+            // An acknowledgement from another core run names another seq sequence.
+            let received = input
+                .last_received
+                .as_ref()
+                .filter(|ack| ack.core_epoch == state.snapshot.core_epoch)
+                .map(|ack| ack.seq);
+            let pending = cues.take(&grant.principal, now, sample.instance.as_ref(), received);
+            let mut listener = cues.listener_view(now);
+            if let Some(pending) = &pending {
+                (listener.recent_actions, listener.actions_omitted) =
+                    cues.actions_for(&grant.principal, pending.seq, &sample.actions, now);
+            }
             (
                 start,
                 pending,
                 cues.recent_tracks(now),
-                cues.listener_view(now),
+                listener,
                 cues.chattiness,
             )
         };
@@ -782,8 +1239,14 @@ impl ControlService {
                 age_ms: now.saturating_sub(pending.fired_ms),
                 prompt,
                 now_playing,
+                upcoming: if sample.queued_after.is_some() {
+                    UpcomingStatus::Known
+                } else {
+                    UpcomingStatus::Unknown
+                },
                 up_next: sample.up_next.iter().map(DjTrack::from).collect(),
                 more_queued: sample.more_queued,
+                official_up_next: sample.official.clone(),
                 recent,
                 listener,
                 chattiness,
@@ -808,6 +1271,90 @@ fn minutes(ms: u64) -> u64 {
     (ms + 30_000) / 60_000
 }
 
+/// A track as `"title" by artists` for prompt text.
+fn track_title(track: &DjTrack) -> String {
+    if track.artists.is_empty() {
+        format!("\"{}\"", track.title)
+    } else {
+        format!("\"{}\" by {}", track.title, track.artists.join(", "))
+    }
+}
+
+/// What a track-ending prompt says when the page's own continuation is not readable.
+fn autoplay_flag_text(queued_after: Option<usize>, autoplay: Option<bool>) -> &'static str {
+    match (queued_after, autoplay) {
+        (Some(count), Some(true)) if count <= 1 => {
+            " (YouTube Music autoplay would continue on its own)"
+        }
+        (None, Some(true)) => {
+            " (YouTube Music autoplay is on; read the context before changing the queue)"
+        }
+        (None, Some(false)) => {
+            " (YouTube Music autoplay is off; read the context before changing the queue)"
+        }
+        (None, None) => " (read the context before changing the queue)",
+        _ => "",
+    }
+}
+
+/// What YouTube Music plays on its own after the queued tracks, as observed on the page.
+/// `name_tracks` names the first few suggestions, when the end of the queue is near, and the
+/// Up Next filters (`filter_choices`) that could steer them.
+fn official_clause(
+    official: &DjOfficialUpNext,
+    filter_choices: &[String],
+    name_tracks: bool,
+) -> String {
+    let filter = official
+        .filter
+        .as_ref()
+        .map(|label| format!(" (filter: {label})"))
+        .unwrap_or_default();
+    match official.status {
+        OfficialUpcomingStatus::Observed if !official.tracks.is_empty() => {
+            if !name_tracks {
+                return "after the queued tracks YouTube Music continues on its own with its \
+                        suggestions"
+                    .to_owned();
+            }
+            let named: Vec<_> = official
+                .tracks
+                .iter()
+                .take(PROMPT_OFFICIAL_LIMIT)
+                .map(track_title)
+                .collect();
+            let more = if official.more || official.tracks.len() > PROMPT_OFFICIAL_LIMIT {
+                " and more"
+            } else {
+                ""
+            };
+            let steer = if filter_choices.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " or steer with an Up Next filter: {}",
+                    filter_choices.join(", ")
+                )
+            };
+            format!(
+                "then YouTube Music continues on its own with {}{more}{filter}, which you may \
+                 leave if that fits{steer}",
+                named.join(", ")
+            )
+        }
+        OfficialUpcomingStatus::Off => {
+            "YouTube Music autoplay is off, so nothing plays after the queued tracks".to_owned()
+        }
+        OfficialUpcomingStatus::Radio => "this is a YouTube Music radio that refills itself".into(),
+        OfficialUpcomingStatus::Loading => {
+            "YouTube Music is still loading what plays after the queued tracks".to_owned()
+        }
+        OfficialUpcomingStatus::Observed | OfficialUpcomingStatus::None => {
+            "YouTube Music has no suggestions loaded to play after the queued tracks".to_owned()
+        }
+    }
+}
+
 /// The instruction that goes with a prompt; the facts it mentions are as of delivery.
 fn prompt_text(
     cue: &Pending,
@@ -819,35 +1366,40 @@ fn prompt_text(
         DjCueKind::TrackEnding => {
             let title = sample.track.as_ref().map_or_else(
                 || "The current track".to_owned(),
-                |track| {
-                    let artists: Vec<&str> = track
-                        .artists
-                        .iter()
-                        .map(|artist| artist.name.as_str())
-                        .collect();
-                    if artists.is_empty() {
-                        format!("\"{}\"", track.title)
-                    } else {
-                        format!("\"{}\" by {}", track.title, artists.join(", "))
-                    }
-                },
+                |track| track_title(&DjTrack::from(track)),
             );
             let left = sample
                 .duration_ms
                 .map(|duration| duration.saturating_sub(sample.position_ms).div_ceil(1000))
                 .unwrap_or(0);
             let queued = match sample.queued_after {
-                0 => "nothing is queued after it".to_owned(),
-                1 => "one track is queued after it".to_owned(),
-                count if sample.more_queued => {
+                None => "what is queued after it is not known right now".to_owned(),
+                Some(0) => "nothing is queued after it".to_owned(),
+                Some(1) => "one track is queued after it".to_owned(),
+                Some(count) if sample.more_queued => {
                     format!("{count} or more tracks are queued after it")
                 }
-                count => format!("{count} tracks are queued after it"),
+                Some(count) => format!("{count} tracks are queued after it"),
             };
-            let autoplay = if sample.queued_after <= 1 && autoplay == Some(true) {
-                " (YouTube Music autoplay would continue on its own)"
-            } else {
-                ""
+            let autoplay = match (sample.queued_after, sample.official.as_ref()) {
+                (Some(count), Some(official))
+                    if count <= 1
+                        || !matches!(
+                            official.status,
+                            OfficialUpcomingStatus::Observed | OfficialUpcomingStatus::None
+                        ) =>
+                {
+                    format!(
+                        "; {}",
+                        official_clause(official, &sample.filter_choices, true)
+                    )
+                }
+                (None, Some(official)) => format!(
+                    " (read the context before changing the queue; {})",
+                    official_clause(official, &sample.filter_choices, false)
+                ),
+                (Some(_), Some(_)) => String::new(),
+                (_, None) => autoplay_flag_text(sample.queued_after, autoplay).to_owned(),
             };
             let unanswered = match listener.unanswered_check_ins {
                 0 => "",
@@ -889,6 +1441,11 @@ fn prompt_text(
                     DjCueReason::Routine | DjCueReason::LittleQueued => {
                         why.push("it has been a while since anyone checked in".to_owned())
                     }
+                    // Listener-signal reasons never come with a check-in.
+                    DjCueReason::SkipStreak
+                    | DjCueReason::ManualPick
+                    | DjCueReason::Replay
+                    | DjCueReason::FilterChanged => {}
                 }
             }
             format!(
@@ -897,6 +1454,17 @@ fn prompt_text(
                  before and any skips, in their language and a tone that fits the mood. Skip it \
                  if the moment is wrong. {KEEP_LOOPING} {REPORT_BACK}",
                 why.join("; ")
+            )
+        }
+        DjCueKind::ListenerSignal => {
+            let what = cue
+                .note
+                .as_deref()
+                .unwrap_or("By hand, the listener just changed what is playing.");
+            format!(
+                "{what} If that says what should come next, you may adjust the queue to match; \
+                 do not undo what they just chose. Say nothing unless it adds something. \
+                 {KEEP_LOOPING} {REPORT_BACK}"
             )
         }
     }
@@ -1047,10 +1615,13 @@ mod tests {
             track: Some(song(instance, duration_ms)),
             position_ms,
             duration_ms,
-            queued_after: 3,
+            queued_after: Some(3),
             up_next: vec![],
             more_queued: false,
+            official: None,
+            filter_choices: vec![],
             last_manual_ms: None,
+            actions: Vec::new().into(),
         }
     }
 
@@ -1180,7 +1751,7 @@ mod tests {
         state.observe(30_000, &playing("fixture-a", Some(240_000), 28_000));
         state.observe(31_000, &playing("fixture-b", Some(240_000), 0));
         state.push(DjCueKind::CheckIn, vec![DjCueReason::Routine], 31_000, None);
-        assert!(state.take("fixture-agent", 31_000, None).is_some());
+        assert!(state.take("fixture-agent", 31_000, None, None).is_some());
         assert_eq!(state.recent_tracks(31_000).len(), 1);
         assert!(state.listener_view(31_000).last_spoken_to_ago_ms.is_some());
         state.push(DjCueKind::CheckIn, vec![DjCueReason::Routine], 32_000, None);
@@ -1197,18 +1768,51 @@ mod tests {
         }
     }
 
+    /// A prompt handed to a wait whose reply never arrived comes again once the client names the
+    /// last one it got; an acknowledgement ahead of what was handed out skips nothing.
+    #[test]
+    fn an_acknowledgement_offers_a_lost_prompt_again_but_never_skips_one() {
+        let mut state = CueState::new(7);
+        for _ in 0..2 {
+            state.push(DjCueKind::CheckIn, vec![DjCueReason::Routine], 0, None);
+        }
+        let take = |state: &mut CueState, received| {
+            state
+                .take("fixture-agent", 1_000, None, received)
+                .map(|cue| cue.seq)
+        };
+        let first = take(&mut state, None).unwrap();
+        let lost = take(&mut state, None).unwrap();
+        assert_eq!(take(&mut state, None), None);
+        let tastes = vec![taste("fixture-taste", 1)];
+        assert!(
+            !state
+                .preferences_for("fixture-agent", Some(tastes.clone()))
+                .1
+        );
+        assert_eq!(take(&mut state, Some(first)), Some(lost));
+        // The lost reply carried the tastes, so the prompt offered again carries them too.
+        assert!(!state.preferences_for("fixture-agent", Some(tastes)).1);
+        assert_eq!(take(&mut state, Some(lost)), None);
+        state.push(DjCueKind::CheckIn, vec![DjCueReason::Routine], 0, None);
+        assert_eq!(take(&mut state, Some(lost + 5)), Some(lost + 1));
+    }
+
     #[test]
     fn ending_lead_is_longer_when_little_is_queued_and_bounded_by_short_tracks() {
-        assert_eq!(ending_lead_ms(240_000, 3), 45_000);
-        assert_eq!(ending_lead_ms(240_000, 1), 75_000);
-        assert_eq!(ending_lead_ms(90_000, 5), 30_000);
-        assert!(!in_ending_window(None, 230_000, 3));
-        assert!(!in_ending_window(Some(240_000), 190_000, 3));
-        assert!(in_ending_window(Some(240_000), 196_000, 3));
-        assert!(in_ending_window(Some(240_000), 170_000, 0));
-        assert!(!in_ending_window(Some(240_000), 240_000, 3));
-        assert!(near_end(Some(240_000), 240_000, 3));
-        assert!(!near_end(None, 240_000, 3));
+        assert_eq!(ending_lead_ms(240_000, Some(3)), 45_000);
+        assert_eq!(ending_lead_ms(240_000, Some(1)), 75_000);
+        assert_eq!(ending_lead_ms(90_000, Some(5)), 30_000);
+        assert!(!in_ending_window(None, 230_000, Some(3)));
+        assert!(!in_ending_window(Some(240_000), 190_000, Some(3)));
+        assert!(in_ending_window(Some(240_000), 196_000, Some(3)));
+        assert!(in_ending_window(Some(240_000), 170_000, Some(0)));
+        assert!(!in_ending_window(Some(240_000), 240_000, Some(3)));
+        assert!(near_end(Some(240_000), 240_000, Some(3)));
+        assert!(!near_end(None, 240_000, Some(3)));
+        // Unknown is not "little queued": the normal lead, so the 170 s mark is not yet near.
+        assert_eq!(ending_lead_ms(240_000, None), 45_000);
+        assert!(!in_ending_window(Some(240_000), 170_000, None));
     }
 
     const HOURS_LONG: Option<u64> = Some(6 * 3_600_000);
@@ -1272,6 +1876,7 @@ mod tests {
             reasons: Vec::new(),
             fired_ms: 0,
             instance: None,
+            note: None,
         };
         let sample = playing("fixture-long", Some(240_000), 200_000);
         let text = prompt_text(&ending, &sample, &state.listener_view(0), None);

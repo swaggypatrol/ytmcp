@@ -2,6 +2,28 @@
 
 Versions are `<app version>-<package revision>`; see [docs/building.md](docs/building.md#versioning).
 
+## Unreleased
+
+- **A window that uses its space.** The layout follows the width of the content area in four steps instead of stretching one narrow column: on a 1920-wide window the page is over 1500 wide. A list is the page itself, with one scrollbar, running under the player bar; lists and the library load further as you scroll, with no **Load more** buttons. From 880 px of content width, writable rows with a known rating have a heart beside the duration. Use the row menu in a narrower window.
+- **Light that stays put.** The colour behind the page comes from the cover and now belongs to the window: it no longer scrolls away with the page or flashes over the sidebar when pages change. It breathes slowly while music plays and rests when paused or hidden.
+- **Finer glass.** The edges of the sidebar and the player bar are lit from one direction and stay continuous around the corners at 100%, 125%, 150% and 200% display scale. Toasts, menus and dialogs start as clear glass and frost over in 280 ms. A timed toast dissolves in 360 ms. Dismissing an overlay takes 160 ms. Pressed controls spring back once and settle.
+- **Sidebar.** Collapsing and expanding glides: the icons stay where they are and the words make way. Click the mark at the top for a small flourish.
+- **Player bar.** Larger hit areas for every button, a bigger cover and a seek bar that is easier to grab, in the same 80 px bar. On a narrow window the controls give way in a fixed order and the transport stays centred.
+- **Now Playing** is a page for listening: a large cover, the window lit by it, and a lyrics preview; it stacks when the window is narrow.
+- **Audio quality** shows as a small framed mark (LOW, STD, HIGH) taken from what YouTube Music itself reports for the stream that is playing, with the codec and bit rate in its tooltip. It is shown only when that is known.
+- **Search** starts with something: your recent searches, what you played recently and your library, before you type. Cover shelves scroll sideways with the mouse wheel.
+- **Feedback where you act.** The banners that pushed the page down are gone. A control changes itself; anything else is a short toast above the player bar, with Retry where that makes sense. The track actions are a menu next to the row, not a dialog.
+- **Less machinery on screen.** The player-state label, the codec chips and the note about missing recommendations are removed from the pages. Diagnostics moved from the player bar to Settings > Advanced, and holds everything that was removed.
+- **Keyboard focus** is one thin ring on every control, shown for the keyboard and not after a mouse click.
+- **For agents: what the listener just did.** Context and DJ prompts now list the listener's recent manual actions (skips, pauses, volume changes, seeks, picks, ratings, queue edits) as plain facts, and a `listenerSignal` prompt reports a streak of skips, a manual pick, a replay or a change of Up Next filter. The new `ytm_get_listener_profile` summarises the listener's own liked songs, playlists and play history, including the writing systems of the titles they listen to, so a choice of music follows the listener and not the assistant.
+- **Queue.** A long queue no longer loses the playing track and what follows: the queue shows what you played (folded away), what is playing and what comes next, with the real position. Clear upcoming works whenever the page can clear, including while YouTube Music's autoplay suggestions are queued.
+- **What YouTube Music plays next on its own.** The autoplay suggestions after your queue show in the queue and in Now Playing's new Up next column, marked as suggestions, or the queue says autoplay is off.
+- **Up Next filters.** Pick All, Familiar, Discover and the other filters YouTube Music offers right in the queue. On YouTube Music, choosing one changes only the suggestions: the song keeps playing from where it is, a paused song stays paused, and songs you queued stay. Choosing through the app has not been tried on the live page yet.
+- **Playing indicator.** Three small bars on Now Playing in the sidebar and on the playing row of the queue: moving while playing, still when paused, and stopped when the window is hidden or you prefer reduced motion. The cover fades in on a new song.
+- **Lyrics.** The lyrics button and Ctrl+L close lyrics again and take you back where you were, scrolled to the same row. Scrolling lyrics by hand stops them from following until **Back to current line** or the next song.
+- **Volume.** Scroll the mouse wheel over the volume control.
+- **For agents.** Context and prompts carry YouTube Music's own continuation (`officialUpcoming`, `officialUpNext`) and the offered filters; `ytm_set_playback_mode` gains an `upNextFilter` mode. When the current track's place in the queue is not loaded, they say that what follows is unknown instead of listing earlier tracks as up next. An inferred listening intent must carry the `expectedMomentRevision` it was decided on, and a clear can name the exact `intentId`. `playlistCreate` and `recommendations` report real availability. `tools/mcp/dj_harness.py` is a host-side adapter for a background DJ: one wait at a time next to foreground calls, cancelled when the listener speaks.
+
 ## 1.2.0-1
 
 - **New icon.** A play button inside a ring, on a dark tile: the app icon, the tray icon and the mark at the top of the sidebar.

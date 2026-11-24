@@ -10,12 +10,14 @@ mod dj_feedback;
 pub mod dj_store;
 pub mod history;
 pub mod journal;
+pub(crate) mod listener_log;
 pub mod lyrics;
 mod membership;
 mod moment;
 pub mod moment_store;
 mod playlist;
 mod playlist_edits;
+mod profile;
 mod queue;
 mod rating;
 mod recovery;
@@ -98,6 +100,8 @@ pub struct ControlService {
     /// Serializes the daily-limit check with the journal claim it admits.
     account_limits: tokio::sync::Mutex<()>,
     cues: cues::SharedCues,
+    /// The listener profile's catalog parts kept for the current account session.
+    profiles: profile::ProfileCache,
 }
 
 impl ControlService {
@@ -117,6 +121,7 @@ impl ControlService {
             pending_handoffs: Mutex::new(std::collections::HashSet::new()),
             account_limits: tokio::sync::Mutex::new(()),
             cues: cues::new_cues(),
+            profiles: profile::ProfileCache::default(),
         }
     }
 
@@ -293,6 +298,7 @@ impl ControlService {
                     state.queue.as_ref(),
                     from,
                     limit,
+                    input.cursor.is_none().then_some(limit),
                 )))
             }
             Search(input) => {
@@ -423,6 +429,11 @@ impl ControlService {
                 .read_dj_preferences(grant, input)
                 .await
                 .map(ControlResponse::DjPreferences),
+            GetListenerProfile(input) => self
+                .read_listener_profile(grant, &state, input)
+                .await
+                .map(Box::new)
+                .map(ControlResponse::ListenerProfile),
             NextDjCue(input) => self
                 .next_dj_cue(grant, input)
                 .await
@@ -523,12 +534,10 @@ impl ControlService {
         let queue = state.queue.as_ref().filter(|queue| {
             queue.queue_revision == revision && crate::commands::explicit_end_loaded(queue)
         })?;
-        let current = queue.current_entry_id.as_ref()?;
-        let index = queue
-            .entries
-            .iter()
-            .position(|entry| &entry.entry_id == current)?;
-        Some(queue.entries.len() - index - 1)
+        match crate::queue_window::upcoming(queue) {
+            crate::queue_window::Upcoming::Known { after, .. } => Some(after.len()),
+            crate::queue_window::Upcoming::Unknown => None,
+        }
     }
 
     pub async fn account_is_allowed(&self, grant: &ReadGrant) -> bool {
@@ -593,6 +602,7 @@ impl ControlService {
             token,
             limit,
             moment,
+            listener_log::context_actions(&state.listener_actions, now),
         ))))
     }
 

@@ -1,7 +1,7 @@
 import type { AuthStatusInfo, CapabilitySupport, PlaybackStatus, PlayerConnectionState } from "@ytmcp/protocol";
 import { t } from "./i18n/index.svelte.js";
 
-/** Whether a control may be used, and the reason shown when it is disabled or unverified. */
+/** Whether a control may be used, and the reason shown when it is disabled. */
 export interface Gate {
   readonly enabled: boolean;
   readonly reason: string | null;
@@ -20,8 +20,7 @@ export function commandGate(
   if (connection === "disconnected" || connection === "incompatible") {
     return { enabled: false, reason: t.gates.bridgeDisconnected };
   }
-  if (support === "supported") return { enabled: true, reason: null };
-  if (support === "unverified") return { enabled: true, reason: t.gates.commandUnverified };
+  if (support === "supported" || support === "unverified") return { enabled: true, reason: null };
   return { enabled: false, reason: t.gates.unsupported };
 }
 

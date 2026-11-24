@@ -3,9 +3,11 @@
 // catalog path and the playback bridge. Private titles never leave the app process.
 import { check } from "../lib/evidence.mjs";
 import { cgroupOf, cutNetwork, describeProcesses, restoreNetwork, sha256Short, sinkInputsFor, sleep, NULL_SINK } from "../lib/sys.mjs";
-import { ensurePlaying, navigate, pageMedia, uiSearch, waitCatalog, waitSearchResult } from "./common.mjs";
+import { catalogPage, ensurePlaying, navigate, nextCatalogPage, pageMedia, uiSearch } from "./common.mjs";
 
-const LOAD_MORE = "Load more";
+const LIBRARY_TAIL = '[data-testid="view-library"] [data-testid="library-tail"]';
+const PLAYLIST_TAIL = '[data-testid="view-playlist"] [data-testid="track-list-tail"]';
+const BRIDGE_ACTION = '[data-testid="toast-bridge-disconnected"] [data-testid="btn-open-official-player"]';
 
 function dupes(a, b) {
   const set = new Set(a);
@@ -23,56 +25,67 @@ export async function searchCheck(app, query) {
   };
 }
 
-/** Library page 1, then page 2 through the UI's load-more button when the provider has a cursor. */
+async function libraryTileCount(app, ids) {
+  if (new Set(ids).size !== ids.length) return null;
+  return (await app.waitFor(() => app.evalMain(`(() => {
+    const tiles = [...document.querySelectorAll('[data-testid="view-library"] [data-testid^="playlist-card-"]')];
+    const rendered = new Set(tiles.map((tile) => tile.dataset.testid.slice("playlist-card-".length)));
+    const matches = ${JSON.stringify(ids)}.filter((id) => rendered.has(id)).length;
+    return matches === ${ids.length} && tiles.length === rendered.size ? { matches, total: tiles.length } : null;
+  })()`), { timeoutMs: 6_000 })).value;
+}
+
+function validFreshPage(exchange, kind, accountScope, playlistId = null) {
+  const { request, page } = exchange;
+  return request?.ack?.ok === true && page?.resultType === kind && page.freshness === "fresh" &&
+    Boolean(accountScope) && page.accountScope === accountScope && page.playlistId === playlistId &&
+    Array.isArray(page.ids) && page.ids.every(Boolean) && page.ids.length === page.itemCount;
+}
+
+/** Library page 1, then its automatic continuation when the provider has a cursor. */
 export async function libraryPagingCheck(app) {
-  const since = (await app.state()).seq;
   await navigate(app, "home");
+  const since = (await app.state()).seq;
+  const start = await app.snapshot();
+  const accountScope = sha256Short(start?.authState?.accountScope);
   await navigate(app, "library");
-  let p1 = await waitCatalog(app, since, "libraryPlaylists", 25_000);
-  if (!p1) {
-    // already loaded in this UI session: force a reload through the page's retry path
-    await app.call("winop", { target: "main", op: "reload" });
-    await sleep(3000);
-    const s2 = (await app.state()).seq;
-    await navigate(app, "library");
-    p1 = await waitCatalog(app, s2, "libraryPlaylists", 25_000);
+  let first = await catalogPage(app, { since, kind: "libraryPlaylists" });
+  if (!first.request) {
+    // A session that already has the page skips the first request until the UI reloads.
+    first = (await readLibraryAfterUiReload(app)).exchange;
   }
-  const tiles1 = await app.evalMain(`document.querySelectorAll('[data-testid="view-library"] [data-testid^="playlist-card-"]').length`);
-  let p2 = null;
-  let tiles2 = null;
-  let clicked = null;
-  let page2Error = null;
-  let page2UiError = null;
-  if (p1?.hasNextCursor) {
-    const s3 = (await app.state()).seq;
-    clicked = await app.click('[data-testid="view-library"] button', { textIncludes: LOAD_MORE });
-    const ev2 = await app.waitForEvent((e) => e.type === "core->ui" && (e.catalog?.resultType === "libraryPlaylists" || e.kind === "core.error"), { since: s3, timeoutMs: 25_000 });
-    p2 = ev2?.catalog ?? null;
-    page2Error = ev2?.kind === "core.error" ? ev2.error : null;
-    page2UiError = await app.evalMain(`document.querySelector('[data-testid="view-library"] [role=alert]')?.textContent?.trim() ?? null`);
-    await sleep(800);
-    tiles2 = await app.evalMain(`document.querySelectorAll('[data-testid="view-library"] [data-testid^="playlist-card-"]').length`);
-  }
+  const p1 = first.page;
+  const second = p1?.nextCursorId ? await nextCatalogPage(app, first, { kind: "libraryPlaylists", tail: LIBRARY_TAIL }) : null;
+  const p2 = second?.page ?? null;
   const ids1 = p1?.ids ?? [];
   const ids2 = p2?.ids ?? [];
+  const tiles = ids1.length ? await libraryTileCount(app, [...ids1, ...ids2]) : null;
+  const end = await app.snapshot();
+  const sameAccount = Boolean(start?.accountEpoch && end?.accountEpoch === start.accountEpoch && end.authState?.playerCatalogMatched);
   const measured = {
     page1: p1 ? { itemCount: p1.itemCount, hasNextCursor: p1.hasNextCursor, freshness: p1.freshness, providerVersion: p1.providerVersion, accountScope: p1.accountScope } : null,
     page2: p2 ? { itemCount: p2.itemCount, hasNextCursor: p2.hasNextCursor, freshness: p2.freshness } : null,
-    loadMoreClicked: clicked,
-    page2Error,
-    page2UiError,
+    cursorRequested: second?.request?.query?.cursor === true,
+    scrolledToTail: second?.scrolledToTail ?? null,
+    page2Error: second?.reply?.error?.code ?? p2?.error?.code ?? null,
+    page2UiError: await app.exists('[data-testid="library-retry"]'),
     duplicatesAcrossPages: dupes(ids1, ids2),
-    uiTiles: { afterPage1: tiles1, afterPage2: tiles2 },
+    uiTiles: tiles,
+    sameAccount,
   };
   const page2Needed = Boolean(p1?.hasNextCursor);
   return {
     measured,
     ids1,
+    counts1: p1?.counts ?? [],
     check: check("G4.libraryPaging", "library playlists page 1 and (when a cursor exists) page 2 via the UI: no duplicates, UI shows p1+p2", {
       measured,
       // YouTube Music hands out a grid cursor even after the last playlist; that page comes back
       // empty and ends paging, which is a valid page 2.
-      pass: Boolean(p1 && p1.itemCount > 0 && (!page2Needed || (p2 && !page2Error && measured.duplicatesAcrossPages === 0 && tiles2 === tiles1 + p2.itemCount && (p2.itemCount > 0 || !p2.hasNextCursor)))),
+      pass: Boolean(sameAccount && validFreshPage(first, "libraryPlaylists", accountScope) && p1.itemCount > 0 && tiles &&
+        (page2Needed ? second && validFreshPage(second, "libraryPlaylists", accountScope) && measured.duplicatesAcrossPages === 0 &&
+          (p2.itemCount > 0 || !p2.hasNextCursor) && (p2.hasNextCursor || tiles.total === ids1.length + ids2.length)
+          : tiles.total === ids1.length)),
       note: !page2Needed
         ? "account has a single library page; real page-2 paging not exercised (fixture-only per M0_CHECKLIST)"
         : p2 && p2.itemCount === 0
@@ -90,20 +103,35 @@ export async function playlistPagingCheck(app, playlistIds, counts) {
     const c = counts?.[i] ?? 0;
     if (!best || c > best.count) best = { id: playlistIds[i], count: c };
   }
-  if (!best) best = { id: playlistIds.find(Boolean), count: null };
+  if (!best && playlistIds.length) best = { id: playlistIds.find(Boolean), count: null };
+  if (!best?.id) return {
+    measured: null,
+    check: check("G4.playlistPaging", "playlist tracks page 1 and page 2 (when present): no boundary duplicates", {
+      measured: null, blocked: "no library playlist was read",
+    }),
+  };
+  const start = await app.snapshot();
+  const accountScope = sha256Short(start?.authState?.accountScope);
   const since = (await app.state()).seq;
-  const opened = await app.click(`[data-testid="playlist-card-${best.id}"]`);
-  const p1 = await waitCatalog(app, since, "playlistTracks", 30_000);
-  await sleep(800);
-  const rows1 = await app.evalMain(`document.querySelector('[data-testid="view-playlist"]')?.textContent?.match(/(\\d+) songs loaded/)?.[1] ?? null`);
-  let p2 = null;
-  if (p1?.hasNextCursor) {
-    const s2 = (await app.state()).seq;
-    await app.click('[data-testid="playlist-load-more"]');
-    p2 = await waitCatalog(app, s2, "playlistTracks", 30_000);
-  }
+  const opened = await app.click(`[data-testid=${JSON.stringify(`playlist-card-${best.id}`)}]`);
+  const playlistId = sha256Short(best.id);
+  const first = await catalogPage(app, { since, kind: "playlistTracks", playlistId, timeoutMs: 30_000 });
+  const p1 = first.page;
+  const second = p1?.nextCursorId ? await nextCatalogPage(app, first, {
+    kind: "playlistTracks", playlistId, tail: PLAYLIST_TAIL, timeoutMs: 30_000,
+  }) : null;
+  const p2 = second?.page ?? null;
   const ids1 = p1?.ids ?? [];
   const ids2 = p2?.ids ?? [];
+  const expectedCount = ids1.length + ids2.length;
+  const uiLoadedCount = (await app.waitFor(() => app.evalMain(`(() => {
+    const list = document.querySelector('[data-testid="view-playlist"] [data-testid="virtual-track-list"]');
+    const rowHeight = list?.querySelector('[data-testid="virtual-track-row"]')?.offsetHeight ?? 0;
+    const count = rowHeight > 0 ? Math.round(list.offsetHeight / rowHeight) : 0;
+    return count > 0 && count >= ${expectedCount} ? count : null;
+  })()`), { timeoutMs: 6_000 })).value;
+  const end = await app.snapshot();
+  const sameAccount = Boolean(start?.accountEpoch && end?.accountEpoch === start.accountEpoch && end.authState?.playerCatalogMatched);
   const boundaryDupes = dupes(ids1.slice(-20), ids2.slice(0, 20));
   const measured = {
     playlist: sha256Short(best.id),
@@ -111,15 +139,19 @@ export async function playlistPagingCheck(app, playlistIds, counts) {
     opened,
     page1: p1 ? { itemCount: p1.itemCount, hasNextCursor: p1.hasNextCursor, freshness: p1.freshness } : null,
     page2: p2 ? { itemCount: p2.itemCount, hasNextCursor: p2.hasNextCursor } : null,
+    cursorRequested: second?.request?.query?.cursor === true,
+    scrolledToTail: second?.scrolledToTail ?? null,
     boundaryDuplicates: boundaryDupes,
     totalDuplicatesAcrossPages: dupes(ids1, ids2),
-    uiLoadedCountText: rows1,
+    uiLoadedCount,
+    sameAccount,
   };
   return {
     measured,
     check: check("G4.playlistPaging", "playlist tracks page 1 and page 2 (when present): no boundary duplicates", {
       measured,
-      pass: Boolean(p1 && p1.itemCount > 0 && (!p1.hasNextCursor || (p2 && p2.itemCount > 0 && boundaryDupes === 0))),
+      pass: Boolean(opened.clicked && sameAccount && uiLoadedCount && validFreshPage(first, "playlistTracks", accountScope, playlistId) && p1.itemCount > 0 &&
+        (!p1.hasNextCursor || (second && validFreshPage(second, "playlistTracks", accountScope, playlistId) && p2.itemCount > 0 && boundaryDupes === 0))),
       note: p1?.hasNextCursor ? null : "chosen playlist fits in one page",
     }),
   };
@@ -149,27 +181,41 @@ export async function accountConsistencyCheck(app) {
   ];
 }
 
-async function browseLibraryAfterUiReload(app) {
+async function readLibraryAfterUiReload(app) {
   const snapCount = (await app.state()).snapshotCount;
   await app.call("winop", { target: "main", op: "reload" });
   const subscribed = await app.waitFor((s, st) => st.snapshotCount > snapCount, { timeoutMs: 15_000 });
   const since = (await app.state()).seq;
   const nav = await navigate(app, "library");
-  const request = await app.waitForEvent((e) => e.type === "ui->host" && e.query?.kind === "libraryPlaylists", { since, timeoutMs: 6_000 });
-  const reply = request?.requestId ? await app.waitForEvent((e) => e.type === "core->ui" && e.requestId === request.requestId && ["core.catalogResponse", "core.error"].includes(e.kind), { since, timeoutMs: 25_000 }) : null;
+  const exchange = await catalogPage(app, { since, kind: "libraryPlaylists" });
+  return { subscribed: subscribed.ok, nav, since, exchange };
+}
+
+async function browseLibraryAfterUiReload(app) {
+  const start = await app.snapshot();
+  const { subscribed, nav, since, exchange: { request, reply, page: resp } } = await readLibraryAfterUiReload(app);
   const sentQ = (await app.events(since, ["ui->host"])).filter((e) => e.kind === "ui.catalogQuery").map((e) => e.query?.kind);
-  const resp = reply?.catalog ?? null;
-  await sleep(800);
+  const tilesForReply = resp?.ids?.length && resp.ids.every(Boolean) ? await libraryTileCount(app, resp.ids) : null;
   const dom = await app.evalMain(`({
-    cachedNotice: Boolean(document.querySelector('[data-testid="library-state-cached"]')),
+    refreshFailedToast: Boolean(document.querySelector('[data-testid="toast-refresh-failed"]')),
     offlineState: Boolean(document.querySelector('[data-testid="library-state-offline"]')),
     errorState: Boolean(document.querySelector('[data-testid="library-state-error"]')),
     tiles: document.querySelectorAll('[data-testid="view-library"] [data-testid^="playlist-card-"]').length,
-    offlineBanner: Boolean(document.querySelector('[data-testid="banner-offline"]')),
-    bridgeBanner: Boolean(document.querySelector('[data-testid="banner-bridge-disconnected"]')),
+    offlineToast: Boolean(document.querySelector('[data-testid="toast-offline"]')),
+    bridgeToast: Boolean(document.querySelector('[data-testid="toast-bridge-disconnected"]')),
     playDisabled: document.querySelector('[data-testid="btn-play-pause"]')?.disabled ?? null
   })`);
-  return { subscribed: subscribed.ok, nav, queriesSent: sentQ, requestAck: request?.ack ?? null, response: resp ? { resultType: resp.resultType, freshness: resp.freshness, itemCount: resp.itemCount, error: resp.error } : null, coreError: reply?.kind === "core.error" ? reply.error : null, dom };
+  const snapshot = await app.snapshot();
+  const sameAccount = Boolean(start?.accountEpoch && snapshot?.accountEpoch === start.accountEpoch &&
+    snapshot.authState?.playerCatalogMatched && sha256Short(snapshot.authState.accountScope) === resp?.accountScope);
+  return {
+    subscribed, nav, queriesSent: sentQ, requestAck: request?.ack ?? null,
+    response: resp ? {
+      resultType: resp.resultType, freshness: resp.freshness, itemCount: resp.itemCount, hasNextCursor: resp.hasNextCursor, error: resp.error,
+    } : null,
+    coreError: reply?.kind === "core.error" ? reply.error?.code ?? null : null,
+    sameAccount, networkState: snapshot?.networkState ?? null, tilesForReply, dom,
+  };
 }
 
 /** Runs inside a whole-app network cut: reload the UI and browse the library from cache. */
@@ -179,9 +225,13 @@ export function offlineBrowseProbe(app) {
 
 export function offlineBrowseCheck(netCut) {
   const d = netCut?.during ?? null;
-  return check("G4.offlineCachedBrowse", "with the app offline, the library is served from cache and marked stale in the UI", {
+  return check("G4.offlineCachedBrowse", "offline reload renders same-account cached library tiles and shows the offline toast", {
     measured: d,
-    pass: Boolean(d?.response?.freshness === "stale" && d.dom.tiles > 0 && d.dom.cachedNotice),
+    pass: Boolean(d?.subscribed && d.nav.clicked && d.requestAck?.ok && d.sameAccount &&
+      d.response?.resultType === "libraryPlaylists" && d.response.freshness === "stale" && d.response.itemCount > 0 &&
+      d.tilesForReply?.matches === d.response.itemCount && (d.response.hasNextCursor || d.tilesForReply.total === d.response.itemCount) &&
+      d.networkState === "offline" &&
+      d.dom.tiles > 0 && d.dom.offlineToast && !d.dom.offlineState && !d.dom.errorState),
     blocked: netCut ? (netCut.ok === false ? netCut.error : null) : "network cut did not run",
   });
 }
@@ -205,10 +255,7 @@ export async function failureIsolationChecks(app, { query }) {
       try {
         await sleep(3000);
         const p0 = await pageMedia(app);
-        const since = (await app.state()).seq;
-        await navigate(app, "search");
-        await app.setInput('[data-testid="search-input"]', `${query} live`, { change: false });
-        const resp = await waitSearchResult(app, since, 45_000);
+        const { response: resp } = await uiSearch(app, `${query} live`, 45_000);
         await sleep(1000);
         const dom = await app.evalMain(`({
           error: Boolean(document.querySelector('[data-testid="search-state-error"]')),
@@ -240,8 +287,20 @@ export async function failureIsolationChecks(app, { query }) {
   const { dom, response: libResp } = afterCrashLibrary;
   const audio = await sinkInputsFor(app.pids());
   // recovery through the UI's "open official player" action
-  const clicked = await app.click('[data-testid="banner-bridge-disconnected"] button');
-  const rec = await app.waitFor((s, st) => st.lastBridgeReady?.at > (gone?.t ?? crashRequestedAt) && s?.player?.connection === "ready", { timeoutMs: 30_000 });
+  const beforeRecovery = await app.state();
+  const recoveryClickedAt = Date.now();
+  const clicked = beforeRecovery.snapshot?.player?.connection === "disconnected"
+    ? await app.click(BRIDGE_ACTION) : { clicked: false, reason: "the core no longer reports a disconnected bridge" };
+  const recoveryRequest = clicked.clicked ? await app.waitForEvent((e) => e.kind === "ui.openPlayerWindow", {
+    since: beforeRecovery.seq, types: ["ui->host"], timeoutMs: 5_000,
+  }) : null;
+  const ready = recoveryRequest?.ack?.ok ? await app.waitForEvent((e) =>
+    e.kind === "bridge.ready" && e.ack === true && e.at >= recoveryClickedAt && Boolean(e.bridgeEpoch),
+  { since: beforeRecovery.seq, types: ["bridge->host"], timeoutMs: 30_000 }) : null;
+  const rec = ready ? await app.waitFor((s) =>
+    s?.player?.bridgeEpoch === ready.bridgeEpoch && s.player.connection === "ready",
+  { timeoutMs: 6_000 }) : { ok: false };
+  const recoveredViaUi = Boolean(clicked.clicked && recoveryRequest?.ack?.ok === true && rec.ok);
   let harnessReload = null;
   if (!rec.ok) {
     await app.call("winop", { target: "player", op: "reload" });
@@ -263,7 +322,8 @@ export async function failureIsolationChecks(app, { query }) {
     orphanStream: audio.entries.some((e) => !e.corked),
     sinkInputsAfterCrash: audio.entries.map((e) => ({ sink: e.sink, corked: e.corked, role: describeProcesses([e.processId])[0]?.role ?? null })),
     uiRecoveryClicked: clicked,
-    recoveredViaUi: rec.ok,
+    recoveryActionAccepted: recoveryRequest?.ack?.ok ?? null,
+    recoveredViaUi,
     recoveredViaHarnessReload: harnessReload,
   };
   const cc = out.catalogCut;
@@ -277,11 +337,13 @@ export async function failureIsolationChecks(app, { query }) {
       }),
       check("G4.bridgeFailureBrowseWorks", "player renderer crashed: bridge shown as disconnected, library browsing still works, no orphan audio", {
         measured: out.bridgeCrash,
-        pass: Boolean(library.response?.freshness === "fresh" && library.dom.tiles > 0 && noticed && dom.bridgeBanner && dom.playDisabled && dom.tiles > 0 && !out.bridgeCrash.orphanStream && libResp?.resultType === "libraryPlaylists" && !libResp.error),
+        pass: Boolean(library.sameAccount && library.response?.freshness === "fresh" && library.dom.tiles > 0 &&
+          noticed && afterCrashLibrary.sameAccount && afterCrashLibrary.requestAck?.ok && dom.bridgeToast && dom.playDisabled &&
+          dom.tiles > 0 && !out.bridgeCrash.orphanStream && libResp?.resultType === "libraryPlaylists" && !libResp.error),
       }),
-      check("G4.bridgeRecoveryViaUi", "the banner's 'open official player' action recovers the bridge", {
-        measured: { recoveredViaUi: rec.ok, recoveredViaHarnessReload: harnessReload },
-        pass: rec.ok,
+      check("G4.bridgeRecoveryViaUi", "the disconnected toast's Open player action recovers the bridge", {
+        measured: { recoveredViaUi, recoveryActionAccepted: out.bridgeCrash.recoveryActionAccepted, recoveredViaHarnessReload: harnessReload },
+        pass: recoveredViaUi,
       }),
     ],
   };

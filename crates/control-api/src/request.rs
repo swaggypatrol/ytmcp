@@ -156,6 +156,13 @@ pub enum WriteAction {
     Autoplay {
         enabled: bool,
     },
+    /// Selects an Up Next filter read from the context (`filters[].filterId`). It replaces only
+    /// YouTube Music's own suggestions after the queued tracks; the current track keeps playing
+    /// and tracks the listener queued stay.
+    SetQueueFilter {
+        #[schemars(length(min = 1, max = 64))]
+        filter_id: String,
+    },
     Enqueue {
         context_token: String,
         mode: QueueMode,
@@ -435,6 +442,8 @@ pub enum ControlRequest {
     GetDjPreferences(crate::DjPreferencesInput),
     /// Returns the next prompt for a DJ agent, if any; polled by the MCP adapter while it waits.
     NextDjCue(crate::DjCueInput),
+    /// The listener's own music in brief: liked songs, playlists, plays and their scripts.
+    GetListenerProfile(crate::ListenerProfileInput),
     GetSettings,
     GetAlbum(AlbumInput),
     GetArtist(ArtistInput),
@@ -496,6 +505,7 @@ pub enum ControlResponse {
     Lyrics(LyricsPage),
     DjPreferences(Page<crate::DjPreference>),
     DjCue(Box<crate::DjCueReply>),
+    ListenerProfile(Box<crate::ListenerProfile>),
     Operation(OperationReceipt),
     Error(ControlError),
 }

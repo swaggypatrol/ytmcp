@@ -355,6 +355,46 @@ export class AppInstance {
     return this.evalMain(js);
   }
 
+  /** Uses the app's normal key handling in the main window. */
+  async pressKey(keyCode) {
+    await this.call("winop", { target: "main", op: "focus" });
+    const focused = await this.waitFor(() => this.evalMain("document.hasFocus()"), { timeoutMs: 2_000 });
+    if (!focused.ok) return { sent: 0 };
+    return this.call("sendInput", { target: "main", events: [
+      { type: "keyDown", keyCode }, { type: "keyUp", keyCode },
+    ] });
+  }
+
+  async scrollIntoView(selector, block = "nearest") {
+    return this.evalMain(`(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) return false;
+      element.scrollIntoView({ block: ${JSON.stringify(block)}, behavior: "instant" });
+      return true;
+    })()`);
+  }
+
+  /** Scrolls the main region to render one virtual row. */
+  async revealListRow(listSelector, index) {
+    const row = `button[data-row-index="${index}"]`;
+    const ready = await this.waitFor(() => this.evalMain(`(() => {
+      const list = document.querySelector(${JSON.stringify(listSelector)});
+      const scroller = list?.closest('[data-testid="main-scroll-region"]');
+      if (!scroller) return false;
+      const target = list.querySelector(${JSON.stringify(row)});
+      if (target) {
+        target.scrollIntoView({ block: "center", behavior: "instant" });
+        return true;
+      }
+      const rowHeight = list.querySelector('[data-testid="virtual-track-row"]')?.offsetHeight;
+      if (!rowHeight) return false;
+      const listTop = list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      scroller.scrollTop = listTop + ${JSON.stringify(index)} * rowHeight - scroller.clientHeight / 2;
+      return false;
+    })()`), { timeoutMs: 5_000, intervalMs: 100 });
+    return ready.ok;
+  }
+
   /** Sets a range/text input value the way user input does (input + change events). */
   async setInput(selector, value, { change = true } = {}) {
     const js = `(() => {

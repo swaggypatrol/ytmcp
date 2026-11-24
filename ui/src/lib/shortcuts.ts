@@ -1,5 +1,5 @@
 /** Global keyboard actions defined by SPEC 8.2. */
-export type ShortcutAction = "togglePlay" | "focusSearch" | "openLyrics" | "previous" | "next" | "escape";
+export type ShortcutAction = "togglePlay" | "focusSearch" | "toggleLyrics" | "previous" | "next" | "escape";
 
 export interface ShortcutKeyEvent {
   readonly key: string;
@@ -58,7 +58,7 @@ export function resolveShortcut(event: ShortcutKeyEvent, imeComposing: boolean):
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
 
   if (mod && !event.shiftKey && key === "f") return "focusSearch";
-  if (mod && !event.shiftKey && key === "l") return "openLyrics";
+  if (mod && !event.shiftKey && key === "l") return "toggleLyrics";
 
   if (isTextEntryTarget(event.target)) return null;
 

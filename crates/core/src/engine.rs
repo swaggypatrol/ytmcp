@@ -32,7 +32,6 @@ use ytm_protocol::{
     StateDelta, TrackInstanceId,
 };
 
-const MAX_QUEUE_PREVIEW_ENTRIES: usize = 100;
 const MAX_ENQUEUE_PROOFS: usize = 64;
 const MAX_DISPATCHED_COMMANDS: usize = 256;
 const ACTOR_CHANNEL_CAPACITY: usize = 256;
@@ -111,6 +110,8 @@ pub(crate) struct ControlRead {
     pub environment: Option<HostEnvironmentSnapshotPayload>,
     /// Monotonic time of the latest command from the player window, media keys or MPRIS.
     pub last_manual_command_ms: Option<u64>,
+    /// What the listener did by hand, oldest first.
+    pub listener_actions: Arc<[crate::control::listener_log::LoggedAction]>,
     pub events: Option<broadcast::Receiver<StateDelta>>,
 }
 
@@ -173,6 +174,16 @@ enum CoreMsg {
     SessionMaterial {
         payload: Box<SessionMaterialPayload>,
         reply: oneshot::Sender<Result<(), QueryError>>,
+    },
+    /// Drafts a rating or playlist addition the listener is making in the app, as of now.
+    DraftListenerMutation {
+        request: Box<ytm_protocol::MutationRequest>,
+        reply: oneshot::Sender<crate::control::listener_log::Draft>,
+    },
+    /// Logs a drafted rating or playlist addition the account confirmed or may have applied.
+    ListenerMutation {
+        draft: Box<crate::control::listener_log::Draft>,
+        account_scope: AccountScope,
     },
     Logout {
         reply: oneshot::Sender<Result<(), QueryError>>,
@@ -965,6 +976,18 @@ impl CoreEngine {
             .into());
         };
 
+        // What the listener did, as of the click, before any earlier write is waited for;
+        // logged once the account confirms it.
+        let listener_draft = {
+            let (reply, drafted) = oneshot::channel();
+            let _ = self
+                .send_msg(CoreMsg::DraftListenerMutation {
+                    request: Box::new(request.clone()),
+                    reply,
+                })
+                .await;
+            drafted.await.ok()
+        };
         let _serialized = self.mutation_lock.lock().await;
         let ctx = self.acquire_catalog_context(true).await?;
         let (Some(account_epoch), Some(account_scope)) =
@@ -987,6 +1010,7 @@ impl CoreEngine {
         }
 
         let kind = request.kind;
+        let listener_scope = account_scope.clone();
         let readback_target = match (kind, request.liked) {
             (ytm_protocol::MutationKind::SetLike, Some(liked)) => {
                 Some((request.video_id.clone(), liked))
@@ -1021,6 +1045,17 @@ impl CoreEngine {
         {
             result.outcome = self
                 .read_back_like(catalog.as_ref(), &account_epoch, &video_id, liked)
+                .await;
+        }
+        if same_account
+            && result.outcome != ytm_protocol::MutationOutcome::Rejected
+            && let Some(draft) = listener_draft
+        {
+            let _ = self
+                .send_msg(CoreMsg::ListenerMutation {
+                    draft: Box::new(draft),
+                    account_scope: listener_scope,
+                })
                 .await;
         }
         if result.outcome == ytm_protocol::MutationOutcome::Confirmed && same_account {
@@ -1399,6 +1434,7 @@ struct CoreActor {
     playback_generation: u64,
     settings_revision: u64,
     last_manual_command_ms: Option<u64>,
+    listener_log: crate::control::listener_log::ListenerLog,
     unreleased_gates: HashMap<String, Arc<OnceCell<OutputGateResultPayload>>>,
     last_receipt: Option<CommandReceipt>,
     dedup: CommandDeduplicator,
@@ -1475,6 +1511,9 @@ impl CoreActor {
                 codec: None,
                 audio_mode: None,
                 quality_label: None,
+                audio_itag: None,
+                audio_quality: None,
+                audio_bitrate_kbps: None,
                 drm_protected: None,
                 stopped_confirmed: false,
             },
@@ -1510,12 +1549,17 @@ impl CoreActor {
                 completeness: ytm_protocol::QueueCompleteness::Unknown,
                 has_more: None,
                 preview_entries: Vec::new(),
+                preview_start: 0,
+                loaded_start: None,
+                official_upcoming: None,
+                filters: None,
             },
             active_command: None,
             pending_queue: VecDeque::new(),
             playback_generation: 0,
             settings_revision: 0,
             last_manual_command_ms: None,
+            listener_log: Default::default(),
             unreleased_gates: HashMap::new(),
             last_receipt: None,
             dedup: CommandDeduplicator::new(),
@@ -1586,6 +1630,29 @@ impl CoreActor {
             }
         }
         debug!(core_epoch = %self.core_epoch, "CoreActor exited");
+    }
+
+    /// The playback a new command will find once the active and queued commands have run; a
+    /// queued toggle flips it, as it is resolved when it runs.
+    fn playback_when_queue_runs(&self) -> PlaybackStatus {
+        let start = match self.active_command.as_ref().map(|active| &active.plan) {
+            Some(PendingOpPlan::Play { .. }) => PlaybackStatus::Playing,
+            Some(PendingOpPlan::Pause { .. } | PendingOpPlan::Stop { .. }) => {
+                PlaybackStatus::Paused
+            }
+            _ => self.player.playback,
+        };
+        self.pending_queue
+            .iter()
+            .fold(start, |playback, queued| match queued.payload.op {
+                PlayerOp::Play => PlaybackStatus::Playing,
+                PlayerOp::Pause | PlayerOp::Stop => PlaybackStatus::Paused,
+                PlayerOp::Toggle if resolve_toggle_op(playback) == PlayerOp::Pause => {
+                    PlaybackStatus::Paused
+                }
+                PlayerOp::Toggle => PlaybackStatus::Playing,
+                _ => playback,
+            })
     }
 
     fn current_pending_state(&self) -> PlayerPendingState {
@@ -1711,6 +1778,12 @@ impl CoreActor {
                     moment_config: self.moment_config.clone(),
                     environment: self.environment.clone(),
                     last_manual_command_ms: self.last_manual_command_ms,
+                    listener_actions: self.listener_log.snapshot(
+                        self.auth_state.account_scope.as_ref(),
+                        self.deps.clock.now_ms(),
+                        &self.player,
+                        self.full_queue.as_ref(),
+                    ),
                     events: subscribe.then(|| self.delta_tx.subscribe()),
                 });
             }
@@ -1809,6 +1882,24 @@ impl CoreActor {
             }
             CoreMsg::SessionMaterial { payload, reply } => {
                 self.handle_session_material(*payload, reply);
+            }
+            CoreMsg::DraftListenerMutation { request, reply } => {
+                let now_ms = self.deps.clock.now_ms();
+                let _ = reply.send(crate::control::listener_log::mutation_draft(
+                    &request,
+                    &self.player,
+                    now_ms,
+                    self.clock_model.estimated_position_ms(now_ms),
+                    self.full_queue.as_ref(),
+                ));
+            }
+            CoreMsg::ListenerMutation {
+                draft,
+                account_scope,
+            } => {
+                if self.auth_state.account_scope.as_ref() == Some(&account_scope) {
+                    self.listener_log.record(Some(&account_scope), *draft);
+                }
             }
             CoreMsg::Logout { reply } => {
                 self.handle_logout(reply);
@@ -2146,6 +2237,24 @@ impl CoreActor {
             return;
         }
 
+        // What the listener did, as of before this command; logged once it is accepted.
+        let listener_action = if manual {
+            let pending_volume = (payload.op == PlayerOp::SetVolume)
+                .then(|| self.current_pending_state().desired_volume)
+                .flatten();
+            crate::control::listener_log::command_draft(
+                &payload,
+                &self.player,
+                now_ms,
+                self.clock_model.estimated_position_ms(now_ms),
+                pending_volume,
+                self.playback_when_queue_runs(),
+                self.full_queue.as_ref(),
+            )
+        } else {
+            None
+        };
+
         let took_over = manual
             && takes_over_external_playback(payload.op)
             && self.take_over_external_playback("local playback control took over");
@@ -2180,6 +2289,16 @@ impl CoreActor {
             deduplicated: false,
         };
         self.dedup.record(&payload, receipt.clone(), now_ms);
+        if let Some(action) = listener_action {
+            self.listener_log
+                .record(self.auth_state.account_scope.as_ref(), action);
+        }
+        if !is_internal && loads_playback(payload.op) {
+            // The caller chose what to play. A launch restore not yet started must never
+            // navigate after it, even when its command times out while the page still loads.
+            self.restore_attempted = true;
+            self.restore_candidate = None;
+        }
         let command = QueuedCommand {
             receipt: receipt.clone(),
             payload,
@@ -2279,8 +2398,38 @@ impl CoreActor {
                     "queue edit requires an eligible occurrence in a complete bounded queue",
                 ));
             }
+            if payload.op == PlayerOp::SetQueueFilter && self.queue_filter_selected(args).is_none()
+            {
+                return Err(stale(
+                    "this Up Next filter is not offered by the current queue",
+                ));
+            }
         }
         Ok(())
+    }
+
+    /// Whether the requested Up Next filter is selected in the current queue snapshot; `None`
+    /// when that snapshot does not offer it.
+    fn queue_filter_selected(&self, args: &PlayerCommandArgs) -> Option<bool> {
+        let id = args.queue_filter_id.as_deref()?;
+        self.full_queue
+            .as_ref()?
+            .filters
+            .as_ref()?
+            .iter()
+            .find(|filter| filter.filter_id == id)
+            .map(|filter| filter.selected)
+    }
+
+    /// A command whose requested state the page already shows, so sending it would do nothing:
+    /// selecting the Up Next filter that is already selected.
+    fn already_observed(&self, payload: &PlayerCommandPayload) -> bool {
+        payload.op == PlayerOp::SetQueueFilter
+            && payload
+                .args
+                .as_ref()
+                .and_then(|args| self.queue_filter_selected(args))
+                == Some(true)
     }
 
     /// A play with no track loaded can never be observed: right after start-up the official
@@ -2383,6 +2532,19 @@ impl CoreActor {
             self.emit_player_changed();
             if let Some(tx) = reply {
                 let _ = tx.send(Err(err));
+            }
+            self.start_next_queued_command(None);
+            return;
+        }
+        if self.already_observed(&queued.payload) {
+            let mut r = queued.receipt;
+            r.status = CommandLifecycleStatus::Observed;
+            r.observed_at_ms = Some(self.deps.clock.wall_now_ms());
+            self.dedup.upsert(r.clone(), now_ms);
+            self.emit_command_updated(r.clone());
+            self.emit_player_changed();
+            if let Some(tx) = reply {
+                let _ = tx.send(Ok(r));
             }
             self.start_next_queued_command(None);
             return;
@@ -2523,6 +2685,7 @@ impl CoreActor {
                             queue_entry_id: None,
                             before_queue_entry_id: None,
                             queue_revision: None,
+                            queue_filter_id: None,
                         }),
                     };
                     (
@@ -2550,6 +2713,7 @@ impl CoreActor {
                             queue_entry_id: None,
                             before_queue_entry_id: None,
                             queue_revision: None,
+                            queue_filter_id: None,
                         }),
                     };
                     (
@@ -2652,6 +2816,16 @@ impl CoreActor {
                     .expect("validated setAutoplay has a target state");
                 (
                     PendingOpPlan::SetAutoplay { enabled },
+                    payload.clone(),
+                    None,
+                )
+            }
+            PlayerOp::SetQueueFilter => {
+                let filter_id = args
+                    .and_then(|args| args.queue_filter_id)
+                    .expect("validated setQueueFilter has a filter id");
+                (
+                    PendingOpPlan::SetQueueFilter { filter_id },
                     payload.clone(),
                     None,
                 )
@@ -3186,6 +3360,7 @@ impl CoreActor {
                         queue_entry_id: None,
                         before_queue_entry_id: None,
                         queue_revision: None,
+                        queue_filter_id: None,
                     }),
                 };
                 self.spawn_bridge_dispatch(token, command_id, bridge_epoch, seek_payload, None);
@@ -3500,6 +3675,7 @@ impl CoreActor {
                     queue_entry_id: None,
                     before_queue_entry_id: None,
                     queue_revision: None,
+                    queue_filter_id: None,
                 }),
             };
             let bridge = self.deps.bridge.clone();
@@ -3673,6 +3849,9 @@ impl CoreActor {
         self.player.codec = None;
         self.player.audio_mode = None;
         self.player.quality_label = None;
+        self.player.audio_itag = None;
+        self.player.audio_quality = None;
+        self.player.audio_bitrate_kbps = None;
         self.player.drm_protected = None;
     }
 
@@ -3712,6 +3891,7 @@ impl CoreActor {
             queue_remove: CapabilitySupport::Unsupported,
             queue_autoplay: None,
             queue_clear: None,
+            queue_filter: None,
             ..CapabilitySet::default()
         };
         self.last_bridge_logged_in = None;
@@ -4202,6 +4382,7 @@ impl CoreActor {
     }
 
     fn invalidate_account_scoped_state(&mut self, reason: &str) {
+        self.listener_log.clear();
         self.account_cancel.cancel();
         self.account_cancel = CancellationToken::new();
         self.invalidate_external_playback(reason);
@@ -4404,6 +4585,10 @@ impl CoreActor {
                 completeness: ytm_protocol::QueueCompleteness::Unknown,
                 has_more: None,
                 preview_entries: Vec::new(),
+                preview_start: 0,
+                loaded_start: None,
+                official_upcoming: None,
+                filters: None,
             };
             self.player.bridge_epoch = Some(payload.bridge_epoch.clone());
             self.player.track_instance_id = None;
@@ -4510,6 +4695,9 @@ impl CoreActor {
         self.player.codec = payload.codec;
         self.player.audio_mode = payload.audio_mode;
         self.player.quality_label = payload.quality_label;
+        self.player.audio_itag = payload.audio_itag;
+        self.player.audio_quality = payload.audio_quality;
+        self.player.audio_bitrate_kbps = payload.audio_bitrate_kbps;
         self.player.drm_protected = payload.drm_protected;
 
         if track_changed {
@@ -4625,12 +4813,9 @@ impl CoreActor {
         }
 
         let loaded_count = u32::try_from(payload.entries.len()).unwrap_or(u32::MAX);
-        let preview_entries = payload
-            .entries
-            .iter()
-            .take(MAX_QUEUE_PREVIEW_ENTRIES)
-            .cloned()
-            .collect();
+        let preview = crate::queue_window::preview_range(&payload);
+        let preview_start = u32::try_from(preview.start).unwrap_or(u32::MAX);
+        let preview_entries = payload.entries[preview].to_vec();
 
         self.queue_summary = QueueSummary {
             queue_revision: payload.queue_revision,
@@ -4639,6 +4824,20 @@ impl CoreActor {
             completeness: payload.completeness,
             has_more: payload.has_more,
             preview_entries,
+            preview_start,
+            loaded_start: payload.loaded_range.as_ref().map(|range| range.start),
+            official_upcoming: payload.official_upcoming.as_ref().map(|official| {
+                ytm_protocol::OfficialUpcoming {
+                    status: official.status,
+                    tracks: official
+                        .tracks
+                        .iter()
+                        .take(ytm_protocol::MAX_PREVIEW_OFFICIAL_UPCOMING)
+                        .cloned()
+                        .collect(),
+                }
+            }),
+            filters: payload.filters.clone(),
         };
         self.full_queue = Some(payload);
 
@@ -4844,6 +5043,14 @@ fn internal_command_id(prefix: &str) -> CommandId {
     CommandId::new(format!("{prefix}-{}", Uuid::new_v4())).expect("uuid id is valid")
 }
 
+/// Outside commands that load a track into an empty page, so a launch restore would compete with them.
+fn loads_playback(op: PlayerOp) -> bool {
+    matches!(
+        op,
+        PlayerOp::PlayTarget | PlayerOp::PlayCollection | PlayerOp::Enqueue
+    )
+}
+
 fn is_restore_play_intent(op: PlayerOp) -> bool {
     matches!(
         op,
@@ -4865,6 +5072,7 @@ fn empty_args() -> PlayerCommandArgs {
         queue_entry_id: None,
         before_queue_entry_id: None,
         queue_revision: None,
+        queue_filter_id: None,
     }
 }
 
@@ -4884,11 +5092,12 @@ fn new_gate_transaction(needed: bool) -> (Option<PausedSkipState>, Option<String
     )
 }
 
-/// Manual volume, mute and repeat changes neither redirect playback nor touch the queue, so they
+/// Manual volume, mute and repeat changes neither redirect playback nor touch the queue, and an
+/// Up Next filter only re-steers YouTube Music's suggestions after the explicit list, so they
 /// leave external playback and queue work running. Every other manual command takes over.
 fn takes_over_external_playback(op: PlayerOp) -> bool {
     !matches!(
         op,
-        PlayerOp::SetVolume | PlayerOp::SetMuted | PlayerOp::SetRepeat
+        PlayerOp::SetVolume | PlayerOp::SetMuted | PlayerOp::SetRepeat | PlayerOp::SetQueueFilter
     )
 }

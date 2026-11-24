@@ -37,6 +37,10 @@ export type ResourceInvalidation = Pick<
   Extract<StateDelta, { deltaType: "resourceInvalidated" }>,
   "resource_kind" | "resource_id"
 >;
+type ControlOperationChange = Pick<
+  Extract<StateDelta, { deltaType: "controlOperationChanged" }>,
+  "operation_id" | "principal"
+>;
 
 /** Raised when a request was delivered but no response arrived in time (side effect unknown). */
 export class IpcTimeoutError extends Error {
@@ -624,6 +628,7 @@ export class YtmUiClient {
   private activityRevision = 0;
   private momentRevision = 0;
   private readonly invalidationListeners = new Set<(resource: ResourceInvalidation) => void>();
+  private readonly controlOperationListeners = new Set<(change: ControlOperationChange) => void>();
 
   private listeners = new Set<UiClientListener>();
   private unsubscribeBridge: DeltaUnsubscribe | null = null;
@@ -676,6 +681,7 @@ export class YtmUiClient {
     return {
       subscribeSnapshot: (listener) => fake.subscribeSnapshot((delta) => listener(delta)),
       sendPlayerCommand: (cmd) => fake.sendPlayerCommand(cmd),
+      sendMutation: (req, accountEpoch) => fake.sendMutation(req, accountEpoch),
       // The mock "loading" scenario keeps catalog requests pending forever.
       queryCatalog: (req) =>
         this.mockScenario === "loading" ? new Promise(() => {}) : fake.queryCatalog(req),
@@ -712,6 +718,12 @@ export class YtmUiClient {
   public subscribeInvalidations(listener: (resource: ResourceInvalidation) => void): DeltaUnsubscribe {
     this.invalidationListeners.add(listener);
     return () => this.invalidationListeners.delete(listener);
+  }
+
+  /** Receives each operation change applied to the current snapshot, including buffered deltas. */
+  public subscribeControlOperations(listener: (change: ControlOperationChange) => void): DeltaUnsubscribe {
+    this.controlOperationListeners.add(listener);
+    return () => { this.controlOperationListeners.delete(listener); };
   }
 
   private invalidate(resource: ResourceInvalidation): void {
@@ -954,7 +966,10 @@ export class YtmUiClient {
         this.activityRevision += 1;
       }
       this.invalidate(delta);
-    } else if (delta.deltaType === "controlOperationChanged" || delta.deltaType === "manualTakeover" || delta.deltaType === "authChanged") {
+    } else if (delta.deltaType === "controlOperationChanged") {
+      this.activityRevision += 1;
+      for (const listener of this.controlOperationListeners) listener(delta);
+    } else if (delta.deltaType === "manualTakeover" || delta.deltaType === "authChanged") {
       this.activityRevision += 1;
       if (delta.deltaType === "authChanged") this.momentRevision += 1;
     } else if (delta.deltaType === "momentChanged") {

@@ -32,7 +32,7 @@ describe("resolveShortcut", () => {
     expect(resolveShortcut({ key: " ", code: "Space", target: input }, false)).toBeNull();
     expect(resolveShortcut({ key: "ArrowLeft", ctrlKey: true, target: input }, false)).toBeNull();
     expect(resolveShortcut({ key: "F", ctrlKey: true, target: input }, false)).toBe("focusSearch");
-    expect(resolveShortcut({ key: "l", ctrlKey: true, target: input }, false)).toBe("openLyrics");
+    expect(resolveShortcut({ key: "l", ctrlKey: true, target: input }, false)).toBe("toggleLyrics");
     expect(resolveShortcut({ key: " ", target: el("DIV", { isContentEditable: true }) }, false)).toBeNull();
 
     expect(resolveShortcut({ key: " ", code: "Space", target: body }, true)).toBeNull();
@@ -183,8 +183,7 @@ describe("page state and gates", () => {
 
   it("gates player commands when the bridge is disconnected or incompatible even if capabilities remain stale", () => {
     expect(commandGate("supported", "ready")).toEqual({ enabled: true, reason: null });
-    expect(commandGate("unverified", "ready").enabled).toBe(true);
-    expect(commandGate("unverified", "ready").reason).toContain("not verified yet");
+    expect(commandGate("unverified", "ready")).toEqual({ enabled: true, reason: null });
     expect(commandGate("unsupported", "ready").enabled).toBe(false);
     expect(commandGate("supported", "disconnected").enabled).toBe(false);
     expect(commandGate("supported", "disconnected").reason).toContain("not connected");

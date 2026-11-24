@@ -54,6 +54,7 @@ test:
 test-control:
     cargo build -p ytm-daemon -p ytmcp
     python3 tools/mcp/offline-smoke.py "{{CARGO_TARGET_DIR}}/debug/ytm-daemon" "{{CARGO_TARGET_DIR}}/debug/ytmcp"
+    python3 -m unittest tools/mcp/test_dj_harness.py
 
 # Run linters and formatting checks
 lint:

@@ -130,6 +130,7 @@ fn command_envelope_builds_and_decodes_cleanly() {
                 queue_entry_id: None,
                 before_queue_entry_id: None,
                 queue_revision: None,
+                queue_filter_id: None,
             }),
         },
     )

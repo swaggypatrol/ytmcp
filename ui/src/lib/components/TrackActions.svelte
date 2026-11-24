@@ -1,8 +1,133 @@
+<script lang="ts" module>
+  /** A box in viewport pixels; a point is a box with no size. */
+  export interface Box {
+    readonly left: number;
+    readonly top: number;
+    readonly right: number;
+    readonly bottom: number;
+  }
+
+  /** Where the menu sits: `top` when it opens downward, `bottom` (from the viewport's foot) upward. */
+  export interface MenuPlacement {
+    readonly left: number;
+    readonly width: number;
+    readonly top: number | null;
+    readonly bottom: number | null;
+    readonly maxHeight: number;
+    /** The anchor's point in the menu's own box, so the menu grows out of its trigger. */
+    readonly origin: string;
+  }
+
+  /** Space between the trigger and the menu, and between the menu and the content area's edge. */
+  const MENU_GAP = 6;
+  const MENU_EDGE = 8;
+  const MENU_WIDTH = 300;
+  /** The side is chosen for at least the chooser's height (header, filter, six playlists), so a
+   *  short first step never leaves the chooser squeezed into a little room. */
+  const MENU_PLAN_HEIGHT = 360;
+  /** A trigger counts only when the menu opens this soon after it. */
+  const TRIGGER_WINDOW_MS = 1000;
+
+  const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
+
+  /**
+   * Places the menu by its anchor inside `bounds`: below the anchor when it fits, else above, else
+   * on the side with more room (it then scrolls inside). It lines up with the anchor's nearer side
+   * and never leaves `bounds`. Pure, so it can be checked with numbers:
+   * `placeMenu(anchorRect, { width: 300, height: el.offsetHeight }, contentBounds, innerHeight)`.
+   */
+  export function placeMenu(
+    anchor: Box,
+    size: { readonly width: number; readonly height: number },
+    bounds: Box,
+    viewportHeight: number
+  ): MenuPlacement {
+    const width = Math.min(size.width, bounds.right - bounds.left);
+    const anchorX = (anchor.left + anchor.right) / 2;
+    const alignRight = anchorX >= (bounds.left + bounds.right) / 2;
+    const left = clamp(alignRight ? anchor.right - width : anchor.left, bounds.left, bounds.right - width);
+    const roomBelow = bounds.bottom - (anchor.bottom + MENU_GAP);
+    const roomAbove = anchor.top - MENU_GAP - bounds.top;
+    const below = size.height <= roomBelow || (size.height > roomAbove && roomBelow >= roomAbove);
+    const originX = `${Math.round(clamp(anchorX - left, 0, width))}px`;
+    if (below) {
+      const top = clamp(anchor.bottom + MENU_GAP, bounds.top, bounds.bottom);
+      return { left, width, top, bottom: null, maxHeight: bounds.bottom - top, origin: `${originX} 0` };
+    }
+    const edge = clamp(anchor.top - MENU_GAP, bounds.top, bounds.bottom);
+    return { left, width, top: null, bottom: viewportHeight - edge, maxHeight: edge - bounds.top, origin: `${originX} 100%` };
+  }
+
+  // The last click, right-click or key press, so the menu can find the control (or the point) it
+  // was opened from without every list passing it along.
+  let lastTrigger: { type: string; target: Element; point: { x: number; y: number } | null; at: number } | null = null;
+  // A press on the open menu's own trigger closes it; the click that follows must not reopen it.
+  let swallowClickOn: Element | null = null;
+
+  function rememberTrigger(event: Event) {
+    // No click follows a right-click or a key press, so a pending swallow would catch a later one.
+    if (event.type !== "click") swallowClickOn = null;
+    if (!(event.target instanceof Element)) return;
+    const pointer = event.type === "contextmenu" && event instanceof MouseEvent && (event.clientX !== 0 || event.clientY !== 0);
+    lastTrigger = {
+      type: event.type,
+      target: event.target,
+      point: pointer ? { x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY } : null,
+      at: performance.now(),
+    };
+  }
+
+  function swallowClick(event: Event) {
+    const target = swallowClickOn;
+    swallowClickOn = null;
+    if (target && event.target instanceof Node && target.contains(event.target)) {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+    }
+  }
+
+  if (typeof document !== "undefined") {
+    for (const type of ["click", "contextmenu", "keydown"]) document.addEventListener(type, rememberTrigger, true);
+    window.addEventListener("click", swallowClick, true);
+    window.addEventListener("pointerdown", () => (swallowClickOn = null), true);
+  }
+
+  /**
+   * What just opened the menu: `opener` gets focus back on close (and anchors the menu when there
+   * is no point), `point` is a right-click's position, and `toggle` is true only when a click on
+   * the opener opened it, so only then does a press on the opener just close the menu. A
+   * right-click opens on whatever sits under the pointer (a row's play button, the page), so its
+   * opener is the control focused at the time and pressing it afterwards works as usual.
+   */
+  function currentTrigger(): { opener: HTMLElement | null; point: { x: number; y: number } | null; toggle: boolean } {
+    const recent = lastTrigger && performance.now() - lastTrigger.at < TRIGGER_WINDOW_MS ? lastTrigger : null;
+    const focused = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    if (recent?.type === "click") {
+      const clicked = recent.target.closest<HTMLElement>('button, a[href], [tabindex]:not([tabindex="-1"])');
+      if (clicked?.isConnected) return { opener: clicked, point: null, toggle: true };
+    }
+    return { opener: focused, point: recent?.point ?? null, toggle: false };
+  }
+
+  /** The content area: right of the sidebar, above the player bar, inset from both. */
+  function contentBounds(): Box {
+    const content = document.querySelector(".app-content")?.getBoundingClientRect();
+    const dock = document.querySelector(".app-player-dock")?.getBoundingClientRect();
+    const left = (content?.left ?? 0) + MENU_EDGE;
+    const bottom = (dock && dock.height > 0 ? dock.top : window.innerHeight) - MENU_EDGE;
+    return { left, top: MENU_EDGE, right: Math.max(left, window.innerWidth - MENU_EDGE), bottom: Math.max(MENU_EDGE, bottom) };
+  }
+</script>
+
 <script lang="ts">
   import type { EnqueuePosition, PlaylistSummary, QueryError, Track } from "@ytmcp/protocol";
+  import { tick, untrack } from "svelte";
   import type { Gate } from "../capabilities.js";
   import type { PageView } from "../catalog/page-state.js";
+  import { glass } from "../glass/liquid-glass.js";
+  import { OverlayPresence } from "../glass/overlay-motion.svelte.js";
   import { t } from "../i18n/index.svelte.js";
+  import { queryErrorDetail, queryErrorMessage } from "../i18n/query-errors.js";
   import Cover from "./Cover.svelte";
   import { formatArtists, isPlayable } from "./format.js";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -10,6 +135,8 @@
 
   interface Props {
     track: Track;
+    active?: boolean;
+    openKey?: number;
     liked: boolean | null;
     mockMode?: boolean;
     enqueueGate: Gate;
@@ -24,6 +151,10 @@
     playlistsHasMore?: boolean;
     playlistsLoadingMore?: boolean;
     playlistsMoreError?: QueryError | null;
+    /** "pick" opens straight on the playlist chooser (Now playing's Add to playlist). */
+    startAt?: "menu" | "pick";
+    /** Escape, a press outside, a scroll or a resize asks to close. */
+    onClose: () => void;
     onPlay: () => void;
     onEnqueue: (position: EnqueuePosition) => void;
     onSetLike: (liked: boolean) => void;
@@ -37,6 +168,8 @@
 
   let {
     track,
+    active = true,
+    openKey = 0,
     liked,
     mockMode = false,
     enqueueGate,
@@ -50,6 +183,8 @@
     playlistsHasMore = false,
     playlistsLoadingMore = false,
     playlistsMoreError = null,
+    startAt = "menu",
+    onClose,
     onPlay,
     onEnqueue,
     onSetLike,
@@ -73,6 +208,173 @@
       ? playlists.filter((pl) => pl.title.toLowerCase().includes(playlistFilter.trim().toLowerCase()))
       : playlists
   );
+
+  const presence = new OverlayPresence();
+  $effect(() => () => {
+    if (active) restoreFocus(true);
+    presence.dispose();
+  });
+  let trigger: ReturnType<typeof currentTrigger>;
+  let bounds: Box;
+  let anchor: Box;
+  let width = $state(MENU_WIDTH);
+  let menuEl = $state<HTMLDivElement | null>(null);
+  let placement = $state<MenuPlacement | null>(null);
+
+  /** Read the opener and content geometry when the menu opens, including during an outro. */
+  function prepareMenu() {
+    trigger = currentTrigger();
+    bounds = contentBounds();
+    anchor = trigger.point
+      ? { left: trigger.point.x, right: trigger.point.x, top: trigger.point.y, bottom: trigger.point.y }
+      : (trigger.opener?.getBoundingClientRect() ?? {
+          left: (bounds.left + bounds.right) / 2,
+          right: (bounds.left + bounds.right) / 2,
+          top: bounds.top + 56,
+          bottom: bounds.top + 56,
+        });
+    width = Math.min(MENU_WIDTH, bounds.right - bounds.left);
+  }
+
+  const FOCUS_FIRST = 'input[type="search"], .menu-item:not(:disabled), .btn-primary:not(:disabled)';
+  const FOCUSABLE =
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  /** Puts the menu by its trigger once, before it is first painted. */
+  function place(node: HTMLDivElement) {
+    placement = placeMenu(anchor, { width, height: Math.max(node.offsetHeight, MENU_PLAN_HEIGHT) }, bounds, window.innerHeight);
+  }
+
+  /** Moves focus to the step's first useful control (the filter, the first item, the confirm button). */
+  async function focusStep(reposition = false) {
+    await tick();
+    if (!active || !menuEl) return;
+    if (reposition) place(menuEl);
+    const target = menuEl.querySelector<HTMLElement>(FOCUS_FIRST) ?? menuEl.querySelector<HTMLElement>(FOCUSABLE) ?? menuEl;
+    target.focus({ preventScroll: true });
+  }
+
+  /** True when the element or an ancestor is inert, where focus() silently does nothing. */
+  function isInert(el: HTMLElement): boolean {
+    for (let node: HTMLElement | null = el; node; node = node.parentElement) if (node.inert) return true;
+    return false;
+  }
+
+  /** On close focus goes back to the opener, or to the page title when the opener has gone. */
+  function restoreFocus(unmounting = false) {
+    const opener = trigger?.opener;
+    if (menuEl && document.activeElement && !menuEl.contains(document.activeElement) && document.activeElement !== document.body) return;
+    queueMicrotask(() => {
+      if (active && !unmounting) return;
+      if (opener?.isConnected && !isInert(opener)) opener.focus({ preventScroll: true });
+      if (opener && document.activeElement === opener) return;
+      const fallback = document.querySelector<HTMLElement>(".app-page h1") ?? document.querySelector<HTMLElement>(".app-scroll");
+      if (!fallback) return;
+      if (!fallback.hasAttribute("tabindex")) fallback.setAttribute("tabindex", "-1");
+      fallback.focus({ preventScroll: true });
+    });
+  }
+
+  $effect(() => {
+    const isOpen = active;
+    // A new invocation can select a different row or open straight to the picker.
+    void openKey;
+    if (!isOpen) {
+      untrack(() => {
+        restoreFocus();
+        presence.hide(menuEl);
+      });
+      return;
+    }
+    untrack(() => {
+      prepareMenu();
+      step = startAt;
+      chosen = null;
+      playlistFilter = "";
+      presence.show();
+      if (step === "pick") onRequestPlaylists();
+      void focusStep(true);
+    });
+    const controller = new AbortController();
+    const { signal } = controller;
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        const target = event.target instanceof Node ? event.target : null;
+        if (!target || menuEl?.contains(target)) return;
+        // A press on the trigger closes the menu; the click it ends in must not open it again.
+        if (trigger.toggle && trigger.opener?.contains(target)) swallowClickOn = trigger.opener;
+        onClose();
+      },
+      { capture: true, signal }
+    );
+    // A scroll anywhere but inside the menu (the playlist list scrolls) moves its trigger away.
+    document.addEventListener(
+      "scroll",
+      (event) => {
+        if (event.target instanceof Node && menuEl?.contains(event.target)) return;
+        onClose();
+      },
+      { capture: true, signal }
+    );
+    window.addEventListener("resize", () => onClose(), { signal });
+    return () => controller.abort();
+  });
+
+  function selectStep(next: "menu" | "pick" | "confirm") {
+    step = next;
+    void focusStep();
+  }
+
+  /** Keys stay in the menu: Escape closes it, arrows walk its items, Tab cycles inside it. */
+  function handleKeydown(event: KeyboardEvent) {
+    if (!active) return;
+    // Global shortcuts must not fire while the menu has focus.
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (!menuEl) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+      const inField = event.target instanceof HTMLInputElement;
+      if (inField && (event.key === "Home" || event.key === "End")) return;
+      const items = Array.from(menuEl.querySelectorAll<HTMLElement>(".menu-item:not(:disabled)"));
+      if (items.length === 0) return;
+      event.preventDefault();
+      const at = items.indexOf(document.activeElement as HTMLElement);
+      const next =
+        event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? items.length - 1
+            : event.key === "ArrowDown"
+              ? (at + 1) % items.length
+              : at <= 0
+                ? items.length - 1
+                : at - 1;
+      items[next]!.focus();
+      return;
+    }
+    if (event.key === "Tab") {
+      const focusables = Array.from(menuEl.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (focusables.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || active === menuEl)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }
 </script>
 
 {#snippet action(
@@ -96,7 +398,27 @@
   </li>
 {/snippet}
 
-<div class="flex flex-col gap-3" data-testid="track-actions">
+{#if presence.rendered}
+<!-- An L4 menu: above the content area only, grown from its trigger, no scrim. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div
+  bind:this={menuEl}
+  class="track-menu lg lg--popover lg-overlay"
+  role="dialog"
+  aria-label={t.track.actionsFor.replace("{title}", track.title)}
+  tabindex="-1"
+  style:left={placement ? `${placement.left}px` : undefined}
+  style:top={placement?.top != null ? `${placement.top}px` : undefined}
+  style:bottom={placement?.bottom != null ? `${placement.bottom}px` : undefined}
+  style:width={`${width}px`}
+  style:max-height={placement ? `${placement.maxHeight}px` : undefined}
+  style:--lg-morph-origin={placement?.origin}
+  onkeydown={handleKeydown}
+  data-testid="track-actions-menu"
+  {@attach place}
+  {@attach glass}
+>
+<div class="track-menu-body lg-overlay-content flex flex-col gap-3" data-testid="track-actions">
   <div class="flex items-center gap-3 pb-2 border-b" style="border-color: var(--border-subtle);">
     <Cover cover={track.cover} seed={track.videoId} label={track.title} {mockMode} class="h-11 w-11 rounded-lg" />
     <div class="min-w-0 flex-1">
@@ -125,7 +447,7 @@
         playlistGate,
         () => {
           playlistFilter = "";
-          step = "pick";
+          selectStep("pick");
           onRequestPlaylists();
         },
         "action-add-to-playlist"
@@ -157,7 +479,7 @@
   {:else if step === "pick"}
     <div class="flex items-center justify-between gap-2">
       <h3 class="type-sm font-semibold m-0">{t.track.choosePlaylist}</h3>
-      <button type="button" class="btn-ghost" onclick={() => (step = "menu")}>
+      <button type="button" class="btn-ghost" onclick={() => selectStep("menu")}>
         <Icon name="arrowLeft" />
         <span>{t.track.back}</span>
       </button>
@@ -190,7 +512,7 @@
                 class="menu-item lg-press justify-between"
                 onclick={() => {
                   chosen = pl;
-                  step = "confirm";
+                  selectStep("confirm");
                 }}
                 data-testid={`pick-playlist-${pl.playlistId}`}
               >
@@ -209,9 +531,10 @@
         <div
           class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg type-xs"
           style="background-color: var(--bg-subtle); border: 1px solid var(--border-subtle); color: var(--status-danger);"
+          title={queryErrorDetail(playlistsMoreError)}
           data-testid="playlist-picker-more-error"
         >
-          <span>[{playlistsMoreError.code}] {playlistsMoreError.safeMessage}</span>
+          <span>{queryErrorMessage(playlistsMoreError.code, t.library.loadMoreFailed)}</span>
           {#if playlistsHasMore && onLoadMorePlaylists}
             <button
               type="button"
@@ -244,7 +567,7 @@
       {t.track.confirmAdd.replace("{track}", track.title).replace("{playlist}", chosen.title)}
     </p>
     <div class="flex justify-end gap-2">
-      <button type="button" class="btn-secondary" onclick={() => (step = "pick")}>{t.common.cancel}</button>
+      <button type="button" class="btn-secondary" onclick={() => selectStep("pick")}>{t.common.cancel}</button>
       <button
         type="button"
         class="btn-primary"
@@ -257,3 +580,22 @@
     </div>
   {/if}
 </div>
+</div>
+
+{/if}
+
+<style>
+  /* Fixed to the window, so it never enters the page's flow; placed by placeMenu. */
+  .track-menu {
+    position: fixed;
+    z-index: var(--z-overlay);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .track-menu-body {
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-12);
+  }
+</style>

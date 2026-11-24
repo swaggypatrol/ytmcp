@@ -4,6 +4,7 @@ pub mod control;
 pub mod engine;
 pub mod error;
 pub mod ports;
+pub mod queue_window;
 
 pub use clock::PlaybackClock;
 pub use commands::{

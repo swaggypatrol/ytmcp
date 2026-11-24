@@ -1,4 +1,15 @@
-import type { BridgeEpoch, BridgeHealthPayload, BridgePlaybackObservedPayload, CapabilitySet, Envelope, QueueSnapshot, RepeatMode } from "@ytmcp/protocol";
+import type {
+  AudioQualityLevel,
+  BridgeEpoch,
+  BridgeHealthPayload,
+  BridgePlaybackObservedPayload,
+  CapabilitySet,
+  Envelope,
+  OfficialUpcomingStatus,
+  QueueFilter,
+  QueueSnapshot,
+  RepeatMode,
+} from "@ytmcp/protocol";
 
 export const MUSIC_ORIGIN = "https://music.youtube.com";
 export const BRIDGE_VERSION = "0.2.0";
@@ -22,6 +33,7 @@ export type PageShimOp =
   | "setShuffle"
   | "setRepeat"
   | "setAutoplay"
+  | "setQueueFilter"
   | "navigate"
   | "selectQueueItem"
   | "removeQueueItem"
@@ -64,6 +76,16 @@ export interface PageQueue {
   readonly hasAutoplayTail: boolean;
   /** The page keeps a continuation, so more explicit entries may load after the loaded ones. */
   readonly continuation: boolean;
+  /** What the page plays after the explicit list on its own; absent when its suggestions are unreadable. */
+  readonly officialUpcoming?: PageOfficialUpcoming;
+  /** The Up Next filters the page offers now; absent when none are offered. */
+  readonly filters?: readonly QueueFilter[];
+}
+
+/** The page's autoplay suggestions after the explicit list. `tracks` is only filled for `observed`. */
+export interface PageOfficialUpcoming {
+  readonly status: OfficialUpcomingStatus;
+  readonly tracks: readonly PageTrack[];
 }
 
 export interface PageControls {
@@ -79,6 +101,8 @@ export interface PageControls {
   /** The page would clear the upcoming entries now. */
   readonly clearUpcoming: boolean;
   readonly setAutoplay: boolean;
+  /** At least one Up Next filter's chip can be clicked now. */
+  readonly setQueueFilter: boolean;
   readonly navigate: boolean;
 }
 
@@ -105,6 +129,12 @@ export interface PageSnapshot {
   readonly repeat: RepeatMode | null;
   readonly autoplay: boolean | null;
   readonly codec: string | null;
+  /** Stream number of the playing audio stream, from the player's statistics. */
+  readonly audioItag: number | null;
+  /** The page's own label of that stream, from its player response for the playing video. */
+  readonly audioQuality: AudioQualityLevel | null;
+  /** That stream's average bit rate in kbit/s, from the same format. */
+  readonly audioBitrateKbps: number | null;
   readonly qualityLabel: string | null;
   readonly audioMode: "song" | "video" | null;
   readonly playbackContext?: NonNullable<BridgePlaybackObservedPayload["playbackContext"]>;

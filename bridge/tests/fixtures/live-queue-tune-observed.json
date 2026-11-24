@@ -1,0 +1,88 @@
+{
+ "about": "What clicking an Up Next filter did on the official YouTube Music page, recorded 2026-11-23 by tools/probes/bridge/live-queue-tune-entry.mjs (Electron 45.4.1, en UI, one public search result playing). Facts only: counts, booleans, media event names; no ids, titles or account data.",
+ "cases": [
+  {
+   "click": "Familiar",
+   "playingBefore": true,
+   "selectedFilterBefore": [
+    "All"
+   ],
+   "selectedFilterAfter1s": [
+    "Familiar"
+   ],
+   "explicitListUnchanged": true,
+   "explicitCount": 1,
+   "suggestionsReplacedWithin1s": true,
+   "suggestionCountBeforeAfter": [
+    50,
+    23
+   ],
+   "sameMediaSource": true,
+   "sameTrackInstance": true,
+   "mediaEvents": [],
+   "positionMsBeforeAndAt10s": [
+    20676,
+    30715
+   ],
+   "pausedStaysPaused": null,
+   "queueRevisionUnchanged": true,
+   "handQueuedEntryKept": null
+  },
+  {
+   "click": "Discover",
+   "playingBefore": true,
+   "selectedFilterBefore": [
+    "Familiar"
+   ],
+   "selectedFilterAfter1s": [
+    "Discover"
+   ],
+   "explicitListUnchanged": true,
+   "explicitCount": 2,
+   "suggestionsReplacedWithin1s": true,
+   "suggestionCountBeforeAfter": [
+    23,
+    24
+   ],
+   "sameMediaSource": true,
+   "sameTrackInstance": true,
+   "mediaEvents": [
+    "durationchange"
+   ],
+   "positionMsBeforeAndAt10s": [
+    31261,
+    41283
+   ],
+   "pausedStaysPaused": null,
+   "queueRevisionUnchanged": true,
+   "handQueuedEntryKept": true
+  },
+  {
+   "click": "Popular",
+   "playingBefore": false,
+   "selectedFilterBefore": [
+    "Discover"
+   ],
+   "selectedFilterAfter1s": [
+    "Popular"
+   ],
+   "explicitListUnchanged": true,
+   "explicitCount": 2,
+   "suggestionsReplacedWithin1s": true,
+   "suggestionCountBeforeAfter": [
+    24,
+    23
+   ],
+   "sameMediaSource": true,
+   "sameTrackInstance": true,
+   "mediaEvents": [],
+   "positionMsBeforeAndAt10s": [
+    41286,
+    41286
+   ],
+   "pausedStaysPaused": true,
+   "queueRevisionUnchanged": true,
+   "handQueuedEntryKept": true
+  }
+ ]
+}

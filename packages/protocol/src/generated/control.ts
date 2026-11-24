@@ -71,6 +71,10 @@ export type ControlRequest =
       params: DjCueInput;
     }
   | {
+      method: "getListenerProfile";
+      params: ListenerProfileInput;
+    }
+  | {
       method: "getSettings";
     }
   | {
@@ -227,6 +231,13 @@ export type BridgeEpoch = string;
  */
 export type DjChattiness = "off" | "quiet" | "normal" | "chatty";
 /**
+ * Unique identifier for one Rust core process instance.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "CoreEpoch".
+ */
+export type CoreEpoch = string;
+/**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "LibraryKind".
  */
@@ -343,6 +354,10 @@ export type WriteAction =
   | {
       enabled: boolean;
       kind: "autoplay";
+    }
+  | {
+      filterId: string;
+      kind: "setQueueFilter";
     }
   | {
       contextToken: string;
@@ -661,6 +676,7 @@ export type ListeningIntentChange =
       action: "clear";
       basis: ReportedIntentBasis;
       expectedMomentRevision?: number | null;
+      intentId?: string | null;
       intentKey: string;
     };
 /**
@@ -863,6 +879,10 @@ export type ControlResponse =
       value: DjCueReply;
     }
   | {
+      result: "listenerProfile";
+      value: ListenerProfile;
+    }
+  | {
       result: "operation";
       value: OperationReceipt;
     }
@@ -876,17 +896,38 @@ export type ControlResponse =
  */
 export type AuthState = "unknown" | "signedOut" | "signingIn" | "authenticated" | "expired" | "blocked";
 /**
- * Unique identifier for one Rust core process instance.
- *
- * This interface was referenced by `ControlV1`'s JSON-Schema
- * via the `definition` "CoreEpoch".
- */
-export type CoreEpoch = string;
-/**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "Freshness".
  */
 export type Freshness = "fresh" | "stale";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListenerActionKind".
+ */
+export type ListenerActionKind =
+  | (
+      | "play"
+      | "pause"
+      | "stop"
+      | "seek"
+      | "volume"
+      | "mute"
+      | "shuffle"
+      | "repeat"
+      | "autoplay"
+      | "addToQueue"
+      | "removeFromQueue"
+      | "reorderQueue"
+      | "clearUpcoming"
+      | "addToPlaylist"
+    )
+  | "next"
+  | "previous"
+  | "playTrack"
+  | "playCollection"
+  | "pickFromQueue"
+  | "upNextFilter"
+  | "rate";
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "MomentOccasionKind".
@@ -927,25 +968,28 @@ export type ListeningIntentScope = "today" | "session" | "until";
  * via the `definition` "PlayerOp".
  */
 export type PlayerOp =
-  | "play"
-  | "pause"
-  | "toggle"
-  | "stop"
-  | "seek"
-  | "setVolume"
-  | "setMuted"
-  | "next"
-  | "previous"
-  | "playTarget"
-  | "playCollection"
-  | "setShuffle"
-  | "setRepeat"
-  | "setAutoplay"
-  | "enqueue"
-  | "selectQueueEntry"
-  | "removeQueueEntry"
-  | "clearUpcoming"
-  | "moveQueueEntry";
+  | (
+      | "play"
+      | "pause"
+      | "toggle"
+      | "stop"
+      | "seek"
+      | "setVolume"
+      | "setMuted"
+      | "next"
+      | "previous"
+      | "playTarget"
+      | "playCollection"
+      | "setShuffle"
+      | "setRepeat"
+      | "setAutoplay"
+      | "enqueue"
+      | "selectQueueEntry"
+      | "removeQueueEntry"
+      | "clearUpcoming"
+      | "moveQueueEntry"
+    )
+  | "setQueueFilter";
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "PlayerConnectionState".
@@ -973,6 +1017,18 @@ export type TrackInstanceId = string;
  * via the `definition` "QueueCompleteness".
  */
 export type QueueCompleteness = "unknown" | "partial" | "complete";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "OfficialUpcomingStatus".
+ */
+export type OfficialUpcomingStatus = "observed" | "loading" | "off" | "radio" | "none";
+/**
+ * Whether what follows the current occurrence is known.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "UpcomingStatus".
+ */
+export type UpcomingStatus = "known" | "unknown";
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "SearchEntity".
@@ -1140,7 +1196,7 @@ export type DjPreferenceSubject =
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "DjCueKind".
  */
-export type DjCueKind = "trackEnding" | "checkIn";
+export type DjCueKind = "trackEnding" | "checkIn" | "listenerSignal";
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "DjInteraction".
@@ -1150,12 +1206,21 @@ export type DjInteraction = "playerControl" | "spoke";
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "DjCueReason".
  */
-export type DjCueReason = "listenerQuiet" | "longTrack" | "routine" | "littleQueued";
+export type DjCueReason =
+  "listenerQuiet" | "longTrack" | "routine" | "littleQueued" | "skipStreak" | "manualPick" | "replay" | "filterChanged";
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "DjTrackOutcome".
  */
 export type DjTrackOutcome = ("finished" | "skippedByListener" | "skippedByAgent") | "skipped";
+/**
+ * A writing system, as told from the letters of a title and its artist names.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "Script".
+ */
+export type Script =
+  ("latin" | "hangul" | "cyrillic" | "arabic" | "devanagari" | "thai" | "hebrew" | "greek") | "han" | "kana" | "other";
 /**
  * Redacted local scope identifier isolating accounts in cache/state.
  *
@@ -1444,6 +1509,13 @@ export interface DjPreferencesInput {
 export interface DjCueInput {
   chattiness?: DjChattiness | null;
   /**
+   * The last prompt this client actually received. A prompt handed out after it (for
+   * example to a wait the client cancelled before the reply arrived) is offered again, so a
+   * cancelled wait loses nothing; the client skips repeats by `(coreEpoch, seq)`. Ignored
+   * when it names another core epoch.
+   */
+  lastReceived?: DjCueAck | null;
+  /**
    * The agent said something to the listener since its previous call.
    */
   spoke?: boolean;
@@ -1451,6 +1523,28 @@ export interface DjCueInput {
    * The listener talked to the agent since its previous call.
    */
   userSpoke?: boolean;
+}
+/**
+ * Names one delivered prompt.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "DjCueAck".
+ */
+export interface DjCueAck {
+  coreEpoch: CoreEpoch;
+  seq: number;
+}
+/**
+ * Input of a listener profile read.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListenerProfileInput".
+ */
+export interface ListenerProfileInput {
+  /**
+   * Read the library again instead of using the copy kept for this session.
+   */
+  refresh?: boolean;
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
@@ -1604,6 +1698,11 @@ export interface ContextSnapshot {
   cursor: EventCursor;
   freshness: Freshness;
   /**
+   * What the listener did by hand in the last ten minutes, newest first, at most
+   * [`crate::MAX_LISTENER_ACTIONS`]. Commands sent by agents are not listed.
+   */
+  listenerActions?: ListenerAction[];
+  /**
    * Owner-configured Moment DJ context projected for this client (`None` only in legacy fixtures).
    */
   moment?: MomentView | null;
@@ -1626,6 +1725,61 @@ export interface AccountState {
 export interface EventCursor {
   coreEpoch: CoreEpoch;
   revision: number;
+}
+/**
+ * Something the listener did by hand: in the player window, from the tray, with media keys or
+ * through MPRIS. Commands sent by any agent are never listed.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListenerAction".
+ */
+export interface ListenerAction {
+  action: ListenerActionKind;
+  agoMs: number;
+  /**
+   * What was playing when they acted, and where in it.
+   */
+  during?: DjTrack | null;
+  positionMs?: number | null;
+  /**
+   * Where a seek landed. A drag is one action.
+   */
+  seekToMs?: number | null;
+  /**
+   * The track the action was about (picked, queued, rated): the playing one when it was about
+   * that. Absent for actions with no track of their own, and while the player cannot name the
+   * track yet (for example one just picked from search).
+   */
+  subject?: DjTrack | null;
+  /**
+   * The new setting in plain words: `on` or `off`, a repeat mode, a rating (`liked`,
+   * `disliked`, `neutral`), or the label of the chosen Up Next filter.
+   */
+  value?: string | null;
+  /**
+   * Volume before and after, 0 to 100. A drag is one action from its first to its last value.
+   */
+  volumeFrom?: number | null;
+  volumeTo?: number | null;
+}
+/**
+ * The few track facts a DJ prompt needs; the music tools return the full track.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "DjTrack".
+ */
+export interface DjTrack {
+  /**
+   * Album title.
+   */
+  album?: string | null;
+  /**
+   * Artist names.
+   */
+  artists: string[];
+  durationMs?: number | null;
+  title: string;
+  videoId: VideoId;
 }
 /**
  * Authoritative Moment DJ context projection delivered to one authorized MCP client.
@@ -1800,12 +1954,29 @@ export interface QueueProjection {
   completeness: QueueCompleteness;
   currentEntryId?: QueueEntryId | null;
   entries: QueueOccurrence[];
+  /**
+   * The Up Next filters the page offers now (label and whether selected). Empty when none
+   * are offered or they could not be read.
+   */
+  filters?: QueueFilterView[];
   hasMore?: boolean | null;
   infinite?: boolean | null;
   loadedEndExclusive?: number | null;
   loadedStart?: number | null;
   nextCursor?: string | null;
+  /**
+   * YouTube Music's own continuation after the explicit list (autoplay suggestions, or a
+   * radio that refills itself). Read-only: these tracks are not occurrences and cannot be
+   * selected or edited. Absent when the page state was not readable.
+   */
+  officialUpcoming?: OfficialUpcomingView | null;
   revision: number;
+  /**
+   * Whether the current occurrence is in the loaded window. When it is not, nothing is known
+   * about what follows it: a context read then carries no entries, and a queue read pages the
+   * loaded window without a position.
+   */
+  upcoming?: UpcomingStatus & string;
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
@@ -1814,6 +1985,43 @@ export interface QueueProjection {
 export interface QueueOccurrence {
   entryId: QueueEntryId;
   track: Track;
+}
+/**
+ * One Up Next filter the page shows.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "QueueFilterView".
+ */
+export interface QueueFilterView {
+  /**
+   * Pass to the `upNextFilter` playback mode. It names this filter for the suggestions
+   * offered when it was read: after the listener changes songs or the suggestions change
+   * seed, an old id is refused; read the context again then.
+   */
+  filterId: string;
+  label: string;
+  selected: boolean;
+}
+/**
+ * The page's own continuation after the explicit list.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "OfficialUpcomingView".
+ */
+export interface OfficialUpcomingView {
+  /**
+   * More suggestions are loaded than listed here.
+   */
+  more: boolean;
+  /**
+   * `observed` (tracks follow the explicit list), `loading`, `off` (autoplay is off: nothing
+   * plays after the list), `radio` (the queue refills itself) or `none`.
+   */
+  status: OfficialUpcomingStatus;
+  /**
+   * Suggestions in play order; only for `observed`.
+   */
+  tracks: Track[];
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
@@ -2321,6 +2529,11 @@ export interface DjCue {
   moreQueued: boolean;
   nowPlaying?: DjNowPlaying | null;
   /**
+   * What YouTube Music plays on its own after the queued tracks: status and up to 5
+   * suggestions. Absent when the page state was not readable.
+   */
+  officialUpNext?: DjOfficialUpNext | null;
+  /**
    * The recorded tastes, sent on this client's first prompt and whenever they changed since
    * its previous one; empty when `preferences_unchanged` or `preferences_unavailable`.
    */
@@ -2345,18 +2558,32 @@ export interface DjCue {
   recent: DjRecentTrack[];
   seq: number;
   upNext: DjTrack[];
+  /**
+   * Whether `up_next` is what follows the current occurrence. When unknown it is empty and
+   * says nothing about what comes next.
+   */
+  upcoming?: UpcomingStatus & string;
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "DjListener".
  */
 export interface DjListener {
+  /**
+   * Older actions since the previous prompt that are not listed.
+   */
+  actionsOmitted?: number;
   lastInteraction?: DjInteraction | null;
   lastInteractionAgoMs?: number | null;
   /**
    * When the agent last reported speaking to the listener.
    */
   lastSpokenToAgoMs?: number | null;
+  /**
+   * What the listener did by hand since this client's previous prompt, newest first, at most
+   * [`crate::MAX_LISTENER_ACTIONS`]. Facts for the agent to read; never a request.
+   */
+  recentActions?: ListenerAction[];
   /**
    * Unanswered check-ins in a row: each check-in that comes with no listener action or words
    * since the previous check-in adds one, and any listener action or words reset it. The
@@ -2375,23 +2602,22 @@ export interface DjNowPlaying {
   track: DjTrack;
 }
 /**
- * The few track facts a DJ prompt needs; the music tools return the full track.
+ * YouTube Music's own continuation in a prompt.
  *
  * This interface was referenced by `ControlV1`'s JSON-Schema
- * via the `definition` "DjTrack".
+ * via the `definition` "DjOfficialUpNext".
  */
-export interface DjTrack {
+export interface DjOfficialUpNext {
   /**
-   * Album title.
+   * The selected Up Next filter's label, when one is offered.
    */
-  album?: string | null;
+  filter?: string | null;
   /**
-   * Artist names.
+   * More suggestions are loaded than listed.
    */
-  artists: string[];
-  durationMs?: number | null;
-  title: string;
-  videoId: VideoId;
+  more: boolean;
+  status: OfficialUpcomingStatus;
+  tracks: DjTrack[];
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
@@ -2402,6 +2628,95 @@ export interface DjRecentTrack {
   listenedMs: number;
   outcome: DjTrackOutcome;
   track: DjTrack;
+}
+/**
+ * A compact picture of the signed-in listener's own music, built only from their library and
+ * play history. Every part says how much it was built from; a part that could not be read is
+ * named in `unavailable` and is not an empty result.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListenerProfile".
+ */
+export interface ListenerProfile {
+  generatedAtMs: number;
+  /**
+   * Plays recorded by this player on this machine.
+   */
+  history: ProfileSample;
+  liked: ProfileSample;
+  /**
+   * More playlists exist than listed.
+   */
+  morePlaylists: boolean;
+  playlists: ProfilePlaylist[];
+  /**
+   * The writing systems of the titles and artist names in the sampled liked songs and plays,
+   * largest first. A track counts once, under the script of most of its letters. It describes
+   * what the listener listens to; it is not their language, country or interface language.
+   */
+  scripts: ScriptShare[];
+  /**
+   * Tracks the script figures were counted over.
+   */
+  scriptsSampled: number;
+  /**
+   * Taste notes stored for this account (read them with the DJ prompt or the taste tools).
+   */
+  tasteNotes: number;
+  /**
+   * Parts that could not be read this time: `liked`, `history`, `playlists`, `tasteNotes`.
+   */
+  unavailable: string[];
+}
+/**
+ * One source of the profile: how much of it was read, who appears most, and its newest tracks.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ProfileSample".
+ */
+export interface ProfileSample {
+  /**
+   * The newest sampled tracks, newest first.
+   */
+  recent: DjTrack[];
+  /**
+   * Tracks actually read for this profile.
+   */
+  sampled: number;
+  /**
+   * Artists with the most sampled tracks, most first.
+   */
+  topArtists: ProfileArtist[];
+  /**
+   * Tracks in the source as a whole, when the source says.
+   */
+  total?: number | null;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ProfileArtist".
+ */
+export interface ProfileArtist {
+  name: string;
+  tracks: number;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ProfilePlaylist".
+ */
+export interface ProfilePlaylist {
+  playlistId: PlaylistId;
+  title: string;
+  trackCount?: number | null;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ScriptShare".
+ */
+export interface ScriptShare {
+  percent: number;
+  script: Script;
+  tracks: number;
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema

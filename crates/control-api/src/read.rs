@@ -90,11 +90,27 @@ pub struct QueueOccurrence {
     pub track: Track,
 }
 
+/// Whether what follows the current occurrence is known.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum UpcomingStatus {
+    /// The current occurrence is in the loaded window; entries after it are what follows.
+    Known,
+    /// The current occurrence is not in the loaded window.
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueueProjection {
     pub revision: u64,
     pub current_entry_id: Option<QueueEntryId>,
+    /// Whether the current occurrence is in the loaded window. When it is not, nothing is known
+    /// about what follows it: a context read then carries no entries, and a queue read pages the
+    /// loaded window without a position.
+    #[serde(default)]
+    pub upcoming: UpcomingStatus,
     pub entries: Vec<QueueOccurrence>,
     pub next_cursor: Option<String>,
     pub completeness: QueueCompleteness,
@@ -102,6 +118,40 @@ pub struct QueueProjection {
     pub infinite: Option<bool>,
     pub loaded_start: Option<u32>,
     pub loaded_end_exclusive: Option<u32>,
+    /// YouTube Music's own continuation after the explicit list (autoplay suggestions, or a
+    /// radio that refills itself). Read-only: these tracks are not occurrences and cannot be
+    /// selected or edited. Absent when the page state was not readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub official_upcoming: Option<OfficialUpcomingView>,
+    /// The Up Next filters the page offers now (label and whether selected). Empty when none
+    /// are offered or they could not be read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<QueueFilterView>,
+}
+
+/// The page's own continuation after the explicit list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OfficialUpcomingView {
+    /// `observed` (tracks follow the explicit list), `loading`, `off` (autoplay is off: nothing
+    /// plays after the list), `radio` (the queue refills itself) or `none`.
+    pub status: ytm_protocol::OfficialUpcomingStatus,
+    /// Suggestions in play order; only for `observed`.
+    pub tracks: Vec<Track>,
+    /// More suggestions are loaded than listed here.
+    pub more: bool,
+}
+
+/// One Up Next filter the page shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueueFilterView {
+    /// Pass to the `upNextFilter` playback mode. It names this filter for the suggestions
+    /// offered when it was read: after the listener changes songs or the suggestions change
+    /// seed, an old id is refused; read the context again then.
+    pub filter_id: String,
+    pub label: String,
+    pub selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -219,6 +269,10 @@ pub struct ContextSnapshot {
     /// Owner-configured Moment DJ context projected for this client (`None` only in legacy fixtures).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moment: Option<crate::MomentView>,
+    /// What the listener did by hand in the last ten minutes, newest first, at most
+    /// [`crate::MAX_LISTENER_ACTIONS`]. Commands sent by agents are not listed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub listener_actions: Vec<crate::ListenerAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

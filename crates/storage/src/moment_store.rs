@@ -278,6 +278,7 @@ impl MomentStore for SqliteStorage {
         &self,
         account_scope: AccountScope,
         intent_key: String,
+        expected_intent_id: Option<String>,
         basis: ListeningIntentBasis,
         expected_revision: Option<u64>,
         now_ms: u64,
@@ -316,6 +317,14 @@ impl MomentStore for SqliteStorage {
                 tx.commit().map_err(|_| error_storage())?;
                 return Ok(None);
             };
+            if expected_intent_id
+                .as_ref()
+                .is_some_and(|expected| expected != &intent_id)
+            {
+                return Err(conflict_error(
+                    "this listening intent was replaced since it was read; read again first",
+                ));
+            }
             let existing_basis = parse_basis(&existing_basis_raw)?;
             if basis == ListeningIntentBasis::AssistantInference
                 && matches!(

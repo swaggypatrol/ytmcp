@@ -309,9 +309,10 @@ export async function nonMusicOriginCheck(app) {
   await sleep(2500);
   const there = await app.evalPlayer(`({ origin: location.origin, hasBridge: typeof window.ytmcpBridge !== "undefined" })`, { worldId: BRIDGE_WORLD }).catch((e) => ({ error: String(e) }));
   const stateThere = await app.snapshot();
-  const bannerThere = await app.evalMain(`(() => {
-    const b = document.querySelector('[data-testid="banner-bridge-disconnected"]');
-    return { shown: Boolean(b), action: b?.querySelector("button")?.textContent?.trim() ?? null };
+  const toastThere = await app.evalMain(`(() => {
+    const toast = document.querySelector('[data-testid="toast-bridge-disconnected"]');
+    const action = toast?.querySelector('[data-testid="btn-open-official-player"]:enabled');
+    return { shown: Boolean(toast), actionPresent: Boolean(action), action: action?.textContent?.trim() ?? null };
   })()`).catch((e) => ({ error: String(e) }));
   await app.call("winop", { target: "player", op: "loadURL", args: ["https://music.youtube.com/"] }, 45_000);
   const back = await app.waitFor((s, st) => st.lastBridgeReady && st.lastBridgeReady.bridgeEpoch !== epochBefore && s?.player?.connection === "ready", { timeoutMs: 45_000 });
@@ -321,7 +322,7 @@ export async function nonMusicOriginCheck(app) {
     measured: {
       there,
       connectionWhileAway: stateThere?.player?.connection ?? null,
-      bannerWhileAway: bannerThere,
+      disconnectedToastWhileAway: toastThere,
       bridgeReadyAfterReturn: back.ok,
       renewedBridgeEpoch: evs.filter((e) => e.type === "bridge->host" && e.kind === "bridge.ready").length,
     },
@@ -330,9 +331,9 @@ export async function nonMusicOriginCheck(app) {
         measured: { there, connectionWhileAway: stateThere?.player?.connection ?? null },
         pass: onConsent && there.hasBridge === false,
       }),
-      check("G1.awayNotReady", "while the player is on a non-music origin the core reports the bridge disconnected and the UI shows the banner with 'open the official player page'", {
-        measured: { connectionWhileAway: stateThere?.player?.connection ?? null, bannerWhileAway: bannerThere },
-        pass: onConsent && stateThere?.player?.connection === "disconnected" && bannerThere?.shown === true && /official player/i.test(bannerThere?.action ?? ""),
+      check("G1.awayNotReady", "on a non-music origin core reports the bridge disconnected and the UI offers Open player in the toast", {
+        measured: { connectionWhileAway: stateThere?.player?.connection ?? null, disconnectedToastWhileAway: toastThere },
+        pass: onConsent && stateThere?.player?.connection === "disconnected" && toastThere?.shown && toastThere?.actionPresent && Boolean(toastThere.action),
       }),
       check("G1.bridgeReturns", "returning to music.youtube.com re-handshakes the bridge with a new bridgeEpoch", {
         measured: { ok: back.ok, waitedMs: back.waitedMs },

@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { AppInstance, REPO, waitAppReady } from "./lib/app.mjs";
 import { check, gateDoc, writeEvidence } from "./lib/evidence.mjs";
 import { ensureNullSink, sha256Short, sleep, unloadNullSink } from "./lib/sys.mjs";
-import { navigate, uiSearch, waitCatalog } from "./gates/common.mjs";
+import { catalogPage, navigate, nextCatalogPage, uiSearch } from "./gates/common.mjs";
 import { quitViaMpris } from "./gates/g2.mjs";
 
 const TEST_TITLE = "YTM Glass Test";
@@ -87,48 +87,58 @@ async function freshUi(app) {
 }
 
 // Visit eligible pages via the app's UI. Only a fresh complete read can prove absence.
-async function collectFreshPages(app, { open, kind, moreSelector, moreText = null, stopAt = null }) {
+async function collectFreshPages(app, { open, kind, tail, accountEpoch, playlistId = null, stopAt = null }) {
+  const snapshot = await app.snapshot();
+  const accountScope = sha256Short(snapshot?.authState?.accountScope);
+  if (!accountScope || !await sameAccount(app, accountEpoch)) return null;
   const since = (await app.state()).seq;
   if (!(await open()).clicked) return null;
-  let page = await waitCatalog(app, since, kind, 25_000);
+  let exchange = await catalogPage(app, { since, kind, playlistId });
   const ids = [];
+  const cursors = new Set();
   // Refuse to infer absence from a non-terminating or incomplete list.
-  for (let remaining = 50; remaining > 0 && page?.freshness === "fresh" && Array.isArray(page.ids); remaining--) {
+  for (let remaining = 50; remaining > 0; remaining--) {
+    const { request, page } = exchange;
+    if (request?.ack?.ok !== true || page?.resultType !== kind || page.freshness !== "fresh" ||
+      page.accountScope !== accountScope || page.playlistId !== playlistId || !Array.isArray(page.ids) || page.ids.length !== page.itemCount ||
+      !page.ids.every(Boolean) || !await sameAccount(app, accountEpoch)) return null;
     ids.push(...page.ids);
-    if (!page.hasNextCursor || (stopAt && ids.includes(stopAt))) return ids;
-    const next = (await app.state()).seq;
-    const more = await app.waitFor(async () => (await app.click(moreSelector, { textIncludes: moreText })).clicked, { timeoutMs: 5_000 });
-    if (!more.ok) return null;
-    page = await waitCatalog(app, next, kind, 25_000);
+    if (page.hasNextCursor === false || (stopAt && ids.includes(stopAt))) return ids;
+    if (remaining === 1 || !page.nextCursorId || cursors.has(page.nextCursorId)) return null;
+    cursors.add(page.nextCursorId);
+    exchange = await nextCatalogPage(app, exchange, { kind, playlistId, tail });
   }
   return null;
 }
 
-async function libraryIds(app) {
+async function libraryIds(app, accountEpoch) {
   return collectFreshPages(app, {
     open: () => navigate(app, "library"),
     kind: "libraryPlaylists",
-    moreSelector: '[data-testid="view-library"] button',
-    moreText: "Load more",
+    tail: '[data-testid="view-library"] [data-testid="library-tail"]',
+    accountEpoch,
   });
 }
 
-async function playlistContents(app, playlistId, videoId) {
-  if (!await freshUi(app) || !await libraryIds(app)) return null;
+async function playlistContents(app, playlistId, videoId, accountEpoch) {
+  if (!await freshUi(app) || !await libraryIds(app, accountEpoch)) return null;
   return collectFreshPages(app, {
-    open: () => app.click(`[data-testid="playlist-card-${playlistId}"]`),
+    open: () => app.click(`[data-testid=${JSON.stringify(`playlist-card-${playlistId}`)}]`),
     kind: "playlistTracks",
-    moreSelector: '[data-testid="playlist-load-more"]',
+    tail: '[data-testid="view-playlist"] [data-testid="track-list-tail"]',
+    playlistId: sha256Short(playlistId),
+    accountEpoch,
     stopAt: videoId,
   });
 }
 
-async function likedContents(app, videoId) {
+async function likedContents(app, videoId, accountEpoch) {
   if (!await freshUi(app)) return null;
   return collectFreshPages(app, {
     open: () => navigate(app, "liked"),
     kind: "likedSongs",
-    moreSelector: '[data-testid="liked-load-more"]',
+    tail: '[data-testid="view-liked"] [data-testid="track-list-tail"]',
+    accountEpoch,
     stopAt: videoId,
   });
 }
@@ -150,15 +160,18 @@ async function mutationVia(app, selectorSteps, accountEpoch, expected) {
   const since = (await app.state()).seq;
   for (const [step, selector] of selectorSteps.entries()) {
     const submits = step === selectorSteps.length - 1;
-    // The like action toggles according to the app's current state. Match its label
-    // immediately before clicking so a stale row cannot turn an unlike into a like.
-    const label = submits && expected.kind === "setLike" ? (expected.liked ? "Like" : "Remove like") : null;
+    // The menu toggles its displayed rating. Inspect the heart immediately before
+    // clicking so a stale row cannot turn an unlike into a like.
+    const requestedLike = submits && expected.kind === "setLike" ? expected.liked : null;
     const action = (click) => app.evalMain(`(() => {
       const matches = document.querySelectorAll(${JSON.stringify(selector)});
       if (matches.length !== 1 || matches[0].disabled) return false;
       const button = matches[0];
-      const label = ${JSON.stringify(label)};
-      if (label && button.querySelector("span.truncate")?.textContent.trim() !== label) return false;
+      const requestedLike = ${JSON.stringify(requestedLike)};
+      if (requestedLike !== null) {
+        const heart = button.querySelector('[data-icon="heart"]');
+        if (!heart || heart.hasAttribute("data-filled") === requestedLike) return false;
+      }
       if (${click}) {
         button.scrollIntoView({ block: "center" });
         button.click();
@@ -185,7 +198,12 @@ function actionsIn(view, videoId, row) {
   return `${trackRow(view, videoId, row)} [data-testid="track-actions-btn"]`;
 }
 
+function revealTrackRow(app, view, row) {
+  return app.revealListRow(`[data-testid="view-${view}"] [data-testid="virtual-track-list"]`, row);
+}
+
 async function playSearchTrack(app, videoId, row) {
+  if (!await revealTrackRow(app, "search", row)) return false;
   const command = await app.clickCommand(`${trackRow("search", videoId, row)} button[data-row-index]`, { op: "playTarget" });
   return command.finalStatus === "observed";
 }
@@ -193,7 +211,7 @@ async function playSearchTrack(app, videoId, row) {
 async function testAdd(app, playlistId, accountEpoch, checks) {
   const search = await uiSearch(app, opt.query);
   const videoId = search.response?.ids?.[0];
-  const read = () => playlistContents(app, playlistId, videoId);
+  const read = () => playlistContents(app, playlistId, videoId, accountEpoch);
   const readBefore = async () => (await read().catch(() => null))?.includes(videoId) ?? null;
   const before = videoId ? await readBefore() ?? await readBefore() : null;
   if (before !== false) {
@@ -202,15 +220,15 @@ async function testAdd(app, playlistId, accountEpoch, checks) {
   }
   const freshSearch = await uiSearch(app, opt.query);
   const row = freshSearch.response?.ids?.indexOf(videoId) ?? -1;
-  if (row < 0) {
+  if (row < 0 || !await revealTrackRow(app, "search", row)) {
     checks.push(check("T17.addToPlaylist", "public search result is still available to add", { measured: { row }, pass: false }));
     return true;
   }
   const added = await mutationVia(app, [
     actionsIn("search", videoId, row),
-    '[data-testid="action-add-to-playlist"]',
-    `[data-testid=${JSON.stringify(`pick-playlist-${playlistId}`)}]`,
-    '[data-testid="confirm-add-to-playlist"]',
+    '[data-testid="track-actions-menu"] [data-testid="action-add-to-playlist"]',
+    `[data-testid="track-actions-menu"] [data-testid=${JSON.stringify(`pick-playlist-${playlistId}`)}]`,
+    '[data-testid="track-actions-menu"] [data-testid="confirm-add-to-playlist"]',
   ], accountEpoch, { kind: "addToPlaylist", videoId, playlistId: sha256Short(playlistId) });
   const afterAdd = added.attempted ? await readPresence(read, videoId, true) : null;
   checks.push(check("T17.addToPlaylist", "OUR UI adds the public track to the test playlist and a fresh read contains it", { measured: { added, afterAdd }, pass: added.outcome === "confirmed" && added.targetMatches && afterAdd === true }));
@@ -244,7 +262,7 @@ async function testLike(app, accountEpoch, checks) {
     if (!await playSearchTrack(app, videoId, row)) continue;
     const status = await app.waitFor(() => app.evalPlayer(PLAYER_LIKE_STATUS(videoId)), { timeoutMs: 8_000 });
     if (status.value === "INDIFFERENT") {
-      candidate = { videoId, row };
+      candidate = videoId;
       break;
     }
   }
@@ -252,17 +270,34 @@ async function testLike(app, accountEpoch, checks) {
     checks.push(check("T17.likeUnlike", "select a public track with a confirmed neutral like state", { measured: { candidates: Math.min(ids.length, 3) }, pass: false, blocked: "the official player did not confirm an indifferent candidate" }));
     return;
   }
-  const { videoId, row } = candidate;
-  const likeButton = '[data-testid="action-like"]';
+  const videoId = candidate;
+  const read = () => likedContents(app, videoId, accountEpoch);
+  const before = await read().catch(() => null);
+  if (!before || before.includes(videoId)) {
+    checks.push(check("T17.likeUnlike", "the neutral track is absent from the complete fresh Liked Music catalog before writing", {
+      measured: { targetPresent: before?.includes(videoId) ?? null }, pass: false,
+      blocked: "a complete fresh read must confirm that this track is absent",
+    }));
+    return;
+  }
+  const refreshedSearch = await uiSearch(app, opt.query);
+  const row = refreshedSearch.response?.ids?.indexOf(videoId) ?? -1;
+  const stillNeutral = await app.evalPlayer(PLAYER_LIKE_STATUS(videoId)).catch(() => null);
+  if (row < 0 || !await revealTrackRow(app, "search", row) || stillNeutral !== "INDIFFERENT") {
+    checks.push(check("T17.likeUnlike", "the verified neutral track remains available before writing", {
+      measured: { row, stillNeutral }, pass: false, blocked: "the previously verified track or its neutral status changed",
+    }));
+    return;
+  }
+  const likeButton = '[data-testid="track-actions-menu"] [data-testid="action-like"]';
   const liked = await mutationVia(app, [actionsIn("search", videoId, row), likeButton], accountEpoch, { kind: "setLike", videoId, liked: true });
-  const read = () => likedContents(app, videoId);
   let likedIds = liked.attempted ? await read().catch(() => null) : null;
   if (liked.attempted && !likedIds?.includes(videoId)) {
     await sleep(750);
     likedIds = await read().catch(() => null) ?? likedIds;
   }
   const likedRow = likedIds?.indexOf(videoId) ?? -1;
-  const unliked = likedRow >= 0 && liked.targetMatches !== false
+  const unliked = likedRow >= 0 && liked.targetMatches !== false && await revealTrackRow(app, "liked", likedRow)
     ? await mutationVia(app, [actionsIn("liked", videoId, likedRow), likeButton], accountEpoch, { kind: "setLike", videoId, liked: false })
     : null;
   let officialRestore = null;
@@ -290,7 +325,7 @@ async function testLike(app, accountEpoch, checks) {
     : null;
   const restored = officialRestore?.indifferent === true || catalogAfterUnlike === false;
   checks.push(check("T17.likeUnlike", "OUR UI likes the verified neutral track, reads it in Liked Music, then unlikes it and confirms restoration", {
-    measured: { before: "INDIFFERENT", liked, afterLike: likedIds ? likedRow >= 0 : null, unliked, catalogAfterUnlike, officialRestore, restored },
+    measured: { before: "INDIFFERENT", beforeCatalogPresent: false, liked, afterLike: likedIds ? likedRow >= 0 : null, unliked, catalogAfterUnlike, officialRestore, restored },
     pass: liked.outcome === "confirmed" && liked.targetMatches && likedRow >= 0 && unliked?.outcome === "confirmed" && unliked.targetMatches && restored,
   }));
 }
@@ -312,7 +347,7 @@ async function main() {
     }
     await app.call("winop", { target: "main", op: "show" });
 
-    const freshIds = await libraryIds(app);
+    const freshIds = await libraryIds(app, snap.accountEpoch);
     const ids = freshIds ? await app.call("findPlaylistByTitle", { title: TEST_TITLE, ids: freshIds }) : [];
     let privateOnOfficialPage = false;
     if (ids.length === 1) {

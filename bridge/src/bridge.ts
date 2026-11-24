@@ -99,6 +99,7 @@ export function capabilitiesFrom(page: PageSnapshot | null): CapabilitySet {
     queueReorder: s(c?.editQueue),
     queueRemove: s(c?.editQueue),
     queueAutoplay: s(c?.setAutoplay),
+    queueFilter: s(c?.setQueueFilter),
     queueClear: s(c?.clearUpcoming),
     ...OUTSIDE_BRIDGE,
   };
@@ -461,6 +462,9 @@ class BridgeController {
       codec: api?.codec ?? null,
       audioMode: api?.audioMode ?? null,
       qualityLabel: api?.qualityLabel ?? null,
+      audioItag: api?.audioItag ?? null,
+      audioQuality: api?.audioQuality ?? null,
+      audioBitrateKbps: api?.audioBitrateKbps ?? null,
       drmProtected: null,
     };
     this.playback = payload;
@@ -619,6 +623,9 @@ class BridgeController {
       case "setAutoplay":
         if (typeof args.autoplay !== "boolean") return this.fail(id, "INVALID_PAYLOAD", "setAutoplay requires boolean autoplay");
         return need(caps.queueAutoplay ?? "unsupported", "queue autoplay") ?? this.shimCommand(id, "setAutoplay", { autoplay: args.autoplay });
+      case "setQueueFilter":
+        if (!args.queueFilterId) return this.fail(id, "INVALID_PAYLOAD", "setQueueFilter requires queueFilterId");
+        return need(caps.queueFilter ?? "unsupported", "Up Next filter") ?? this.shimCommand(id, "setQueueFilter", { filterId: args.queueFilterId });
       case "playTarget":
       case "playCollection": {
         const target = args.target;

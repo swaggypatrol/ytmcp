@@ -247,6 +247,15 @@
               "type": "string",
               "const": "clearListeningIntent"
             },
+            "intentId": {
+              "description": "The intent as shown; one that replaced it since then is kept.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1
+            },
             "intentKey": {
               "type": "string",
               "maxLength": 128,
@@ -883,6 +892,15 @@
         "assetId"
       ]
     },
+    "AudioQualityLevel": {
+      "description": "The official page's own quality label of an audio stream (its LOW, MEDIUM and HIGH).",
+      "type": "string",
+      "enum": [
+        "low",
+        "standard",
+        "high"
+      ]
+    },
     "AuthState": {
       "type": "string",
       "enum": [
@@ -1043,10 +1061,39 @@
     "BridgePlaybackObservedPayload": {
       "type": "object",
       "properties": {
+        "audioBitrateKbps": {
+          "description": "The playing audio stream's average bit rate in kbit/s, from the same source.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "audioItag": {
+          "description": "The stream number (itag) of the audio stream now playing, as the official player's own\nstatistics name it. It identifies the audio format; `quality_label` is a video label.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "audioMode": {
           "type": [
             "string",
             "null"
+          ]
+        },
+        "audioQuality": {
+          "description": "How the official page itself labels the playing audio stream, read from its player\nresponse for that stream number. Absent when the page does not say.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AudioQualityLevel"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "autoplay": {
@@ -1282,6 +1329,17 @@
         },
         "queueEnqueue": {
           "$ref": "#/definitions/CapabilitySupport"
+        },
+        "queueFilter": {
+          "description": "The page offers Up Next filters that can be selected now. Selecting one replaces only\nYouTube Music's own suggestions; the current track and the explicit list are kept.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CapabilitySupport"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "queueMirror": {
           "$ref": "#/definitions/CapabilitySupport"
@@ -2478,6 +2536,55 @@
         "unknown"
       ]
     },
+    "OfficialUpcoming": {
+      "description": "YouTube Music's own continuation after the explicit list (its autoplay suggestions). These\nare read-only facts: they are not queue occurrences and cannot be selected, moved or removed\nthrough queue edits.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/OfficialUpcomingStatus"
+        },
+        "tracks": {
+          "description": "Loaded suggestions in play order, at most [`MAX_OFFICIAL_UPCOMING`]; only for `observed`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/Track"
+          }
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "OfficialUpcomingStatus": {
+      "oneOf": [
+        {
+          "description": "Autoplay is on and suggestions are loaded: `tracks` play after the explicit list.",
+          "type": "string",
+          "const": "observed"
+        },
+        {
+          "description": "Autoplay is on, nothing is loaded yet and the page is fetching suggestions.",
+          "type": "string",
+          "const": "loading"
+        },
+        {
+          "description": "Autoplay is off: suggestions the page still holds will not play, so none are listed.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "The queue is a radio that refills itself; its own entries are what plays next.",
+          "type": "string",
+          "const": "radio"
+        },
+        {
+          "description": "Autoplay is on but no suggestions are loaded or being fetched.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
     "OpenPlayerWindowPayload": {
       "type": "object",
       "properties": {
@@ -2919,6 +3026,15 @@
             }
           ]
         },
+        "queueFilterId": {
+          "description": "An Up Next filter id read from the current queue snapshot.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1
+        },
         "queueRevision": {
           "type": [
             "integer",
@@ -3011,10 +3127,39 @@
     "PlayerObservedState": {
       "type": "object",
       "properties": {
+        "audioBitrateKbps": {
+          "description": "The playing audio stream's average bit rate in kbit/s, from the same source.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "audioItag": {
+          "description": "The stream number (itag) of the audio stream now playing, as the official player's own\nstatistics name it. It identifies the audio format; `quality_label` is a video label.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "audioMode": {
           "type": [
             "string",
             "null"
+          ]
+        },
+        "audioQuality": {
+          "description": "How the official page itself labels the playing audio stream, read from its player\nresponse for that stream number. Absent when the page does not say.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AudioQualityLevel"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "autoplay": {
@@ -3146,27 +3291,36 @@
       ]
     },
     "PlayerOp": {
-      "type": "string",
-      "enum": [
-        "play",
-        "pause",
-        "toggle",
-        "stop",
-        "seek",
-        "setVolume",
-        "setMuted",
-        "next",
-        "previous",
-        "playTarget",
-        "playCollection",
-        "setShuffle",
-        "setRepeat",
-        "setAutoplay",
-        "enqueue",
-        "selectQueueEntry",
-        "removeQueueEntry",
-        "clearUpcoming",
-        "moveQueueEntry"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "play",
+            "pause",
+            "toggle",
+            "stop",
+            "seek",
+            "setVolume",
+            "setMuted",
+            "next",
+            "previous",
+            "playTarget",
+            "playCollection",
+            "setShuffle",
+            "setRepeat",
+            "setAutoplay",
+            "enqueue",
+            "selectQueueEntry",
+            "removeQueueEntry",
+            "clearUpcoming",
+            "moveQueueEntry"
+          ]
+        },
+        {
+          "description": "Selects an Up Next filter (`queueFilterId`): replaces only YouTube Music's own\nsuggestions, without interrupting the current track. Observed once the snapshot shows\nthat filter selected.",
+          "type": "string",
+          "const": "setQueueFilter"
+        }
       ]
     },
     "PlayerPendingState": {
@@ -3429,6 +3583,30 @@
       "description": "Occurrence-scoped queue entry identifier within a bridge epoch.",
       "type": "string"
     },
+    "QueueFilter": {
+      "description": "One Up Next filter as the page shows it. `filter_id` is opaque: it names this chip for the\nsuggestions it steers (their seed), so an id read while other suggestions were offered, for\nexample before the listener changed songs, matches nothing and is refused.",
+      "type": "object",
+      "properties": {
+        "filterId": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        },
+        "selected": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "filterId",
+        "label",
+        "selected"
+      ]
+    },
     "QueueRange": {
       "type": "object",
       "properties": {
@@ -3488,6 +3666,16 @@
             "null"
           ]
         },
+        "filters": {
+          "description": "The Up Next filters (steering chips) the page offers now, in its order. Absent when none\nare offered or they could not be read.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/QueueFilter"
+          }
+        },
         "hasMore": {
           "type": [
             "boolean",
@@ -3509,6 +3697,17 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "officialUpcoming": {
+          "description": "What the page plays after the explicit list on its own. Absent when the page state was\nnot readable; never mixed into `entries`.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OfficialUpcoming"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "queueRevision": {
@@ -3538,6 +3737,16 @@
             }
           ]
         },
+        "filters": {
+          "description": "The Up Next filters the page offers now.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/QueueFilter"
+          }
+        },
         "hasMore": {
           "type": [
             "boolean",
@@ -3549,12 +3758,40 @@
           "format": "uint32",
           "minimum": 0
         },
+        "loadedStart": {
+          "description": "Absolute queue position of the first loaded entry, when the page reports it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "officialUpcoming": {
+          "description": "The page's own continuation after the explicit list, at most\n[`MAX_PREVIEW_OFFICIAL_UPCOMING`] tracks.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OfficialUpcoming"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "previewEntries": {
+          "description": "A slice of the loaded window anchored on the current occurrence: a few played entries\nbefore it, then what follows. Without a current occurrence it is the window's start.",
           "type": "array",
           "default": [],
           "items": {
             "$ref": "#/definitions/QueueEntry"
           }
+        },
+        "previewStart": {
+          "description": "Index of the first preview entry within the loaded window.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
         },
         "queueRevision": {
           "type": "integer",

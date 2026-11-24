@@ -62,7 +62,7 @@ async function startToInteractive(i) {
   let interactiveAt = null;
   while (Date.now() - t0 < 60_000) {
     const ok = await app
-      .evalMain(`document.readyState === "complete" && !!document.querySelector('[data-testid="nav-search"]') && !!document.querySelector('[data-testid="player-bar"]') && !document.querySelector('[data-testid="banner-unconnected"]')`)
+      .evalMain(`document.readyState === "complete" && !!document.querySelector('[data-testid="nav-search"]') && !!document.querySelector('[data-testid="player-bar"]') && !document.querySelector('[data-testid="toast-unconnected"]')`)
       .catch(() => false);
     const st = await app.state().catch(() => null);
     if (ok && st?.snapshotCount > 0) {
@@ -78,8 +78,8 @@ async function startToInteractive(i) {
   return { interactiveMs: interactiveAt ? interactiveAt - t0 : null, bridgeReadyMs, quitMs: q.quitMs };
 }
 
-const SEARCH_SCROLL = '[data-testid="view-search"] [data-testid="virtual-track-list"]';
-const FIRST_PLAYABLE = `${SEARCH_SCROLL} button[data-row-index]:not([aria-disabled="true"])`;
+const SEARCH_LIST = '[data-testid="view-search"] [data-testid="virtual-track-list"]';
+const FIRST_PLAYABLE = `${SEARCH_LIST} button[data-row-index]:not([aria-disabled="true"])`;
 const PLAY_BUTTON = '[data-testid="btn-play-pause"]';
 const VIDEO_ID = 'document.querySelector("#movie_player")?.getVideoData?.()?.video_id ?? null';
 const PAGE_PLAYBACK_JS = `(() => {
@@ -167,20 +167,9 @@ async function pausedBaseline(app, meter) {
 
 /** Resolve a virtual row before timing starts. Its physical DOM may be outside the overscan window. */
 async function revealSearchRow(app, index) {
-  const button = `button[data-row-index="${index}"]`;
-  const row = await app.waitFor(() => app.evalMain(`(() => {
-    const list = document.querySelector(${JSON.stringify(SEARCH_SCROLL)});
-    if (!list) return null;
-    const target = list.querySelector(${JSON.stringify(button)});
-    if (target) {
-      target.scrollIntoView({ block: "center" });
-      return { playable: target.getAttribute("aria-disabled") !== "true" && !target.disabled };
-    }
-    const rowHeight = list.querySelector('[data-testid="virtual-track-row"]')?.offsetHeight;
-    if (rowHeight) list.scrollTop = ${index} * rowHeight;
-    return null;
-  })()`), { timeoutMs: 2_000, intervalMs: 50 });
-  return row.value?.playable ? `${SEARCH_SCROLL} ${button}` : null;
+  if (!await app.revealListRow(SEARCH_LIST, index)) return null;
+  const row = `${SEARCH_LIST} button[data-row-index="${index}"]:enabled:not([aria-disabled="true"])`;
+  return await app.exists(row) ? row : null;
 }
 
 function clickLifecycle(events, op, videoId) {
@@ -255,8 +244,9 @@ async function clickToSound(app, meter, selector, op, videoId) {
 async function glassScene(app) {
   const [view, windows, media, audio] = await Promise.all([
     app.evalMain(`(() => {
-      const region = document.querySelector(${JSON.stringify(SEARCH_SCROLL)});
-      const covers = [...(region?.querySelectorAll('img[src^="app://covers/"]') ?? [])];
+      const list = document.querySelector(${JSON.stringify(SEARCH_LIST)});
+      const region = list?.closest('[data-testid="main-scroll-region"]');
+      const covers = [...(list?.querySelectorAll('img[src^="app://covers/"]') ?? [])];
       return {
         decodedCovers: covers.filter((img) => img.complete && img.naturalWidth > 0).length,
         scrollRange: region ? region.scrollHeight - region.clientHeight : 0,
@@ -294,7 +284,7 @@ async function measureLiveGlass(env, out) {
     await app.call("winop", { target: "main", op: "setSize", args: [1280, 800] });
     const search = await uiSearch(app, opt.query);
     if (!search.renderedRows) throw new Error("live glass search returned no rows");
-    await app.evalMain(`document.querySelector(${JSON.stringify(SEARCH_SCROLL)}).scrollIntoView({ block: "end" }); true`);
+    await app.scrollIntoView(SEARCH_LIST, "end");
     const playback = await app.clickCommand(FIRST_PLAYABLE, { op: "playTarget" });
     if (playback.finalStatus !== "observed") throw new Error("live glass playback did not become observed");
     const warm = await app.waitFor(async () => {
@@ -304,7 +294,7 @@ async function measureLiveGlass(env, out) {
     if (!warm.ok) throw new Error("live cover decode, scroll, refraction, and hidden audio did not converge");
     const refreshHz = Array.isArray(env.display) && env.display[0]?.refreshHz;
     if (!(refreshHz > 0)) throw new Error("display refresh rate could not be measured");
-    const sample = await frameSample(app, { seconds: Number(opt["scroll-sec"]), scrollSelector: SEARCH_SCROLL });
+    const sample = await frameSample(app, { seconds: Number(opt["scroll-sec"]) });
     const after = await glassScene(app);
     const { intervals, ...frameDetails } = sample;
     const budgetMs = 1000 / refreshHz;
@@ -414,8 +404,8 @@ async function measurePerformance(env, out) {
     // 3) 60 s scroll in the real UI
     const refresh = env.display?.[0]?.refreshHz;
     if (!(refresh > 0)) throw new Error("display refresh rate could not be measured");
-    await app.evalMain(`document.querySelector(${JSON.stringify(SEARCH_SCROLL)}).scrollIntoView({ block: "end" }); true`);
-    const fs = await frameSample(app, { seconds: Number(opt["scroll-sec"]), scrollSelector: SEARCH_SCROLL });
+    await app.scrollIntoView(SEARCH_LIST, "end");
+    const fs = await frameSample(app, { seconds: Number(opt["scroll-sec"]) });
     const budget = 1000 / refresh;
     const over2xBudget = fs.intervals.filter((v) => v > 2 * budget).length / fs.intervals.length;
     const { intervals, ...frameDetails } = fs;

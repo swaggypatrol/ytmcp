@@ -137,8 +137,8 @@ export function createFakePage(options: {
         <button class="previous-button"></button><button class="next-button"></button>
         <button class="shuffle"></button><button class="repeat"></button>
       </ytmusic-player-bar>
-      <ytmusic-player-queue id="queue"><div id="contents"></div></ytmusic-player-queue>
-      <ytmusic-player-page id="player-page"><div id="side-panel"><ytmusic-tab-renderer id="tab-renderer"><div><div id="tab-header"></div></div></ytmusic-tab-renderer></div></ytmusic-player-page>
+      <ytmusic-player-queue id="queue"><div id="queue-chips"></div><div id="contents"></div></ytmusic-player-queue>
+      <ytmusic-player-page id="player-page"><div id="page-chips"></div><div id="side-panel"><ytmusic-tab-renderer id="tab-renderer"><div><div id="tab-header"></div></div></ytmusic-tab-renderer></div></ytmusic-player-page>
     </ytmusic-app></body></html>`,
     { url: options.url ?? "https://music.youtube.com/watch?v=song00000a1" }
   );
@@ -184,6 +184,8 @@ export function createFakePage(options: {
     autoplay: options.autoplay,
     shuffleEnabled: false,
     repeatMode: "NONE",
+    isGenerating: false,
+    steeringChips: undefined as unknown,
   };
   const rendererAt = (i: number) => queue.items[i]!.playlistPanelVideoRenderer;
 
@@ -268,7 +270,11 @@ export function createFakePage(options: {
     renderQueue();
   });
   const queueStore = { getState: () => ({ queue }) };
-  const queueNative = { store: { store: queueStore }, continuation: undefined as string | undefined };
+  const queueNative = {
+    store: { store: queueStore },
+    continuation: undefined as string | undefined,
+    pendingFetchAutomixItemsRequest: null as unknown,
+  };
   const queueElement = doc.getElementById("queue")!;
   if (options.queueEdits || options.autoplay !== undefined) {
     Object.assign(queueElement, { dispatch: queueDispatch, queue: queueNative });
@@ -281,6 +287,42 @@ export function createFakePage(options: {
     // The current official layout renders the switch in the player page's side-panel tab header.
     (options.legacyAutoplaySwitch ? queueElement : doc.getElementById("tab-header")!).append(toggle);
   }
+
+  // Up Next filters: the store's steering chips plus their two DOM renderings, each led by the
+  // header's Save chip. Clicking a filter selects it and replaces only the suggestions. A
+  // rendered chip's data is the store's object, a copy of it, an unrecognised object, or absent.
+  const filterClicks = vi.fn((_label: string, _rendering: "queue" | "page", _target: string) => {});
+  let filterSerial = 0;
+  const filterEndpoint = { queueUpdateCommand: { fetchContentsCommand: { watchEndpoint: { playlistId: "RDsyntheticFilter" } } } };
+  const setFilters = (labels: string[], selected: string, data: "same" | "copy" | "opaque" | "none" = "same") => {
+    queue.steeringChips = {
+      chips: labels.map((label) => ({
+        chipCloudChipRenderer: { text: { runs: [{ text: label }] }, isSelected: label === selected, uniqueId: label, navigationEndpoint: filterEndpoint },
+      })),
+    };
+    const save = { text: { runs: [{ text: "Save" }] }, isSelected: false, uniqueId: "Save", navigationEndpoint: { saveQueueToPlaylistCommand: {} } };
+    const chips = (queue.steeringChips as { chips: { chipCloudChipRenderer: unknown }[] }).chips.map((c) => c.chipCloudChipRenderer);
+    for (const rendering of ["queue", "page"] as const) {
+      doc.getElementById(`${rendering}-chips`)!.replaceChildren(...[save, ...chips].map((chip) => {
+        const label = (chip as typeof save).text.runs[0]!.text;
+        const el = doc.createElement("ytmusic-chip-cloud-chip-renderer");
+        if (data !== "none") {
+          (el as unknown as { data: unknown }).data = data === "copy" ? structuredClone(chip) : data === "opaque" ? { chipCloudChipRenderer: chip } : chip;
+        }
+        const link = doc.createElement("a");
+        link.textContent = label;
+        el.append(link);
+        el.addEventListener("click", (event) => {
+          filterClicks(label, rendering, (event.target as Element).localName);
+          if (chip === save) return;
+          filterSerial += 1;
+          queue.automixItems = [0, 1].map((i) => ({ playlistPanelVideoRenderer: renderer({ videoId: `steer${filterSerial}${i}`.padEnd(11, "0") }) }));
+          setFilters(labels, label, data);
+        });
+        return el;
+      }));
+    }
+  };
 
   const navigate = vi.fn();
   (doc.querySelector("ytmusic-app") as unknown as { inst: unknown }).inst = { handleNavigationEndpoint: navigate };
@@ -308,7 +350,7 @@ export function createFakePage(options: {
   const fire = (type: string) => media.dispatchEvent(new win.Event(type));
 
   installPageShim(win as unknown as Window);
-  return { dom, win: win as unknown as Window, doc, api, player, playerPage, queue, cfg, media, fire, navigate, queueAdd, registerQueueAddHandler, queueDispatch, queueStore, queueNative, toggleAutoplay, renderQueue, loadIndex };
+  return { dom, win: win as unknown as Window, doc, api, player, playerPage, queue, cfg, media, fire, navigate, queueAdd, registerQueueAddHandler, queueDispatch, queueStore, queueNative, toggleAutoplay, renderQueue, loadIndex, renderer, setFilters, filterClicks };
 }
 
 export function flush(ms = 0): Promise<void> {

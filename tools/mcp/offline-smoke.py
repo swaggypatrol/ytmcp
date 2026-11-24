@@ -305,7 +305,7 @@ def run(daemon_bin, mcp_bin, root):
                 assert names == sorted(names) and "ytm_get_context" in names
                 # The operation ledger stays inside the adapter.
                 ledger = {"ytm_get_operation", "ytm_cancel_operation", "ytm_resume_operation"}
-                assert not ledger & set(names) and len(names) == 40, names
+                assert not ledger & set(names) and len(names) == 41, names
                 assert "ytm_set_listening_intent" in names
                 annotations = {tool["name"]: tool["annotations"] for tool in tools}
                 assert annotations["ytm_get_context"]["openWorldHint"] is False
@@ -350,6 +350,12 @@ def run(daemon_bin, mcp_bin, root):
                         mcp.send(rpc("tools/call", {"name": hidden, "arguments": arguments}, 71))
                         response = mcp.receive(lambda frame: frame.get("id") == 71)
                         assert "error" in response, response
+                    # The synthetic player has no signed-in account, so the profile read is refused
+                    # with one way out and no empty profile that could pass for "no liked songs".
+                    profile = mcp.call("ytm_get_listener_profile", {"refresh": True}, 72)
+                    assert profile["isError"] and profile["structuredContent"]["value"]["code"] == "AUTH_REQUIRED", profile
+                    assert profile["content"][0]["text"].startswith("Could not read that"), profile["content"]
+                    assert annotations["ytm_get_listener_profile"]["readOnlyHint"] is True
                     audio = mcp.call("ytm_get_player", {"include": "audio"}, 9)["structuredContent"]["value"]
                     assert audio["observed"] is None and audio["pending"] is None
                     assert audio["audio"] == {"codec": "mp4a.40.2", "audioMode": "song", "qualityLabel": "auto", "drmProtected": None}
@@ -438,6 +444,17 @@ def run(daemon_bin, mcp_bin, root):
                     prompt = waited["structuredContent"]["value"]
                     assert prompt == {"cue": None, "chattiness": "normal"}, prompt
                     assert len(waited["content"][0]["text"]) < 80, waited["content"]
+                    # A long background wait does not hold up foreground calls, and the listener
+                    # speaking cancels it without breaking the session (dj_harness relies on both).
+                    mcp.start("ytm_wait_dj_prompt", {"maxWaitSeconds": 60}, 9001)
+                    started = time.monotonic()
+                    foreground = mcp.call("ytm_get_context", {}, 9002)["structuredContent"]["value"]
+                    assert foreground["contextToken"] and time.monotonic() - started < 5
+                    mcp.send({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                              "params": {"requestId": 9001, "reason": "the listener spoke"}})
+                    again = mcp.call("ytm_wait_dj_prompt", {"userSpoke": True, "maxWaitSeconds": 1}, 9003)
+                    assert again["structuredContent"]["value"]["cue"] is None
+                    assert time.monotonic() - started < 10
                     print("ordered enqueue, exact queue edits, observed codec and autoplay, replay and conflicting ID passed")
 
                     # The browser now has one played occurrence before the paused track.
@@ -500,6 +517,14 @@ def run(daemon_bin, mcp_bin, root):
                     own.close()
                     observer.close()
                     print("manual takeover reached the UI and both subscribers, operation events stayed with their principal")
+                    # The manual play is the listener's only action; none of the agent's writes above is.
+                    by_hand = mcp.call("ytm_get_context", {}, 73)
+                    actions = by_hand["structuredContent"]["value"].get("listenerActions", [])
+                    assert [action["action"] for action in actions] == ["play"], actions
+                    assert actions[0]["during"]["videoId"] == "fixture-video", actions
+                    summary = by_hand["content"][0]["text"].split("\n", 1)[0]
+                    assert summary.endswith('newest first: pressed play on "Synthetic song".'), summary
+                    print("a manual command reached the next context read as the listener's own action")
                     daemon.send(host("ui.agentActivity", 4, {"action": "read"}, core=epoch, request="agent-fixture"))
                     activity = daemon.receive(lambda frame: frame.get("requestId") == "agent-fixture")
                     assert activity["kind"] == "core.agentActivity", activity
@@ -560,15 +585,31 @@ def run(daemon_bin, mcp_bin, root):
                     assert command["args"]["queueEntryId"] == "entry-C" and command["args"]["queueRevision"] == 8, command
                     daemon.send(host("bridge.commandAck", 15, {"commandId": command["commandId"], "bridgeEpoch": bridge,
                                                               "dispatched": True}, core=epoch, bridge=bridge))
-                    # The selected occurrence counts only while its own video plays.
+                    # The selected occurrence counts only while its own video plays. It is near its
+                    # end, so the DJ is prompted below.
                     player = {**player, "playback": "playing", "currentQueueEntryId": "entry-C",
-                              "trackInstanceId": "fixture-instance-c",
+                              "trackInstanceId": "fixture-instance-c", "positionMs": 100_000,
                               "currentTrack": {**player["currentTrack"], "videoId": "C", "title": "C"}}
                     daemon.send(host("bridge.playbackObserved", 16, player, core=epoch, bridge=bridge))
                     selected = mcp.result(60)["structuredContent"]["value"]
                     assert selected["phase"] == "verified", selected
                     playing_video = "C"
                     print("a queue occurrence played without bookkeeping was accepted and verified")
+
+                    # The cancelled wait 9001 really stopped: had it kept polling, it would have
+                    # taken this prompt (and its reply would have been dropped) before the next wait.
+                    time.sleep(2.5)
+                    ending = mcp.call("ytm_wait_dj_prompt", {"maxWaitSeconds": 5}, 9004)["structuredContent"]["value"]
+                    assert (ending["cue"] or {}).get("kind") == "trackEnding", ending
+                    assert not any(frame.get("id") == 9001 for frame in mcp.unmatched), mcp.unmatched
+                    # Naming an earlier prompt as the last received offers this one again; an
+                    # acknowledgement from another core run changes nothing.
+                    seen = ending["cue"]
+                    for epoch_seen, expected in (("core-fixture-other", None), (seen["coreEpoch"], seen["seq"])):
+                        acked = mcp.call("ytm_wait_dj_prompt", {"maxWaitSeconds": 1, "lastReceived": {
+                            "coreEpoch": epoch_seen, "seq": seen["seq"] - 1}}, 9005)["structuredContent"]["value"]
+                        assert (acked["cue"] or {}).get("seq") == expected, acked
+                    print("a cancelled DJ wait stopped, the next wait got the prompt, and lastReceived offers it again")
 
                     # Content-only harness check: discard structuredContent and use only content[0].text.
                     def text_value(result):

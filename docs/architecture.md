@@ -94,7 +94,7 @@ Every playback command an MCP client sends carries a `PlaybackFence` (`crates/co
 
 ### Manual priority
 
-Commands from the interface, tray, media keys and MPRIS are manual. Any manual command other than volume, mute and repeat cancels the running and queued agent playback commands and invalidates their fences; if an agent command was in fact interrupted, a manual pause or stop goes to the front of the queue. Actions taken directly on the hidden official page are not seen as manual input.
+Commands from the interface, tray, media keys and MPRIS are manual. Any manual command other than volume, mute, repeat and choosing an Up Next filter (which only re-steers YouTube Music's own suggestions) cancels the running and queued agent playback commands and invalidates their fences; if an agent command was in fact interrupted, a manual pause or stop goes to the front of the queue. Actions taken directly on the hidden official page are not seen as manual input.
 
 ### Control service
 

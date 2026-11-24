@@ -4,6 +4,7 @@
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";
   import TrackCollectionView from "./TrackCollectionView.svelte";
+  import type { TrackRowLike, TrackRowPlayback } from "./VirtualizedTrackList.svelte";
 
   interface Props {
     albumId: string;
@@ -12,6 +13,8 @@
     tracks: readonly Track[];
     currentVideoId: string | null;
     mockMode: boolean;
+    like?: TrackRowLike;
+    nowPlaying?: TrackRowPlayback;
     onBack?: () => void;
     onRetry: () => void;
     onOpenOfficialPlayer: () => void;
@@ -27,6 +30,8 @@
     tracks,
     currentVideoId,
     mockMode,
+    like,
+    nowPlaying,
     onBack,
     onRetry,
     onOpenOfficialPlayer,
@@ -34,6 +39,9 @@
     onPlayTrack,
     onTrackActions,
   }: Props = $props();
+
+  // Play plays the album only when its tracks map onto the album's own playlist.
+  const playAll = $derived(albumPlaybackContext(album, tracks, 0) !== null);
 </script>
 
 <TrackCollectionView
@@ -48,6 +56,9 @@
   moreError={null}
   {currentVideoId}
   {mockMode}
+  {playAll}
+  {like}
+  {nowPlaying}
   {onBack}
   {onRetry}
   {onOpenOfficialPlayer}
@@ -70,9 +81,6 @@
         {/each}
         {#if album.year}<span class="tabular-nums">· {album.year}</span>{/if}
       </div>
-      <p class="type-xs m-0" style="color: var(--text-muted);">
-        {albumPlaybackContext(album, tracks, 0) ? t.album.albumContextNote : t.album.singleTrackNote}
-      </p>
     {/if}
   {/snippet}
 </TrackCollectionView>

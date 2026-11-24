@@ -1,7 +1,8 @@
 <script lang="ts">
-  import type { MomentDesktopSnapshot, OwnerMomentConfigPatch } from "@ytmcp/protocol";
+  import type { MomentDesktopSnapshot, OwnerMomentConfigPatch, QueryErrorCode } from "@ytmcp/protocol";
   import { onDestroy, untrack } from "svelte";
   import { getLocale, t } from "../i18n/index.svelte.js";
+  import { queryErrorDetail, queryErrorMessage } from "../i18n/query-errors.js";
   import { CoreRequestError, type YtmUiClient } from "../ipc/client.js";
 
   interface Props {
@@ -19,8 +20,12 @@
   let sceneCityDraft = $state<string>("");
   /** The saved city the draft last took over; a typed but unsaved city survives other saves. */
   let syncedCity: string | null = null;
-  let loadError = $state<string | null>(null);
-  let saveError = $state<string | null>(null);
+  interface RequestError {
+    code?: QueryErrorCode;
+    detail?: string;
+  }
+  let loadError = $state.raw<RequestError | null>(null);
+  let saveError = $state.raw<RequestError | null>(null);
   let saving = $state(false);
   let requestSeq = 0;
   let lastAttemptedKey = "";
@@ -30,10 +35,9 @@
     destroyed = true;
   });
 
-  function formatError(err: unknown): string {
-    if (err instanceof CoreRequestError) return err.error.safeMessage;
-    if (err instanceof Error && err.message) return err.message;
-    return t.common.unknown;
+  function requestError(err: unknown): RequestError {
+    if (err instanceof CoreRequestError) return { code: err.error.code, detail: queryErrorDetail(err.error) };
+    return { detail: err instanceof Error ? err.message : undefined };
   }
 
   function applySnapshot(next: MomentDesktopSnapshot, scope: string) {
@@ -65,7 +69,7 @@
       applySnapshot(next, scope);
     } catch (err) {
       if (destroyed || seq !== requestSeq || scope !== scopeKey) return;
-      loadError = formatError(err);
+      loadError = requestError(err);
     }
   }
 
@@ -90,7 +94,7 @@
       applySnapshot(next, scope);
     } catch (err) {
       if (destroyed || scope !== scopeKey) return;
-      saveError = formatError(err);
+      saveError = requestError(err);
       revert?.();
     } finally {
       if (!destroyed) saving = false;
@@ -187,13 +191,13 @@
   </div>
 
   {#if loadError}
-    <p class="type-xs m-0" style="color: var(--status-danger);" role="status" data-testid="moment-load-error">
-      {copy.loadFailed.replace("{message}", loadError)}
+    <p class="type-xs m-0" style="color: var(--status-danger);" role="status" title={loadError.detail} data-testid="moment-load-error">
+      {copy.loadFailed} {queryErrorMessage(loadError.code, "")}
     </p>
   {/if}
   {#if saveError}
-    <p class="type-xs m-0" style="color: var(--status-danger);" role="status" data-testid="moment-save-error">
-      {copy.saveFailed.replace("{message}", saveError)}
+    <p class="type-xs m-0" style="color: var(--status-danger);" role="status" title={saveError.detail} data-testid="moment-save-error">
+      {copy.saveFailed} {queryErrorMessage(saveError.code, "")}
     </p>
   {/if}
 

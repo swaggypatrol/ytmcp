@@ -32,10 +32,10 @@ it("scopes a cancellation to the selected operation", async () => {
     .mockResolvedValueOnce({ ...snapshot, operations: [snapshot.operations[0]!] });
   view(agentActivity);
 
-  expect(await screen.findByText("Outcome not yet confirmed")).toBeTruthy();
-  expect(screen.getByText("Verified: 1 of 3")).toBeTruthy();
+  expect(await screen.findByText("Couldn’t confirm")).toBeTruthy();
+  expect(screen.getByText("1 of 3 done")).toBeTruthy();
   const operations = screen.getByRole("region", { name: "Operations" });
-  const cancel = within(operations).getByRole("button", { name: "Cancel the remaining steps of enqueue-1 from agent-b" });
+  const cancel = within(operations).getByRole("button", { name: "Cancel the rest of “Queue” from agent-b" });
   expect(within(operations).getAllByRole("button")).toHaveLength(1);
   await fireEvent.click(cancel);
   expect(agentActivity.mock.calls.map(([request]) => request)).toEqual([
@@ -43,7 +43,35 @@ it("scopes a cancellation to the selected operation", async () => {
     { action: "cancel", principal: "agent-b", operationId: "enqueue-1" },
   ]);
   await waitFor(() => expect(within(operations).queryByRole("button")).toBeNull());
-  expect(screen.getByText("Outcome not yet confirmed")).toBeTruthy();
+  expect(screen.getByText("Couldn’t confirm")).toBeTruthy();
+});
+
+it("says what each operation did and its outcome in plain words, never its id or pipeline phase", async () => {
+  const phases = ["accepted", "submitted", "acknowledged", "verified", "unknown", "partial", "rejected", "cancelled"] as const;
+  const snapshot: AgentActivitySnapshot = {
+    operations: phases.map((phase, i) => ({
+      principal: "agent-a",
+      operationId: `op-secret-${i}`,
+      phase,
+      ...(i === 0 ? {} : { resource: "queue", action: "enqueue" }),
+      verifiedItems: 0,
+      totalItems: 0,
+      canCancel: false,
+    })),
+  };
+  view(vi.fn(async () => snapshot));
+  const chips = await screen.findAllByTestId("agent-operation-phase");
+  expect(chips.map((chip) => chip.textContent?.trim())).toEqual([
+    "In progress", "In progress", "In progress", "Done", "Couldn’t confirm", "Partly done", "Refused", "Cancelled",
+  ]);
+  const operations = screen.getByRole("region", { name: "Operations" });
+  expect(operations.textContent).not.toMatch(/op-secret|Accepted|Submitted|Acknowledged|Verified|Rejected/);
+  // Without an action or resource the row still says something plain, not the id.
+  expect(within(operations).getByText("A request")).toBeTruthy();
+  // Peach only for refused; a cancel is the user's own choice and stays neutral.
+  expect(chips[6]!.style.color).toBe("var(--status-danger)");
+  expect(chips[7]!.style.color).toBe("");
+  expect(within(operations).getAllByText("Added to the queue")).toHaveLength(7);
 });
 
 it("coalesces visible revisions and discards a previous account's late response", async () => {
@@ -63,7 +91,7 @@ it("coalesces visible revisions and discards a previous account's late response"
   expect(agentActivity).toHaveBeenCalledTimes(1);
   resolveOld(currentActivity());
   expect(await screen.findByText("No control operations right now.")).toBeTruthy();
-  expect(screen.queryByText("Outcome not yet confirmed")).toBeNull();
+  expect(screen.queryByText("Couldn’t confirm")).toBeNull();
   expect(agentActivity).toHaveBeenCalledTimes(2);
 
   await activity.rerender({ visible: false, revision: 5 });
@@ -79,11 +107,11 @@ it("keeps the last receipt visible and disables stale actions after a failed ref
     .mockRejectedValueOnce(new Error())
     .mockResolvedValueOnce(snapshot);
   const activity = view(agentActivity);
-  expect(await screen.findByText("Outcome not yet confirmed")).toBeTruthy();
+  expect(await screen.findByText("Couldn’t confirm")).toBeTruthy();
   await activity.rerender({ revision: 2 });
   expect(await screen.findByText("Could not read DJ activity.")).toBeTruthy();
-  expect(screen.getByText("Outcome not yet confirmed")).toBeTruthy();
-  const cancel = screen.getByRole("button", { name: "Cancel the remaining steps of enqueue-1 from agent-b" });
+  expect(screen.getByText("Couldn’t confirm")).toBeTruthy();
+  const cancel = screen.getByRole("button", { name: "Cancel the rest of “Queue” from agent-b" });
   expect(cancel.hasAttribute("disabled")).toBe(true);
   await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   await waitFor(() => expect(cancel.hasAttribute("disabled")).toBe(false));
@@ -102,7 +130,7 @@ it("requires the activity route before requesting data and supports manual refre
   await fireEvent.click(nav);
   expect(await screen.findByRole("heading", { name: "DJ activity" })).toBeTruthy();
   expect(nav.getAttribute("aria-current")).toBe("page");
-  expect(await screen.findByText("Outcome not yet confirmed")).toBeTruthy();
+  expect(await screen.findByText("Couldn’t confirm")).toBeTruthy();
   await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   await waitFor(() => expect(agentActivity).toHaveBeenCalledTimes(2));
   await fireEvent.click(screen.getByTestId("nav-home"));
@@ -267,7 +295,7 @@ it("displays listening intents, operation summaries, preference notes, and pagin
   await waitFor(() => expect(screen.getByText("Second Track")).toBeTruthy());
   expect(agentActivity.mock.calls.map(([req]) => req)).toEqual([
     { action: "read" },
-    { action: "clearListeningIntent", intentKey: "vocals" },
+    { action: "clearListeningIntent", intentKey: "vocals", intentId: "intent-1" },
     { action: "readWithOptions", preferencesLimit: 100 },
   ]);
 });

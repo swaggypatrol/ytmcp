@@ -122,8 +122,8 @@ export async function controlChecks(app, { query }) {
   await sleep(2000);
   const afterPrev = await pageMedia(app);
   checks.push(cmdCheck("G3.previous", "previous at <3 s returns to the previous video", r, afterPrev.videoId === beforeNext.videoId, { expected: beforeNext.videoId, got: afterPrev.videoId }));
-  const uiStatus = await app.text('[data-testid="player-observed-status"]');
-  return { checks, log, target, uiStatusAfter: uiStatus };
+  const uiPlayButtonLabelAfter = await app.evalMain(`document.querySelector('[data-testid="btn-play-pause"]')?.getAttribute("aria-label") ?? null`);
+  return { checks, log, target, uiPlayButtonLabelAfter };
 }
 
 /** Per-track position facts from the recorded core playerChanged deltas. */
@@ -188,8 +188,8 @@ async function netCutPhase(app, seconds, extraCgroups, during) {
   let restored = null;
   const t0 = Date.now();
   const take = async () => {
-    const [snap, page, banner] = await Promise.all([app.snapshot(), pageMedia(app), app.exists('[data-testid="banner-offline"]').catch(() => null)]);
-    samples.push({ s: round((Date.now() - t0) / 1000, 1), network: snap?.networkState ?? null, offlineBanner: banner, connection: snap?.player?.connection ?? null, playback: snap?.player?.playback ?? null, videoId: page.videoId ?? null, t: page.t ?? null, paused: page.paused ?? null, readyState: page.readyState ?? null, bufferedAheadSec: page.bufferedAheadSec ?? null });
+    const [snap, page, offlineToast] = await Promise.all([app.snapshot(), pageMedia(app), app.exists('[data-testid="toast-offline"]').catch(() => null)]);
+    samples.push({ s: round((Date.now() - t0) / 1000, 1), network: snap?.networkState ?? null, offlineToast, connection: snap?.player?.connection ?? null, playback: snap?.player?.playback ?? null, videoId: page.videoId ?? null, t: page.t ?? null, paused: page.paused ?? null, readyState: page.readyState ?? null, bufferedAheadSec: page.bufferedAheadSec ?? null });
   };
   try {
     let duringStarted = false;
@@ -233,7 +233,7 @@ async function netCutPhase(app, seconds, extraCgroups, during) {
     bufferingReportedWhilePageAdvanced: bufferingWhilePageAdvanced,
     networkStatesSeen: [...new Set(samples.map((x) => x.network))],
     offlineReportedAtSec: samples.find((x) => x.network === "offline")?.s ?? null,
-    offlineBannerSeen: samples.some((x) => x.offlineBanner === true),
+    offlineToastSeen: samples.some((x) => x.offlineToast === true),
     playbackStatesSeen: [...new Set(samples.map((x) => x.playback))],
     samples,
     afterRestore: { network: after?.networkState, playback: after?.player?.playback, pageAdvancedSec: afterAdv.advancedSec, pageResumedAfterSec },
@@ -360,7 +360,8 @@ export async function soak(app, { minutes, sampleSec = 30, lockScreen = false, o
         await sleep(1500);
         const dom = await app.evalMain(`({
           title: document.querySelector('[data-testid="player-track-title"]')?.textContent?.trim() ?? null,
-          status: document.querySelector('[data-testid="player-observed-status"]')?.textContent?.trim() ?? null,
+          playButtonLabel: document.querySelector('[data-testid="btn-play-pause"]')?.getAttribute("aria-label") ?? null,
+          playButtonIcon: document.querySelector('[data-testid="btn-play-pause"] [data-icon]')?.dataset.icon ?? null,
           pos: document.querySelector('[data-testid="player-pos-text"]')?.textContent?.trim() ?? null
         })`);
         const after = await app.snapshot();
@@ -370,7 +371,9 @@ export async function soak(app, { minutes, sampleSec = 30, lockScreen = false, o
             snapshotDelivered: w.ok,
             sameTrack: after?.player?.currentTrack?.videoId === before?.videoId,
             uiShowsTrack: Boolean(dom.title) && dom.title === after?.player?.currentTrack?.title,
-            uiStatus: dom.status,
+            playback: after?.player?.playback ?? null,
+            uiPlayButtonLabel: dom.playButtonLabel,
+            uiPlayButtonIcon: dom.playButtonIcon,
             uiPos: dom.pos,
             queueLoaded: after?.queueSummary?.loadedCount ?? null,
             queueCompleteness: after?.queueSummary?.completeness ?? null,
@@ -491,9 +494,9 @@ export function soakChecks(result, { requiredMinutes, lockScreen }) {
       pass: desktop?.current === true && desktopBack?.backHome === true && desktopBack?.desktops === 1,
     }),
     screenLockCheck(result, { lockScreen }),
-    check("G3.netCutOffline", "per-app network cut: networkState reports offline within ~30 s and the UI shows the offline banner", {
-      measured: netCut ? { networkStatesSeen: netCut.networkStatesSeen, offlineReportedAtSec: netCut.offlineReportedAtSec, offlineBannerSeen: netCut.offlineBannerSeen, table: netCut.table, restored: netCut.restored } : null,
-      pass: Boolean(netCut?.networkStatesSeen?.includes("offline") && netCut.offlineReportedAtSec <= 35 && netCut.offlineBannerSeen),
+    check("G3.netCutOffline", "per-app network cut: networkState reports offline within ~30 s and the UI shows the offline toast", {
+      measured: netCut ? { networkStatesSeen: netCut.networkStatesSeen, offlineReportedAtSec: netCut.offlineReportedAtSec, offlineToastSeen: netCut.offlineToastSeen, table: netCut.table, restored: netCut.restored } : null,
+      pass: Boolean(netCut?.networkStatesSeen?.includes("offline") && netCut.offlineReportedAtSec <= 35 && netCut.offlineToastSeen),
       blocked: netCut?.ok === false ? netCut.error : null,
     }),
     check("G3.netCutBufferedPlayback", "during the cut the page keeps playing what it had buffered (>= buffer ahead at cut - 3 s), and core reports buffering only while the page really stalls", {
@@ -508,9 +511,12 @@ export function soakChecks(result, { requiredMinutes, lockScreen }) {
       note: netCut?.afterRestore?.pageResumedAfterSec != null ? `page resumed ${netCut.afterRestore.pageResumedAfterSec} s after the table was removed` : null,
       blocked: netCut?.ok === false ? netCut.error : null,
     }),
-    check("G3.uiReopen", "UI reopen (renderer reload) restores track, status and queue mirror from the core snapshot", {
+    check("G3.uiReopen", "UI reopen restores the track and playback control from the core snapshot while the queue stays loaded", {
       measured: reopen,
-      pass: Boolean(reopen?.snapshotDelivered && reopen.sameTrack && reopen.uiShowsTrack && reopen.queueLoaded > 0),
+      pass: Boolean(reopen?.snapshotDelivered && reopen.sameTrack && reopen.uiShowsTrack && reopen.queueLoaded > 0 &&
+        reopen.uiPlayButtonLabel && (reopen.playback === "buffering"
+          ? ["play", "pause"].includes(reopen.uiPlayButtonIcon)
+          : reopen.uiPlayButtonIcon === (reopen.playback === "playing" ? "pause" : "play"))),
     }),
     check("G3.soakResources", "process-tree CPU/PSS recorded per sample (from /proc deltas)", {
       measured: cpu,

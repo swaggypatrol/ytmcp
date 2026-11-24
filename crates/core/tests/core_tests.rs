@@ -293,6 +293,9 @@ fn make_obs(
         codec: None,
         audio_mode: None,
         quality_label: None,
+        audio_itag: None,
+        audio_quality: None,
+        audio_bitrate_kbps: None,
         drm_protected: None,
     }
 }
@@ -319,6 +322,7 @@ fn make_args() -> PlayerCommandArgs {
         queue_entry_id: None,
         before_queue_entry_id: None,
         queue_revision: None,
+        queue_filter_id: None,
     }
 }
 
@@ -1218,6 +1222,8 @@ async fn enqueue_proves_the_requested_position_and_retains_existing_occurrences(
             has_more: Some(!matches!(loaded, Loaded::Complete)),
             explicit_complete: Some(!matches!(loaded, Loaded::Partial)),
             may_load_more: None,
+            official_upcoming: None,
+            filters: None,
             entries: items
                 .iter()
                 .map(|(entry_id, vid)| QueueEntry {
@@ -1350,6 +1356,8 @@ async fn append_without_a_loaded_queue_end_is_refused_before_the_page_sees_it() 
         has_more: Some(true),
         explicit_complete: Some(false),
         may_load_more: None,
+        official_upcoming: None,
+        filters: None,
         entries: vec![QueueEntry {
             entry_id: QueueEntryId::new("qe-a").unwrap(),
             video_id: VideoId::new("songA").unwrap(),
@@ -1399,6 +1407,8 @@ async fn queue_edits_require_a_complete_queue_and_prove_the_exact_occurrence_ord
         has_more: Some(!complete),
         explicit_complete: None,
         may_load_more: None,
+        official_upcoming: None,
+        filters: None,
         entries: items
             .iter()
             .map(|(entry_id, video_id)| QueueEntry {
@@ -1553,6 +1563,8 @@ fn clear_snapshot(revision: u64, complete: bool, items: &[(&str, &str)]) -> Queu
         has_more: Some(!complete),
         explicit_complete: None,
         may_load_more: None,
+        official_upcoming: None,
+        filters: None,
         entries: items
             .iter()
             .map(|(entry, video)| QueueEntry {
@@ -1735,6 +1747,8 @@ async fn clear_upcoming_never_confirms_partial_or_wrong_prefix_after_a_positive_
 async fn clear_upcoming_on_an_open_queue_confirms_once_no_loaded_upcoming_entry_remains() {
     let continuation = |revision, items: &[(&str, &str)]| QueueSnapshot {
         may_load_more: Some(true),
+        official_upcoming: None,
+        filters: None,
         ..clear_snapshot(revision, true, items)
     };
     let loaded_later = [
@@ -3000,6 +3014,8 @@ async fn duplicate_video_id_queue_entries_never_deduplicated_and_stale_revision_
         has_more: Some(false),
         explicit_complete: None,
         may_load_more: None,
+        official_upcoming: None,
+        filters: None,
     };
     engine.on_bridge_queue_observed(2, q).await.unwrap();
 
@@ -3080,6 +3096,8 @@ async fn select_queue_entry_is_observed_only_while_that_entry_video_plays() {
         has_more: Some(false),
         explicit_complete: None,
         may_load_more: None,
+        official_upcoming: None,
+        filters: None,
     };
     engine.on_bridge_queue_observed(2, q).await.unwrap();
     let mut args = make_args();
@@ -4035,6 +4053,49 @@ async fn unobserved_restore_seek_yields_to_the_short_deadline_or_explicit_play()
     }
 }
 
+/// A caller's playTarget or enqueue that reached the page before the launch restore could start
+/// may still be loading there when it times out. The restore must not navigate on top of it.
+#[tokio::test]
+async fn an_outside_play_or_enqueue_before_the_launch_restore_replaces_the_restore() {
+    for op in [PlayerOp::PlayTarget, PlayerOp::Enqueue] {
+        let h = engine_with_saved_playback().await;
+        sign_in(&h.engine).await;
+        init_ready_bridge(&h.engine, "bridge-1", 1).await;
+        settle(&h.engine).await;
+        let mut args = make_args();
+        args.target = Some(PlaybackRef {
+            video_id: VideoId::new("vid-caller").unwrap(),
+            playlist_id: None,
+            playlist_entry_id: None,
+            browse_id: None,
+            queue_entry_id: None,
+            start_index: None,
+        });
+        if op == PlayerOp::Enqueue {
+            args.enqueue_position = Some(EnqueuePosition::Next);
+        }
+        h.engine
+            .submit_player_command(make_cmd("caller-first", op, Some(args)))
+            .await
+            .unwrap();
+        settle(&h.engine).await;
+        observe_empty_page(&h.engine, 2).await;
+        h.clock.advance(15_500);
+        settle(&h.engine).await;
+        let receipt = h
+            .engine
+            .command_receipt(CommandId::new("caller-first").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.status, CommandLifecycleStatus::Indeterminate);
+        observe_empty_page(&h.engine, 3).await;
+        assert_eq!(h.bridge.sent_ops(), vec![op], "{op:?}: no restore after it");
+        assert!(h.gate.calls().is_empty());
+        h.engine.shutdown().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn now_playing_cover_gets_local_asset_and_accent() {
     let h = engine_with_storage(RecordingStorage::default(), false).await;
@@ -4567,6 +4628,8 @@ async fn launch_autoplay_honors_setting_when_page_self_restores_and_manual_pause
                         has_more: Some(false),
                         explicit_complete: Some(true),
                         may_load_more: Some(false),
+                        official_upcoming: None,
+                        filters: None,
                         entries: vec![QueueEntry {
                             entry_id: QueueEntryId::new("qe-r").unwrap(),
                             video_id: VideoId::new("vid-last").unwrap(),
@@ -4673,6 +4736,8 @@ async fn launch_autoplay_honors_setting_when_page_self_restores_and_manual_pause
                         has_more: Some(false),
                         explicit_complete: Some(true),
                         may_load_more: Some(false),
+                        official_upcoming: None,
+                        filters: None,
                         entries: vec![QueueEntry {
                             entry_id: QueueEntryId::new("qe-r").unwrap(),
                             video_id: VideoId::new("vid-last").unwrap(),

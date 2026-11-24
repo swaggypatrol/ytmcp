@@ -10,8 +10,7 @@ import {
 type Track = TrackInstanceId | null | undefined;
 
 /**
- * The seek preview behind every seek bar. One instance is shared by the player bar and Now
- * Playing, so both show the same position while either is dragged. The preview follows the drag,
+ * The seek preview behind the player bar's seek bar (App owns the one instance). The preview follows the drag,
  * holds the released position until the seek settles, and is dropped when it fails, times out or
  * the track changes. A drag that starts on one track never seeks the next one.
  *

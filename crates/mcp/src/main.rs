@@ -16,7 +16,7 @@ use serde::Deserialize;
 use ytm_control_api::{
     CapabilityArea, ContextInput, ControlError, ControlRequest, ControlResponse, ErrorCode,
     OperationInput, PageInput, PlaylistInput, Preconditions, RecommendationsInput,
-    RetryDisposition, SearchInput, WriteAction, WriteInput,
+    RetryDisposition, SearchInput, UpcomingStatus, WriteAction, WriteInput,
 };
 
 use crate::client::ControlClient;
@@ -308,12 +308,30 @@ struct LibraryMembershipArguments {
 }
 
 #[derive(Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 enum PlaybackMode {
-    Shuffle { enabled: bool },
-    Repeat { mode: ytm_control_api::RepeatMode },
-    Mute { muted: bool },
-    Autoplay { enabled: bool },
+    Shuffle {
+        enabled: bool,
+    },
+    Repeat {
+        mode: ytm_control_api::RepeatMode,
+    },
+    Mute {
+        muted: bool,
+    },
+    Autoplay {
+        enabled: bool,
+    },
+    /// A `filterId` from `queue.filters` in ytm_get_context.
+    UpNextFilter {
+        #[schemars(length(min = 1, max = 64))]
+        filter_id: String,
+    },
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -397,6 +415,9 @@ struct WaitPromptArguments {
     /// Defaults to 1200. Each track's ending prompt normally arrives well before that.
     #[schemars(range(min = 1, max = 1800))]
     max_wait_seconds: Option<u32>,
+    /// The coreEpoch and seq of the last prompt you received. A prompt handed to a wait you
+    /// cancelled is then offered again; skip repeats by (coreEpoch, seq).
+    last_received: Option<ytm_control_api::DjCueAck>,
 }
 
 #[derive(Clone, Copy)]
@@ -418,6 +439,7 @@ enum MusicTool {
     ManageHistory,
     Home,
     Library,
+    ListenerProfile,
     ExtendedMedia,
     EditPlaylist,
     UpdatePlaylist,
@@ -444,7 +466,7 @@ enum MusicTool {
 }
 
 impl MusicTool {
-    const ORDERED: [Self; 40] = [
+    const ORDERED: [Self; 41] = [
         Self::AccountHandoff,
         Self::Append,
         Self::Playback,
@@ -461,6 +483,7 @@ impl MusicTool {
         Self::History,
         Self::Home,
         Self::Library,
+        Self::ListenerProfile,
         Self::Lyrics,
         Self::Player,
         Self::Playlist,
@@ -501,6 +524,7 @@ impl MusicTool {
                 | Self::History
                 | Self::Home
                 | Self::Library
+                | Self::ListenerProfile
                 | Self::ExtendedMedia
                 | Self::Playlist
                 | Self::ShareLink
@@ -560,6 +584,7 @@ impl MusicTool {
             Self::ExtendedMedia => "ytm_get_extended_media",
             Self::Home => "ytm_get_home",
             Self::Library => "ytm_get_library",
+            Self::ListenerProfile => "ytm_get_listener_profile",
             Self::EditQueue => "ytm_edit_queue",
             Self::Interrupt => "ytm_interrupt_with",
             Self::AccountHandoff => "ytm_account_handoff",
@@ -593,7 +618,7 @@ impl MusicTool {
     fn definition(self) -> Tool {
         let (description, input) = match self {
             Self::WaitPrompt => (
-                "Be the listener's DJ: call this in a loop. It returns when there is something to react to: a prompt shortly before each track ends, or an occasional moment to check in with the listener, with what is playing, what is queued, how recent tracks ended (finished or skipped), how long the listener has been quiet and their recorded tastes. Act on it as you see fit with the other music tools, or do nothing, then call again. After you speak to the listener, call this again right away in the same turn instead of stopping to wait for an answer: their answer arrives with a later result. Report userSpoke and spoke from your conversation so check-ins come at sensible times; for five minutes after either, each call returns within about a minute so you hear the listener. Without a prompt it returns empty after maxWaitSeconds.",
+                "Be the listener's DJ: call this in a loop. It returns when there is something to react to: a prompt shortly before each track ends, an occasional moment to check in with the listener, or a signal soon after they steer the music by hand (skipping several tracks, picking something, going back to hear a track again, changing the Up Next filter), with what is playing, what is queued, how recent tracks ended (finished or skipped), what the listener did by hand since your previous prompt, how long they have been quiet and their recorded tastes. What they do with the controls always wins: never undo it. Before you first choose music in a session, read ytm_get_listener_profile and choose from the scripts and styles of their own music, not by your training or the language of the conversation. Act on it as you see fit with the other music tools, or do nothing, then call again. After you speak to the listener, call this again right away in the same turn instead of stopping to wait for an answer: their answer arrives with a later result. Report userSpoke and spoke from your conversation so check-ins come at sensible times; for five minutes after either, each call returns within about a minute so you hear the listener. Without a prompt it returns empty after maxWaitSeconds. A client that cancels waits passes lastReceived so a prompt lost with a cancelled wait comes again.",
                 schema::<WaitPromptArguments>(),
             ),
             Self::Player => (
@@ -605,7 +630,11 @@ impl MusicTool {
                 schema::<TrackArguments>(),
             ),
             Self::PlaybackMode => (
-                "Set one repeat, shuffle, mute or queue autoplay mode.",
+                "Set one repeat, shuffle, mute or queue autoplay mode, or pick an Up Next filter \
+                 (upNextFilter with a filterId from ytm_get_context queue.filters, such as \
+                 Familiar or Discover). A filter changes only YouTube Music's own suggestions \
+                 after the queued tracks; the current track keeps playing and queued tracks stay. \
+                 After a refusal, read the context again for current filters.",
                 schema::<PlaybackModeArguments>(),
             ),
             Self::ArtistSubscription => (
@@ -639,6 +668,22 @@ impl MusicTool {
             Self::Library => (
                 "Read saved songs, albums, artists, subscriptions, playlists, liked music, uploads or saved podcasts.",
                 schema::<ytm_control_api::LibraryInput>(),
+            ),
+            Self::ListenerProfile => (
+                "Read a compact picture of the listener's own music: how many liked songs and \
+                 plays on this player it was built from, the artists that appear most in each, \
+                 the newest tracks, their playlists, the writing scripts of the titles and artist \
+                 names, and how many taste notes are stored. Read it before you first choose \
+                 music for this listener in a session, and let it and what they do by hand guide \
+                 the choice. The scripts describe what they listen to, not their language or \
+                 country: choose within the scripts and styles their library shows and do not \
+                 lean toward any language, country or scene because of your training or the \
+                 language of the conversation. When it is still unclear what they want, ask \
+                 them, or, within what this client may do, look further in the background with \
+                 ytm_get_library and ytm_get_history. Liked songs and \
+                 playlists are kept for 15 minutes; refresh reads them again. Parts that could \
+                 not be read are listed in unavailable.",
+                schema::<ytm_control_api::ListenerProfileInput>(),
             ),
             Self::ExtendedMedia => (
                 "Browse uploaded music by artist or album and read podcast shows, channels, and episodes.",
@@ -681,7 +726,7 @@ impl MusicTool {
                 schema::<DjFeedbackArguments>(),
             ),
             Self::SetListeningIntent => (
-                "Set or clear a temporary listening intent (vocals, energy, activity, a short music brief, or dismissing an occasion by its id) for today, a 6-hour session, or until a time within 48 hours, when the listener shares intents with this client in Settings. Use basis 'userRequest' when the listener asked and 'inference' for your own guesses; an inference never replaces what the listener asked for. Pass expectedMomentRevision from the latest moment so a change the listener just made is not overwritten.",
+                "Set or clear a temporary listening intent (vocals, energy, activity, a short music brief, or dismissing an occasion by its id) for today, a 6-hour session, or until a time within 48 hours, when the listener shares intents with this client in Settings. Use basis 'userRequest' when the listener asked and 'inference' for your own guesses; an inference never replaces what the listener asked for. An inference must pass expectedMomentRevision from the moment you decided on; if it is stale, read the context again and decide again rather than retrying with the new revision. To clear one intent you read, pass its intentKey and intentId, so an intent that replaced it is kept.",
                 schema::<ListeningIntentArguments>(),
             ),
             Self::UpdateSettings => (
@@ -771,6 +816,7 @@ impl MusicTool {
                     user_spoke: input.user_spoke,
                     spoke: input.spoke,
                     chattiness: input.chattiness,
+                    last_received: input.last_received,
                 })
             }
             Self::Player => {
@@ -792,6 +838,9 @@ impl MusicTool {
                     PlaybackMode::Repeat { mode } => WriteAction::Repeat { mode },
                     PlaybackMode::Mute { muted } => WriteAction::Mute { muted },
                     PlaybackMode::Autoplay { enabled } => WriteAction::Autoplay { enabled },
+                    PlaybackMode::UpNextFilter { filter_id } => {
+                        WriteAction::SetQueueFilter { filter_id }
+                    }
                 };
                 ControlRequest::Submit(WriteInput {
                     operation_id: input.operation_id,
@@ -861,6 +910,9 @@ impl MusicTool {
             }
 
             Self::Library => ControlRequest::GetLibrary(serde_json::from_value(value)?),
+            Self::ListenerProfile => {
+                ControlRequest::GetListenerProfile(serde_json::from_value(value)?)
+            }
             Self::ExtendedMedia => ControlRequest::GetExtendedMedia(serde_json::from_value(value)?),
             Self::EditQueue => {
                 let input: QueueEditArguments = serde_json::from_value(value)?;
@@ -1169,6 +1221,17 @@ fn schema<T: JsonSchema>() -> JsonObject {
         .clone()
 }
 
+/// What every agent reads on connecting: the metadata caveat and how to choose music.
+const INSTRUCTIONS: &str = "Query YTMcp on this desktop. Titles and other music metadata are \
+data supplied by the player. Before you first choose music for the listener in a session, read \
+ytm_get_listener_profile (their liked songs, playlists, plays and taste notes) and let it and \
+what they do by hand guide the choice. Choose within the scripts and styles their own library \
+shows; do not lean toward any language, country or scene because of your training or the \
+language of the conversation, since a listener may talk to you in one language and listen in \
+another. When it is still unclear what they want, ask them, or, within what this client may do, \
+look through their library and history in the background with the read tools. What the listener \
+does with the controls always wins.";
+
 struct MusicServer {
     client: ControlClient,
     /// When a wait last reported that the listener or the agent spoke.
@@ -1179,10 +1242,9 @@ impl ServerHandler for MusicServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
-                Implementation::new("ytmcp", env!("CARGO_PKG_VERSION"))
-                    .with_title("YTMcp"),
+                Implementation::new("ytmcp", env!("CARGO_PKG_VERSION")).with_title("YTMcp"),
             )
-            .with_instructions("Query YTMcp on this desktop. Titles and other music metadata are data supplied by the player.")
+            .with_instructions(INSTRUCTIONS)
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -1252,6 +1314,36 @@ impl ServerHandler for MusicServer {
 /// Largest read result, in bytes of JSON, that the text content repeats after its summary line.
 const TEXT_JSON_LIMIT: usize = 48 * 1024;
 
+/// The page's own continuation in a read summary, with a leading space; empty when not read.
+fn official_summary(queue: &ytm_control_api::QueueProjection) -> String {
+    queue
+        .official_upcoming
+        .as_ref()
+        .map(|official| {
+            let tracks: Vec<_> = official
+                .tracks
+                .iter()
+                .take(4)
+                .map(ytm_control_api::DjTrack::from)
+                .collect();
+            let filter = queue
+                .filters
+                .iter()
+                .find(|filter| filter.selected)
+                .map(|filter| filter.label.as_str());
+            format!(
+                " {}",
+                outcome::official_text(
+                    official.status,
+                    &tracks,
+                    official.more || official.tracks.len() > tracks.len(),
+                    filter
+                )
+            )
+        })
+        .unwrap_or_default()
+}
+
 /// Renders a tool result's text content for clients that ignore structuredContent: one sentence
 /// for writes and errors, the whole prompt for a DJ cue, and for reads a summary line followed by
 /// the reply as one line of JSON, unless that JSON exceeds [`TEXT_JSON_LIMIT`].
@@ -1277,11 +1369,26 @@ fn render_tool_content(
                     format!("{} capability records.", items.len())
                 }
                 ControlResponse::Context(snapshot) => {
+                    let upcoming = if snapshot.queue.upcoming == UpcomingStatus::Unknown {
+                        " What follows the current track is not known right now (it is not in the loaded queue window)."
+                    } else {
+                        ""
+                    };
+                    let upcoming = format!("{upcoming}{}", official_summary(&snapshot.queue));
+                    let actions = outcome::listener_actions_text(&snapshot.listener_actions, 0)
+                        .map(|line| format!(" {line}"))
+                        .unwrap_or_default();
                     if let Some(moment) = &snapshot.moment {
                         let extra = outcome::moment_text_lines(moment).join(" ");
-                        format!("Playback: {:?}. {extra}", snapshot.player.playback)
+                        format!(
+                            "Playback: {:?}.{upcoming} {extra}{actions}",
+                            snapshot.player.playback
+                        )
                     } else {
-                        format!("Playback: {:?}.", snapshot.player.playback)
+                        format!(
+                            "Playback: {:?}.{upcoming}{actions}",
+                            snapshot.player.playback
+                        )
                     }
                 }
                 ControlResponse::Player(player) => match &player.observed {
@@ -1289,9 +1396,15 @@ fn render_tool_content(
                     None => "Audio observations from the player.".into(),
                 },
                 ControlResponse::Queue(queue) => format!(
-                    "{} entries in the loaded window. Completeness: {:?}.",
+                    "{} entries in the loaded window. Completeness: {:?}.{}{}",
                     queue.entries.len(),
-                    queue.completeness
+                    queue.completeness,
+                    if queue.upcoming == UpcomingStatus::Unknown {
+                        " The current track is not in the loaded window."
+                    } else {
+                        ""
+                    },
+                    official_summary(queue)
                 ),
                 ControlResponse::Search(page) => format!(
                     "{} catalog results. Freshness: {:?}.",
@@ -1357,6 +1470,7 @@ fn render_tool_content(
                 ControlResponse::Lyrics(page) => {
                     format!("Lyrics: {:?}, source {}.", page.kind, page.source)
                 }
+                ControlResponse::ListenerProfile(profile) => outcome::profile_text(profile),
                 ControlResponse::DjPreferences(page) => {
                     format!("{} DJ preferences in this page.", page.items.len())
                 }
@@ -1455,9 +1569,15 @@ impl Missing {
             target_token: target.is_some_and(|target| !target.contains_key("contextToken")),
             preconditions: tool.accepts("preconditions")
                 && !arguments.contains_key("preconditions"),
+            // An Up Next filter changes only the suggestions, so a queue edit does not stale it.
             queue: tool.accepts("contextToken")
                 || target.is_some()
-                || matches!(tool, MusicTool::PlaybackMode),
+                || (matches!(tool, MusicTool::PlaybackMode)
+                    && arguments
+                        .get("change")
+                        .and_then(|change| change.get("kind"))
+                        .and_then(serde_json::Value::as_str)
+                        != Some("upNextFilter")),
         }
     }
 
@@ -1703,8 +1823,9 @@ const PROMPT_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 const PROMPT_PROGRESS: std::time::Duration = std::time::Duration::from_secs(20);
 
 impl MusicServer {
-    /// Waits for the next DJ prompt by polling the player, which records the agent's report on
-    /// the first poll. Returns the prompt, an error, or an empty reply at the deadline.
+    /// Waits for the next DJ prompt by polling the player, which records the agent's report and
+    /// acknowledgement on the first poll. Returns the prompt, an error, or an empty reply at the
+    /// deadline.
     async fn wait_prompt(
         &self,
         input: WaitPromptArguments,
@@ -1729,6 +1850,7 @@ impl MusicServer {
             user_spoke: input.user_spoke,
             spoke: input.spoke,
             chattiness: input.chattiness,
+            last_received: input.last_received,
         };
         let (mut last_progress, mut sent) = (Instant::now(), 0_u32);
         loop {
@@ -1843,6 +1965,28 @@ mod tests {
         assert_eq!(wait_seconds(None, spoke, later), 60);
         let cooled = now + Duration::from_secs(300);
         assert_eq!(wait_seconds(None, spoke, cooled), 1200);
+    }
+
+    #[test]
+    fn the_up_next_filter_mode_selects_a_filter_by_its_id() {
+        let arguments = serde_json::json!({
+            "operationId": "fixture-filter",
+            "preconditions": { "expectedBridgeEpoch": "fixture-bridge" },
+            "change": { "kind": "upNextFilter", "filterId": "qf-1-c" }
+        });
+        let serde_json::Value::Object(arguments) = arguments else {
+            unreachable!()
+        };
+        assert!(!Missing::of(MusicTool::PlaybackMode, &arguments).queue);
+        let Ok(ControlRequest::Submit(input)) = MusicTool::PlaybackMode.request(arguments) else {
+            panic!("expected a write");
+        };
+        assert_eq!(
+            input.action,
+            WriteAction::SetQueueFilter {
+                filter_id: "qf-1-c".into()
+            }
+        );
     }
 
     #[test]
@@ -1966,6 +2110,156 @@ mod tests {
             &cue_payload,
         );
         assert!(!cue_text.contains('\n'));
+    }
+
+    #[test]
+    fn queue_read_text_names_the_official_continuation_and_selected_filter() {
+        let queue: ControlResponse = serde_json::from_value(serde_json::json!({
+            "result": "queue",
+            "value": {
+                "revision": 4, "currentEntryId": null, "upcoming": "unknown", "entries": [],
+                "nextCursor": null, "completeness": "partial", "hasMore": true, "infinite": null,
+                "loadedStart": null, "loadedEndExclusive": null,
+                "officialUpcoming": {
+                    "status": "observed",
+                    "tracks": [{
+                        "videoId": "autoAAAAAAA", "title": "Auto A",
+                        "artists": [{ "id": null, "name": "Artist A" }], "album": null,
+                        "durationMs": null, "availability": "available", "versionTag": null,
+                        "rating": "unknown"
+                    }],
+                    "more": false
+                },
+                "filters": [
+                    { "filterId": "qf-0-a", "label": "All", "selected": false },
+                    { "filterId": "qf-1-b", "label": "Deep cuts", "selected": true }
+                ]
+            }
+        }))
+        .unwrap();
+        let payload = serde_json::to_value(&queue).unwrap();
+        let text = render_tool_content(MusicTool::Queue, &JsonObject::new(), &queue, &payload);
+        let summary = text.split_once('\n').expect("summary + json").0;
+        assert!(
+            summary.ends_with(
+                "The current track is not in the loaded window. Then YouTube Music: Auto A by \
+                 Artist A (filter: Deep cuts)."
+            ),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn context_read_with_no_preview_still_says_suggestions_follow() {
+        let context: ControlResponse = serde_json::from_value(serde_json::json!({
+            "result": "context",
+            "value": {
+                "cursor": { "coreEpoch": "fixture-core", "revision": 1 },
+                "bridgeEpoch": null, "capturedAtMs": 1000, "contextToken": "fixture-token",
+                "freshness": "fresh",
+                "player": {
+                    "connection": "ready", "playback": "playing", "trackInstanceId": null,
+                    "track": null,
+                    "timeAnchor": { "positionMs": 0, "playbackRate": 1.0,
+                                    "anchorCoreMonotonicMs": 0, "extrapolating": false },
+                    "volume": 1.0, "muted": false, "shuffle": null, "repeat": null,
+                    "autoplay": true, "activeOp": null, "pendingCommands": 0,
+                    "stoppedConfirmed": false
+                },
+                "account": { "state": "authenticated", "accountEpoch": null,
+                             "playerCatalogMatched": true },
+                "queue": {
+                    "revision": 4, "currentEntryId": null, "upcoming": "known", "entries": [],
+                    "nextCursor": null, "completeness": "partial", "hasMore": true,
+                    "infinite": null, "loadedStart": null, "loadedEndExclusive": null,
+                    "officialUpcoming": { "status": "observed", "tracks": [], "more": true },
+                    "filters": [{ "filterId": "qf-1-c", "label": "Familiar", "selected": true }]
+                },
+                "capabilities": []
+            }
+        }))
+        .unwrap();
+        let payload = serde_json::to_value(&context).unwrap();
+        let text = render_tool_content(MusicTool::Context, &JsonObject::new(), &context, &payload);
+        let summary = text.split_once('\n').expect("summary + json").0;
+        assert_eq!(
+            summary,
+            "Playback: Playing. Then YouTube Music: its own suggestions (not listed) (filter: \
+             Familiar)."
+        );
+    }
+
+    #[test]
+    fn the_listener_profile_is_a_read_that_maps_to_its_request() {
+        let tool = MusicTool::ORDERED
+            .into_iter()
+            .find(|tool| tool.name() == "ytm_get_listener_profile")
+            .expect("published");
+        assert!(tool.read_only() && !tool.writes());
+        let serde_json::Value::Object(refresh) = serde_json::json!({ "refresh": true }) else {
+            unreachable!()
+        };
+        assert_eq!(
+            tool.request(refresh).unwrap(),
+            ControlRequest::GetListenerProfile(ytm_control_api::ListenerProfileInput {
+                refresh: true
+            })
+        );
+        assert_eq!(
+            tool.request(JsonObject::new()).unwrap(),
+            ControlRequest::GetListenerProfile(Default::default())
+        );
+        let serde_json::Value::Object(unknown) = serde_json::json!({ "locale": "any" }) else {
+            unreachable!()
+        };
+        assert!(tool.request(unknown).is_err());
+    }
+
+    #[test]
+    fn context_read_text_lists_the_listeners_own_actions_on_its_summary_line() {
+        let context: ControlResponse = serde_json::from_value(serde_json::json!({
+            "result": "context",
+            "value": {
+                "cursor": { "coreEpoch": "fixture-core", "revision": 1 },
+                "bridgeEpoch": null, "capturedAtMs": 1000, "contextToken": "fixture-token",
+                "freshness": "fresh",
+                "player": {
+                    "connection": "ready", "playback": "paused", "trackInstanceId": null,
+                    "track": null,
+                    "timeAnchor": { "positionMs": 0, "playbackRate": 1.0,
+                                    "anchorCoreMonotonicMs": 0, "extrapolating": false },
+                    "volume": 0.3, "muted": false, "shuffle": null, "repeat": null,
+                    "autoplay": null, "activeOp": null, "pendingCommands": 0,
+                    "stoppedConfirmed": false
+                },
+                "account": { "state": "authenticated", "accountEpoch": null,
+                             "playerCatalogMatched": true },
+                "queue": {
+                    "revision": 4, "currentEntryId": null, "upcoming": "known", "entries": [],
+                    "nextCursor": null, "completeness": "complete", "hasMore": false,
+                    "infinite": null, "loadedStart": null, "loadedEndExclusive": null
+                },
+                "capabilities": [],
+                "listenerActions": [
+                    { "action": "pause", "agoMs": 3000,
+                      "during": { "videoId": "fixtureAAAA", "title": "Two\nlines",
+                                  "artists": ["Band"], "album": null, "durationMs": null },
+                      "positionMs": 42000 },
+                    { "action": "volume", "agoMs": 8000, "volumeFrom": 70, "volumeTo": 30 }
+                ]
+            }
+        }))
+        .unwrap();
+        let payload = serde_json::to_value(&context).unwrap();
+        let text = render_tool_content(MusicTool::Context, &JsonObject::new(), &context, &payload);
+        let (summary, json) = text.split_once('\n').expect("summary + json");
+        assert_eq!(
+            summary,
+            "Playback: Paused. The listener's own actions, newest first: paused \"Two lines\" at \
+             42 s; turned the volume down from 70 to 30."
+        );
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed["value"]["listenerActions"][1]["volumeTo"], 30);
     }
 
     #[test]

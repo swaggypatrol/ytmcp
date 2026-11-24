@@ -1,0 +1,422 @@
+/* Track lists (rows scrolled by the page), collection headers and their condensed strip, the
+   queue page's sections, and lyric lines. Tiers follow the content area (`content` container). */
+
+/* ---- Track list --------------------------------------------------------------------------
+   Compact has number, title, duration and more. Regular adds album and, when available,
+   the like toggle. Queue edit controls have their own fixed track at every tier.
+   The row height is read by the virtualizer from --track-row-h. */
+
+.track-list {
+  --track-row-h: 52px;
+  --tl-main-columns: 32px minmax(0, 1fr);
+  --tl-main-span: 2;
+  --tl-action-size: 32px;
+  --tl-columns: var(--tl-main-columns) var(--tl-action-column,) var(--tl-like-column,) 56px var(--tl-more-column,);
+  position: relative;
+}
+.track-list.has-row-actions {
+  --tl-action-column: calc(var(--tl-action-count) * var(--tl-action-size));
+}
+.track-list.has-more-actions {
+  --tl-more-column: 40px;
+}
+
+.track-list-body {
+  position: relative;
+  width: 100%;
+}
+
+.track-list-header,
+.tl-row {
+  display: grid;
+  grid-template-columns: var(--tl-columns);
+  align-items: center;
+  column-gap: var(--space-16);
+  padding-inline: var(--space-12);
+}
+
+.track-list-header {
+  height: 36px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
+  user-select: none;
+}
+
+.tl-row {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  border-radius: var(--radius-md);
+  contain: layout style;
+  background-color: transparent;
+  transition: background-color var(--duration-fast) ease-out;
+}
+.tl-row:hover {
+  background-color: var(--bg-elevated-hover);
+}
+.tl-row.is-current {
+  background-color: var(--bg-active-row);
+}
+
+.tl-main {
+  display: grid;
+  grid-column: span var(--tl-main-span);
+  grid-template-columns: subgrid;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  text-align: left;
+  color: inherit;
+  border-radius: inherit;
+  cursor: pointer;
+}
+.tl-main[aria-disabled="true"] {
+  cursor: default;
+}
+/* The ring sits inside the row so neighbouring rows never cover it. */
+.tl-main:focus-visible {
+  outline-offset: -2px;
+}
+
+.tl-num {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.tl-row.is-current .tl-num {
+  color: var(--accent);
+}
+
+.tl-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+/* Only the header label is indented past the 40 px cover and its gap. */
+.tl-title-head {
+  min-width: 0;
+  padding-left: calc(40px + var(--space-12));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-cover {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+}
+.tl-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tl-title-text,
+.tl-sub,
+.tl-album {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-title-text {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-primary);
+  transition: color var(--duration-fast) ease-out;
+}
+.tl-row.is-current .tl-title-text {
+  color: var(--accent);
+}
+.tl-sub {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+/* Lemon: not available here, with the reason in place of the artist. */
+.tl-sub.is-warning {
+  color: var(--status-warning);
+}
+.tl-row.is-unavailable .tl-cover,
+.tl-row.is-unavailable .tl-title-text {
+  opacity: 0.45;
+}
+
+.tl-album {
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.tl-actions {
+  display: flex;
+  align-items: center;
+}
+
+.tl-like,
+.tl-more {
+  display: grid;
+  place-items: center;
+}
+.tl-album,
+.tl-like {
+  display: none;
+}
+
+.tl-dur {
+  text-align: right;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+@container content (min-width: 880px) {
+  .track-list {
+    --track-row-h: 56px;
+    --tl-main-columns: 32px minmax(0, 1.4fr) minmax(0, 1fr);
+    --tl-main-span: 3;
+  }
+  .track-list.has-like {
+    --tl-like-column: 40px;
+  }
+  .tl-album {
+    display: block;
+  }
+  .tl-like {
+    display: grid;
+  }
+}
+
+/* The end of a list that loads more: a quiet note while loading, Peach and Retry on failure. */
+.tl-tail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-12);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.tl-tail-failed {
+  color: var(--status-danger);
+}
+
+/* ---- Collection header -------------------------------------------------------------------
+   Cover tile, 40 px title, count line, Play. Once it scrolls out, a 48 px strip with the title
+   and Play fades in at the top of the window. The strip's anchor is sticky and zero-height, so
+   it never takes space; only opacity and transform change. */
+
+.collection-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-24);
+  margin-bottom: var(--space-24);
+}
+.collection-tile {
+  width: 120px;
+  height: 120px;
+  flex: none;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 28px -10px oklch(0 0 0 / 0.55);
+}
+.collection-tile.is-round {
+  border-radius: var(--radius-pill);
+}
+.collection-tile-icon {
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  --icon-ink: currentColor;
+  background-color: var(--bg-elevated);
+  box-shadow:
+    inset 0 0 0 1px var(--border-subtle),
+    0 12px 28px -10px oklch(0 0 0 / 0.55);
+}
+.collection-tile-icon.is-liked {
+  color: var(--text-on-accent);
+  background: linear-gradient(135deg, var(--accent), var(--swatch-raindrops-on-roses));
+}
+.collection-tile-icon .icon {
+  width: 48px;
+  height: 48px;
+}
+.collection-meta {
+  flex: 1 1 18rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.collection-title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: 1.16;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.collection-count {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.collection-actions {
+  display: flex;
+  gap: var(--space-12);
+}
+
+.collection-strip-anchor {
+  position: sticky;
+  top: 0;
+  height: 0;
+  z-index: var(--z-content);
+}
+.collection-strip {
+  position: absolute;
+  top: 0;
+  /* Spans the window like .bleed: from under the sidebar to the right edge. */
+  left: calc(var(--page-left, 0px) * -1);
+  width: calc(100% + var(--page-left, 0px) + var(--page-offset, 0px));
+  height: 48px;
+  padding-left: var(--page-left, 0px);
+  padding-right: var(--page-margin, 20px);
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  background-color: color-mix(in oklch, var(--bg-canvas) 92%, transparent);
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  /* Leaving is faster than arriving. */
+  transition:
+    opacity var(--duration-fast) ease-out,
+    transform var(--duration-fast) ease-out;
+}
+.collection-strip.is-shown {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition:
+    opacity var(--duration-normal) var(--ease-standard),
+    transform var(--duration-normal) var(--ease-standard);
+}
+.collection-strip-title {
+  min-width: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.collection-strip-play {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex: none;
+  border-radius: var(--radius-pill);
+}
+:root[data-reduce-transparency="true"] .collection-strip {
+  background-color: var(--bg-canvas);
+}
+:root[data-reduce-motion="true"] .collection-strip,
+:root[data-reduce-motion="true"] .collection-strip.is-shown {
+  transform: none;
+  transition: opacity var(--duration-fast) ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .collection-strip,
+  .collection-strip.is-shown {
+    transform: none;
+    transition: opacity var(--duration-fast) ease-out;
+  }
+}
+
+/* ---- Queue page ---------------------------------------------------------------------------- */
+
+.queue-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-48);
+}
+.queue-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+.queue-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+/* The queue's switch, filter chips and Clear: chip-sized text on a 32 px hit area. */
+.queue-chip {
+  position: relative;
+  min-height: 32px;
+  padding-inline: var(--space-12);
+}
+/* A filter waiting for the page: the dot breathes on the chip's corner, so the chip keeps its width. */
+.queue-chip > .wait-dot {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  margin: 0;
+}
+.list-section-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: 1.3;
+  font-weight: 600;
+}
+/* YouTube Music's suggestions: the same rows, in flow, with nothing to select or edit. */
+.queue-official-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.queue-official-list .tl-row {
+  position: relative;
+  height: var(--track-row-h);
+}
+.queue-official-list .tl-main {
+  cursor: default;
+}
+.queue-official-list .tl-row:hover {
+  background-color: transparent;
+}
+
+/* ---- Lyric lines ----------------------------------------------------------------------------- */
+
+.lyric-line {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: var(--radius-md);
+  background-color: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-normal) var(--ease-standard),
+    color var(--duration-normal) var(--ease-standard);
+}
+.lyric-line:hover:not(:disabled) {
+  background-color: var(--bg-elevated-hover);
+  color: var(--text-primary);
+}
+.lyric-line:disabled {
+  cursor: default;
+}
+.lyric-line-active {
+  background-color: var(--accent-soft);
+  color: var(--accent);
+}
+.lyric-line-active:hover:not(:disabled) {
+  background-color: var(--accent-soft);
+  color: var(--accent);
+}

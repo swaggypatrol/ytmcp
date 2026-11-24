@@ -1,0 +1,75 @@
+{
+ "about": "The official page's own audio format labels for one public track, recorded 2026-11-23 with tools/probes/bridge/live-queue-future-entry.mjs (signed-in Premium account, Electron 45.4.1). The statistics line names the playing audio stream by number; the player response labels each stream.",
+ "statsCodecs": "0 / mp4a.40.2 (141)",
+ "playbackQuality": "auto",
+ "audioFormats": [
+  {
+   "itag": 140,
+   "mime": "audio/mp4",
+   "codecs": "mp4a.40.2",
+   "bitrate": 131109,
+   "averageBitrate": 129705,
+   "audioQuality": "AUDIO_QUALITY_MEDIUM"
+  },
+  {
+   "itag": 141,
+   "mime": "audio/mp4",
+   "codecs": "mp4a.40.2",
+   "bitrate": 259330,
+   "averageBitrate": 257742,
+   "audioQuality": "AUDIO_QUALITY_HIGH"
+  },
+  {
+   "itag": 249,
+   "mime": "audio/webm",
+   "codecs": "opus",
+   "bitrate": 57441,
+   "averageBitrate": 49600,
+   "audioQuality": "AUDIO_QUALITY_LOW"
+  },
+  {
+   "itag": 250,
+   "mime": "audio/webm",
+   "codecs": "opus",
+   "bitrate": 77772,
+   "averageBitrate": 66600,
+   "audioQuality": "AUDIO_QUALITY_LOW"
+  },
+  {
+   "itag": 251,
+   "mime": "audio/webm",
+   "codecs": "opus",
+   "bitrate": 148693,
+   "averageBitrate": 132215,
+   "audioQuality": "AUDIO_QUALITY_MEDIUM"
+  },
+  {
+   "itag": 774,
+   "mime": "audio/webm",
+   "codecs": "opus",
+   "bitrate": 281074,
+   "averageBitrate": 258113,
+   "audioQuality": "AUDIO_QUALITY_HIGH"
+  }
+ ],
+ "formatKeys": [
+  "itag",
+  "mimeType",
+  "bitrate",
+  "initRange",
+  "indexRange",
+  "lastModified",
+  "contentLength",
+  "quality",
+  "projectionType",
+  "averageBitrate",
+  "highReplication",
+  "audioQuality",
+  "approxDurationMs",
+  "audioSampleRate",
+  "audioChannels",
+  "loudnessDb",
+  "trackAbsoluteLoudnessLkfs",
+  "qualityOrdinal"
+ ]
+}

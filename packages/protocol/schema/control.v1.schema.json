@@ -557,6 +557,13 @@
         "freshness": {
           "$ref": "#/definitions/Freshness"
         },
+        "listenerActions": {
+          "description": "What the listener did by hand in the last ten minutes, newest first, at most\n[`crate::MAX_LISTENER_ACTIONS`]. Commands sent by agents are not listed.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ListenerAction"
+          }
+        },
         "moment": {
           "description": "Owner-configured Moment DJ context projected for this client (`None` only in legacy fixtures).",
           "anyOf": [
@@ -1057,6 +1064,24 @@
             },
             "params": {
               "$ref": "#/definitions/DjCueInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "description": "The listener's own music in brief: liked songs, playlists, plays and their scripts.",
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "getListenerProfile"
+            },
+            "params": {
+              "$ref": "#/definitions/ListenerProfileInput"
             }
           },
           "additionalProperties": false,
@@ -1762,6 +1787,23 @@
           "properties": {
             "result": {
               "type": "string",
+              "const": "listenerProfile"
+            },
+            "value": {
+              "$ref": "#/definitions/ListenerProfile"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
               "const": "operation"
             },
             "value": {
@@ -2021,6 +2063,17 @@
             }
           ]
         },
+        "officialUpNext": {
+          "description": "What YouTube Music plays on its own after the queued tracks: status and up to 5\nsuggestions. Absent when the page state was not readable.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DjOfficialUpNext"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "preferences": {
           "description": "The recorded tastes, sent on this client's first prompt and whenever they changed since\nits previous one; empty when `preferences_unchanged` or `preferences_unavailable`.",
           "type": "array",
@@ -2071,6 +2124,15 @@
           "items": {
             "$ref": "#/definitions/DjTrack"
           }
+        },
+        "upcoming": {
+          "description": "Whether `up_next` is what follows the current occurrence. When unknown it is empty and\nsays nothing about what comes next.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/UpcomingStatus"
+            }
+          ],
+          "default": "unknown"
         }
       },
       "additionalProperties": false,
@@ -2089,6 +2151,25 @@
         "preferencesUnchanged"
       ]
     },
+    "DjCueAck": {
+      "description": "Names one delivered prompt.",
+      "type": "object",
+      "properties": {
+        "coreEpoch": {
+          "$ref": "#/definitions/CoreEpoch"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "coreEpoch",
+        "seq"
+      ]
+    },
     "DjCueInput": {
       "type": "object",
       "properties": {
@@ -2096,6 +2177,17 @@
           "anyOf": [
             {
               "$ref": "#/definitions/DjChattiness"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastReceived": {
+          "description": "The last prompt this client actually received. A prompt handed out after it (for\nexample to a wait the client cancelled before the reply arrived) is offered again, so a\ncancelled wait loses nothing; the client skips repeats by `(coreEpoch, seq)`. Ignored\nwhen it names another core epoch.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DjCueAck"
             },
             {
               "type": "null"
@@ -2126,6 +2218,11 @@
           "description": "A good moment to ask the listener whether the music still suits them.",
           "type": "string",
           "const": "checkIn"
+        },
+        {
+          "description": "The listener just did something by hand that says where the music should go (see the\nreasons). It is a chance to adjust what plays next, not a prompt to speak.",
+          "type": "string",
+          "const": "listenerSignal"
         }
       ]
     },
@@ -2150,6 +2247,26 @@
           "description": "At most one track is queued after the current one.",
           "type": "string",
           "const": "littleQueued"
+        },
+        {
+          "description": "The listener skipped two or more tracks in a row.",
+          "type": "string",
+          "const": "skipStreak"
+        },
+        {
+          "description": "The listener started something particular by hand: a track, a collection, a queue entry.",
+          "type": "string",
+          "const": "manualPick"
+        },
+        {
+          "description": "The listener went back to hear a track again, or turned on repeat-one.",
+          "type": "string",
+          "const": "replay"
+        },
+        {
+          "description": "The listener chose another Up Next filter.",
+          "type": "string",
+          "const": "filterChanged"
         }
       ]
     },
@@ -2283,6 +2400,12 @@
     "DjListener": {
       "type": "object",
       "properties": {
+        "actionsOmitted": {
+          "description": "Older actions since the previous prompt that are not listed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "lastInteraction": {
           "anyOf": [
             {
@@ -2309,6 +2432,13 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "recentActions": {
+          "description": "What the listener did by hand since this client's previous prompt, newest first, at most\n[`crate::MAX_LISTENER_ACTIONS`]. Facts for the agent to read; never a request.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ListenerAction"
+          }
         },
         "unansweredCheckIns": {
           "description": "Unanswered check-ins in a row: each check-in that comes with no listener action or words\nsince the previous check-in adds one, and any listener action or words reset it. The\nfirst check-in after a reset counts 0. Above zero, check-ins come less often.",
@@ -2350,6 +2480,38 @@
         "track",
         "playback",
         "positionMs"
+      ]
+    },
+    "DjOfficialUpNext": {
+      "description": "YouTube Music's own continuation in a prompt.",
+      "type": "object",
+      "properties": {
+        "filter": {
+          "description": "The selected Up Next filter's label, when one is offered.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "more": {
+          "description": "More suggestions are loaded than listed.",
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/definitions/OfficialUpcomingStatus"
+        },
+        "tracks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DjTrack"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "tracks",
+        "more"
       ]
     },
     "DjPreference": {
@@ -3502,6 +3664,231 @@
       },
       "additionalProperties": false
     },
+    "ListenerAction": {
+      "description": "Something the listener did by hand: in the player window, from the tray, with media keys or\nthrough MPRIS. Commands sent by any agent are never listed.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/ListenerActionKind"
+        },
+        "agoMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "during": {
+          "description": "What was playing when they acted, and where in it.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DjTrack"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "positionMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "seekToMs": {
+          "description": "Where a seek landed. A drag is one action.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "subject": {
+          "description": "The track the action was about (picked, queued, rated): the playing one when it was about\nthat. Absent for actions with no track of their own, and while the player cannot name the\ntrack yet (for example one just picked from search).",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DjTrack"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "description": "The new setting in plain words: `on` or `off`, a repeat mode, a rating (`liked`,\n`disliked`, `neutral`), or the label of the chosen Up Next filter.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "volumeFrom": {
+          "description": "Volume before and after, 0 to 100. A drag is one action from its first to its last value.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "volumeTo": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "agoMs"
+      ]
+    },
+    "ListenerActionKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "play",
+            "pause",
+            "stop",
+            "seek",
+            "volume",
+            "mute",
+            "shuffle",
+            "repeat",
+            "autoplay",
+            "addToQueue",
+            "removeFromQueue",
+            "reorderQueue",
+            "clearUpcoming",
+            "addToPlaylist"
+          ]
+        },
+        {
+          "description": "Skipped to the next track.",
+          "type": "string",
+          "const": "next"
+        },
+        {
+          "description": "Went back: to the previous track, or to the start of this one.",
+          "type": "string",
+          "const": "previous"
+        },
+        {
+          "description": "Started a particular track.",
+          "type": "string",
+          "const": "playTrack"
+        },
+        {
+          "description": "Started an album, playlist or other collection.",
+          "type": "string",
+          "const": "playCollection"
+        },
+        {
+          "description": "Jumped to an entry of the queue.",
+          "type": "string",
+          "const": "pickFromQueue"
+        },
+        {
+          "description": "Chose an Up Next filter.",
+          "type": "string",
+          "const": "upNextFilter"
+        },
+        {
+          "description": "Liked, disliked or cleared a rating in the app.",
+          "type": "string",
+          "const": "rate"
+        }
+      ]
+    },
+    "ListenerProfile": {
+      "description": "A compact picture of the signed-in listener's own music, built only from their library and\nplay history. Every part says how much it was built from; a part that could not be read is\nnamed in `unavailable` and is not an empty result.",
+      "type": "object",
+      "properties": {
+        "generatedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "history": {
+          "description": "Plays recorded by this player on this machine.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProfileSample"
+            }
+          ]
+        },
+        "liked": {
+          "$ref": "#/definitions/ProfileSample"
+        },
+        "morePlaylists": {
+          "description": "More playlists exist than listed.",
+          "type": "boolean"
+        },
+        "playlists": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProfilePlaylist"
+          }
+        },
+        "scripts": {
+          "description": "The writing systems of the titles and artist names in the sampled liked songs and plays,\nlargest first. A track counts once, under the script of most of its letters. It describes\nwhat the listener listens to; it is not their language, country or interface language.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ScriptShare"
+          }
+        },
+        "scriptsSampled": {
+          "description": "Tracks the script figures were counted over.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "tasteNotes": {
+          "description": "Taste notes stored for this account (read them with the DJ prompt or the taste tools).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unavailable": {
+          "description": "Parts that could not be read this time: `liked`, `history`, `playlists`, `tasteNotes`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "generatedAtMs",
+        "liked",
+        "history",
+        "playlists",
+        "morePlaylists",
+        "scripts",
+        "scriptsSampled",
+        "tasteNotes",
+        "unavailable"
+      ]
+    },
+    "ListenerProfileInput": {
+      "description": "Input of a listener profile read.",
+      "type": "object",
+      "properties": {
+        "refresh": {
+          "description": "Read the library again instead of using the copy kept for this session.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
     "ListeningIntentBasis": {
       "type": "string",
       "enum": [
@@ -3513,6 +3900,7 @@
     "ListeningIntentChange": {
       "oneOf": [
         {
+          "description": "`expected_moment_revision` is the Moment revision the change was decided on. An\ninference must carry it; a listener's request may omit it.",
           "type": "object",
           "properties": {
             "action": {
@@ -3546,6 +3934,7 @@
           ]
         },
         {
+          "description": "Clears the intent stored under `intent_key`. With `intent_id`, only that exact intent:\none that replaced it since it was read stays.",
           "type": "object",
           "properties": {
             "action": {
@@ -3562,6 +3951,14 @@
               ],
               "format": "uint64",
               "minimum": 0
+            },
+            "intentId": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1
             },
             "intentKey": {
               "type": "string",
@@ -4294,6 +4691,66 @@
       "additionalProperties": false,
       "required": [
         "categoryId"
+      ]
+    },
+    "OfficialUpcomingStatus": {
+      "oneOf": [
+        {
+          "description": "Autoplay is on and suggestions are loaded: `tracks` play after the explicit list.",
+          "type": "string",
+          "const": "observed"
+        },
+        {
+          "description": "Autoplay is on, nothing is loaded yet and the page is fetching suggestions.",
+          "type": "string",
+          "const": "loading"
+        },
+        {
+          "description": "Autoplay is off: suggestions the page still holds will not play, so none are listed.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "The queue is a radio that refills itself; its own entries are what plays next.",
+          "type": "string",
+          "const": "radio"
+        },
+        {
+          "description": "Autoplay is on but no suggestions are loaded or being fetched.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
+    "OfficialUpcomingView": {
+      "description": "The page's own continuation after the explicit list.",
+      "type": "object",
+      "properties": {
+        "more": {
+          "description": "More suggestions are loaded than listed here.",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "`observed` (tracks follow the explicit list), `loading`, `off` (autoplay is off: nothing\nplays after the list), `radio` (the queue refills itself) or `none`.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OfficialUpcomingStatus"
+            }
+          ]
+        },
+        "tracks": {
+          "description": "Suggestions in play order; only for `observed`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Track"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "tracks",
+        "more"
       ]
     },
     "OperationInput": {
@@ -5577,27 +6034,36 @@
       ]
     },
     "PlayerOp": {
-      "type": "string",
-      "enum": [
-        "play",
-        "pause",
-        "toggle",
-        "stop",
-        "seek",
-        "setVolume",
-        "setMuted",
-        "next",
-        "previous",
-        "playTarget",
-        "playCollection",
-        "setShuffle",
-        "setRepeat",
-        "setAutoplay",
-        "enqueue",
-        "selectQueueEntry",
-        "removeQueueEntry",
-        "clearUpcoming",
-        "moveQueueEntry"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "play",
+            "pause",
+            "toggle",
+            "stop",
+            "seek",
+            "setVolume",
+            "setMuted",
+            "next",
+            "previous",
+            "playTarget",
+            "playCollection",
+            "setShuffle",
+            "setRepeat",
+            "setAutoplay",
+            "enqueue",
+            "selectQueueEntry",
+            "removeQueueEntry",
+            "clearUpcoming",
+            "moveQueueEntry"
+          ]
+        },
+        {
+          "description": "Selects an Up Next filter (`queueFilterId`): replaces only YouTube Music's own\nsuggestions, without interrupting the current track. Observed once the snapshot shows\nthat filter selected.",
+          "type": "string",
+          "const": "setQueueFilter"
+        }
       ]
     },
     "PlayerState": {
@@ -5926,6 +6392,89 @@
       },
       "additionalProperties": false
     },
+    "ProfileArtist": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "tracks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "tracks"
+      ]
+    },
+    "ProfilePlaylist": {
+      "type": "object",
+      "properties": {
+        "playlistId": {
+          "$ref": "#/definitions/PlaylistId"
+        },
+        "title": {
+          "type": "string"
+        },
+        "trackCount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "playlistId",
+        "title"
+      ]
+    },
+    "ProfileSample": {
+      "description": "One source of the profile: how much of it was read, who appears most, and its newest tracks.",
+      "type": "object",
+      "properties": {
+        "recent": {
+          "description": "The newest sampled tracks, newest first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DjTrack"
+          }
+        },
+        "sampled": {
+          "description": "Tracks actually read for this profile.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "topArtists": {
+          "description": "Artists with the most sampled tracks, most first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProfileArtist"
+          }
+        },
+        "total": {
+          "description": "Tracks in the source as a whole, when the source says.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sampled",
+        "topArtists",
+        "recent"
+      ]
+    },
     "QueueCompleteness": {
       "type": "string",
       "enum": [
@@ -5937,6 +6486,28 @@
     "QueueEntryId": {
       "description": "Occurrence-scoped queue entry identifier within a bridge epoch.",
       "type": "string"
+    },
+    "QueueFilterView": {
+      "description": "One Up Next filter the page shows.",
+      "type": "object",
+      "properties": {
+        "filterId": {
+          "description": "Pass to the `upNextFilter` playback mode. It names this filter for the suggestions\noffered when it was read: after the listener changes songs or the suggestions change\nseed, an old id is refused; read the context again then.",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "selected": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "filterId",
+        "label",
+        "selected"
+      ]
     },
     "QueueMode": {
       "type": "string",
@@ -5983,6 +6554,13 @@
             "$ref": "#/definitions/QueueOccurrence"
           }
         },
+        "filters": {
+          "description": "The Up Next filters the page offers now (label and whether selected). Empty when none\nare offered or they could not be read.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QueueFilterView"
+          }
+        },
         "hasMore": {
           "type": [
             "boolean",
@@ -6017,10 +6595,30 @@
             "null"
           ]
         },
+        "officialUpcoming": {
+          "description": "YouTube Music's own continuation after the explicit list (autoplay suggestions, or a\nradio that refills itself). Read-only: these tracks are not occurrences and cannot be\nselected or edited. Absent when the page state was not readable.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OfficialUpcomingView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "revision": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "upcoming": {
+          "description": "Whether the current occurrence is in the loaded window. When it is not, nothing is known\nabout what follows it: a context read then carries no entries, and a queue read pages the\nloaded window without a position.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/UpcomingStatus"
+            }
+          ],
+          "default": "unknown"
         }
       },
       "additionalProperties": false,
@@ -6221,6 +6819,64 @@
       "type": "string",
       "enum": [
         "userConfigured"
+      ]
+    },
+    "Script": {
+      "description": "A writing system, as told from the letters of a title and its artist names.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "latin",
+            "hangul",
+            "cyrillic",
+            "arabic",
+            "devanagari",
+            "thai",
+            "hebrew",
+            "greek"
+          ]
+        },
+        {
+          "description": "Chinese characters without kana: Chinese, or Japanese written only in kanji.",
+          "type": "string",
+          "const": "han"
+        },
+        {
+          "description": "Japanese kana, with or without kanji.",
+          "type": "string",
+          "const": "kana"
+        },
+        {
+          "description": "Another script, or no letters at all.",
+          "type": "string",
+          "const": "other"
+        }
+      ]
+    },
+    "ScriptShare": {
+      "type": "object",
+      "properties": {
+        "percent": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "script": {
+          "$ref": "#/definitions/Script"
+        },
+        "tracks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "script",
+        "tracks",
+        "percent"
       ]
     },
     "SearchEntity": {
@@ -6785,6 +7441,21 @@
         "zh-CN"
       ]
     },
+    "UpcomingStatus": {
+      "description": "Whether what follows the current occurrence is known.",
+      "oneOf": [
+        {
+          "description": "The current occurrence is in the loaded window; entries after it are what follows.",
+          "type": "string",
+          "const": "known"
+        },
+        {
+          "description": "The current occurrence is not in the loaded window.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
     "Verification": {
       "type": "object",
       "properties": {
@@ -7015,6 +7686,26 @@
           "required": [
             "kind",
             "enabled"
+          ]
+        },
+        {
+          "description": "Selects an Up Next filter read from the context (`filters[].filterId`). It replaces only\nYouTube Music's own suggestions after the queued tracks; the current track keeps playing\nand tracks the listener queued stay.",
+          "type": "object",
+          "properties": {
+            "filterId": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "setQueueFilter"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "filterId"
           ]
         },
         {

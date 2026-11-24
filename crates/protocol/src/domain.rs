@@ -286,6 +286,17 @@ pub struct PlayerObservedState {
     pub audio_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_label: Option<String>,
+    /// The stream number (itag) of the audio stream now playing, as the official player's own
+    /// statistics name it. It identifies the audio format; `quality_label` is a video label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_itag: Option<u32>,
+    /// How the official page itself labels the playing audio stream, read from its player
+    /// response for that stream number. Absent when the page does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_quality: Option<AudioQualityLevel>,
+    /// The playing audio stream's average bit rate in kbit/s, from the same source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_bitrate_kbps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drm_protected: Option<bool>,
     pub stopped_confirmed: bool,
@@ -314,6 +325,15 @@ pub struct QueueEntry {
     pub video_id: VideoId,
     pub track: Track,
     pub availability: TrackAvailability,
+}
+
+/// The official page's own quality label of an audio stream (its LOW, MEDIUM and HIGH).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AudioQualityLevel {
+    Low,
+    Standard,
+    High,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -347,6 +367,57 @@ pub struct QueueSnapshot {
     /// after every entry has loaded, so it does not by itself mean that anything follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub may_load_more: Option<bool>,
+    /// What the page plays after the explicit list on its own. Absent when the page state was
+    /// not readable; never mixed into `entries`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub official_upcoming: Option<OfficialUpcoming>,
+    /// The Up Next filters (steering chips) the page offers now, in its order. Absent when none
+    /// are offered or they could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Vec<QueueFilter>>,
+}
+
+/// Most official suggestions carried in a queue snapshot.
+pub const MAX_OFFICIAL_UPCOMING: usize = 50;
+
+/// YouTube Music's own continuation after the explicit list (its autoplay suggestions). These
+/// are read-only facts: they are not queue occurrences and cannot be selected, moved or removed
+/// through queue edits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialUpcoming {
+    pub status: OfficialUpcomingStatus,
+    /// Loaded suggestions in play order, at most [`MAX_OFFICIAL_UPCOMING`]; only for `observed`.
+    #[serde(default)]
+    pub tracks: Vec<Track>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum OfficialUpcomingStatus {
+    /// Autoplay is on and suggestions are loaded: `tracks` play after the explicit list.
+    Observed,
+    /// Autoplay is on, nothing is loaded yet and the page is fetching suggestions.
+    Loading,
+    /// Autoplay is off: suggestions the page still holds will not play, so none are listed.
+    Off,
+    /// The queue is a radio that refills itself; its own entries are what plays next.
+    Radio,
+    /// Autoplay is on but no suggestions are loaded or being fetched.
+    None,
+}
+
+/// One Up Next filter as the page shows it. `filter_id` is opaque: it names this chip for the
+/// suggestions it steers (their seed), so an id read while other suggestions were offered, for
+/// example before the listener changed songs, matches nothing and is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueFilter {
+    #[schemars(length(min = 1, max = 64))]
+    pub filter_id: String,
+    #[schemars(length(min = 1, max = 64))]
+    pub label: String,
+    pub selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -359,9 +430,27 @@ pub struct QueueSummary {
     pub completeness: QueueCompleteness,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_more: Option<bool>,
+    /// A slice of the loaded window anchored on the current occurrence: a few played entries
+    /// before it, then what follows. Without a current occurrence it is the window's start.
     #[serde(default)]
     pub preview_entries: Vec<QueueEntry>,
+    /// Index of the first preview entry within the loaded window.
+    #[serde(default)]
+    pub preview_start: u32,
+    /// Absolute queue position of the first loaded entry, when the page reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded_start: Option<u32>,
+    /// The page's own continuation after the explicit list, at most
+    /// [`MAX_PREVIEW_OFFICIAL_UPCOMING`] tracks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub official_upcoming: Option<OfficialUpcoming>,
+    /// The Up Next filters the page offers now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Vec<QueueFilter>>,
 }
+
+/// Most official suggestions carried in the UI's queue summary.
+pub const MAX_PREVIEW_OFFICIAL_UPCOMING: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -382,6 +471,10 @@ pub struct CapabilitySet {
     /// The page would clear the upcoming entries now (finite queue without a continuation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_clear: Option<CapabilitySupport>,
+    /// The page offers Up Next filters that can be selected now. Selecting one replaces only
+    /// YouTube Music's own suggestions; the current track and the explicit list are kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_filter: Option<CapabilitySupport>,
     pub search: CapabilitySupport,
     pub library_playlists: CapabilitySupport,
     pub playlist_tracks: CapabilitySupport,
@@ -411,6 +504,7 @@ impl Default for CapabilitySet {
             queue_remove: CapabilitySupport::Unverified,
             queue_autoplay: None,
             queue_clear: None,
+            queue_filter: None,
             search: CapabilitySupport::Unverified,
             library_playlists: CapabilitySupport::Unverified,
             playlist_tracks: CapabilitySupport::Unverified,
@@ -592,6 +686,10 @@ pub enum PlayerOp {
     RemoveQueueEntry,
     ClearUpcoming,
     MoveQueueEntry,
+    /// Selects an Up Next filter (`queueFilterId`): replaces only YouTube Music's own
+    /// suggestions, without interrupting the current track. Observed once the snapshot shows
+    /// that filter selected.
+    SetQueueFilter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -628,6 +726,10 @@ pub struct PlayerCommandArgs {
     pub before_queue_entry_id: Option<QueueEntryId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_revision: Option<u64>,
+    /// An Up Next filter id read from the current queue snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 64))]
+    pub queue_filter_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -682,6 +784,10 @@ pub enum AgentActivityRequest {
     ClearListeningIntent {
         #[schemars(length(min = 1, max = 128))]
         intent_key: String,
+        /// The intent as shown; one that replaced it since then is kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(min = 1, max = 64))]
+        intent_id: Option<String>,
     },
     /// The owner clears all temporary listening intents for the current account.
     ClearAllListeningIntents,
@@ -1355,6 +1461,17 @@ pub struct BridgePlaybackObservedPayload {
     pub audio_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_label: Option<String>,
+    /// The stream number (itag) of the audio stream now playing, as the official player's own
+    /// statistics name it. It identifies the audio format; `quality_label` is a video label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_itag: Option<u32>,
+    /// How the official page itself labels the playing audio stream, read from its player
+    /// response for that stream number. Absent when the page does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_quality: Option<AudioQualityLevel>,
+    /// The playing audio stream's average bit rate in kbit/s, from the same source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_bitrate_kbps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drm_protected: Option<bool>,
 }

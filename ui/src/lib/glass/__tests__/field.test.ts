@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { cornerExponent, cornerTexel, refractionProfile } from "../liquid-glass.js";
+import { cornerExponent, cornerTexel, lightShift, PIECE_PAINT_ORDER, pieceBoxes, refractionProfile, type PieceBox } from "../liquid-glass.js";
 
 describe("liquid glass refraction field", () => {
   it("bends most at the outline, not at all where the glass turns flat", () => {
@@ -53,5 +53,50 @@ describe("liquid glass refraction field", () => {
     expect(cornerExponent("round")).toBe(2);
     expect(cornerExponent("")).toBe(2);
     expect(cornerExponent("scoop")).toBe(2);
+  });
+
+  it("lets the pointer nudge the rim light only a little either way, never across the surface", () => {
+    expect(lightShift(0.5)).toBe("0.0%");
+    expect(lightShift(0)).toBe("-8.0%");
+    expect(lightShift(1)).toBe("8.0%");
+    // Pointer events can land just outside the box while leaving it.
+    expect(lightShift(-0.3)).toBe("-8.0%");
+    expect(lightShift(1.7)).toBe("8.0%");
+  });
+
+  it("leaves no seam in the rim where pieces meet between device pixels: every point of the rim lies a device pixel deep inside some piece", () => {
+    // A boundary inside a device pixel is only partly covered by the pieces that meet there; one
+    // more piece under it, with the same values, has to cover that pixel whole. Sizes as the
+    // sidebar, the player bar and a pill toast report them at 125% and 150%.
+    const inside = (b: PieceBox, x: number, y: number, m: number) =>
+      x - m >= b.x && x + m <= b.x + b.width && y - m >= b.y && y + m <= b.y + b.height;
+    for (const [width, height, size] of [
+      [224, 776, 25],
+      [1009.6, 79.2, 25],
+      [303.33, 44, 22],
+    ] as const) {
+      const boxes = pieceBoxes(width, height, size);
+      const rim = size - 1;
+      for (let a = 0.8; a < Math.max(width, height) - 0.8; a += 0.2) {
+        for (const depth of [0.8, rim / 2, rim - 0.8]) {
+          const points = [
+            [a, depth],
+            [a, height - depth],
+            [depth, a],
+            [width - depth, a],
+          ].filter(([x, y]) => x! > 0.6 && x! < width - 0.6 && y! > 0.6 && y! < height - 0.6);
+          for (const [x, y] of points) {
+            // At 100% a device pixel is one CSS px: half of it either side of the point.
+            expect(boxes.some((b) => inside(b, x!, y!, 0.5)), `${width}x${height} at (${x}, ${y})`).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it("paints the corner tiles over the strips, so the curve stays on top where they overlap", () => {
+    expect([...PIECE_PAINT_ORDER]).toEqual([4, 5, 6, 7, 0, 1, 2, 3]);
+    const [tl, , , , top] = pieceBoxes(300, 80, 25);
+    expect(top!.x).toBeLessThan(tl!.x + tl!.width);
   });
 });

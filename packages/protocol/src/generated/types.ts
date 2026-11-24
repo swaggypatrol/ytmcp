@@ -27,6 +27,10 @@ export type AgentActivityRequest =
     }
   | {
       action: "clearListeningIntent";
+      /**
+       * The intent as shown; one that replaced it since then is kept.
+       */
+      intentId?: string | null;
       intentKey: string;
     }
   | {
@@ -103,25 +107,28 @@ export type NetworkState = "online" | "offline" | "unknown";
  * via the `definition` "PlayerOp".
  */
 export type PlayerOp =
-  | "play"
-  | "pause"
-  | "toggle"
-  | "stop"
-  | "seek"
-  | "setVolume"
-  | "setMuted"
-  | "next"
-  | "previous"
-  | "playTarget"
-  | "playCollection"
-  | "setShuffle"
-  | "setRepeat"
-  | "setAutoplay"
-  | "enqueue"
-  | "selectQueueEntry"
-  | "removeQueueEntry"
-  | "clearUpcoming"
-  | "moveQueueEntry";
+  | (
+      | "play"
+      | "pause"
+      | "toggle"
+      | "stop"
+      | "seek"
+      | "setVolume"
+      | "setMuted"
+      | "next"
+      | "previous"
+      | "playTarget"
+      | "playCollection"
+      | "setShuffle"
+      | "setRepeat"
+      | "setAutoplay"
+      | "enqueue"
+      | "selectQueueEntry"
+      | "removeQueueEntry"
+      | "clearUpcoming"
+      | "moveQueueEntry"
+    )
+  | "setQueueFilter";
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "PlaybackStatus".
@@ -164,6 +171,13 @@ export type RequestId = string;
  * via the `definition` "CommandLifecycleStatus".
  */
 export type CommandLifecycleStatus = "accepted" | "dispatched" | "observed" | "failed" | "indeterminate" | "cancelled";
+/**
+ * The official page's own quality label of an audio stream (its LOW, MEDIUM and HIGH).
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "AudioQualityLevel".
+ */
+export type AudioQualityLevel = "low" | "standard" | "high";
 /**
  * Unique identifier for one authorized page bridge handshake.
  *
@@ -247,6 +261,11 @@ export type TrackInstanceId = string;
  * via the `definition` "QueueCompleteness".
  */
 export type QueueCompleteness = "unknown" | "partial" | "complete";
+/**
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "OfficialUpcomingStatus".
+ */
+export type OfficialUpcomingStatus = "observed" | "loading" | "off" | "radio" | "none";
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "CatalogQueryKind".
@@ -667,6 +686,11 @@ export interface CapabilitySet {
    */
   queueClear?: CapabilitySupport | null;
   queueEnqueue: CapabilitySupport;
+  /**
+   * The page offers Up Next filters that can be selected now. Selecting one replaces only
+   * YouTube Music's own suggestions; the current track and the explicit list are kept.
+   */
+  queueFilter?: CapabilitySupport | null;
   queueMirror: CapabilitySupport;
   queueRemove: CapabilitySupport;
   queueReorder: CapabilitySupport;
@@ -732,7 +756,21 @@ export interface QueryError {
  * via the `definition` "PlayerObservedState".
  */
 export interface PlayerObservedState {
+  /**
+   * The playing audio stream's average bit rate in kbit/s, from the same source.
+   */
+  audioBitrateKbps?: number | null;
+  /**
+   * The stream number (itag) of the audio stream now playing, as the official player's own
+   * statistics name it. It identifies the audio format; `quality_label` is a video label.
+   */
+  audioItag?: number | null;
   audioMode?: string | null;
+  /**
+   * How the official page itself labels the playing audio stream, read from its player
+   * response for that stream number. Absent when the page does not say.
+   */
+  audioQuality?: AudioQualityLevel | null;
   autoplay?: boolean | null;
   bridgeEpoch?: BridgeEpoch | null;
   /**
@@ -825,10 +863,59 @@ export interface PlaybackTimeAnchor {
 export interface QueueSummary {
   completeness: QueueCompleteness;
   currentEntryId?: QueueEntryId | null;
+  /**
+   * The Up Next filters the page offers now.
+   */
+  filters?: QueueFilter[] | null;
   hasMore?: boolean | null;
   loadedCount: number;
+  /**
+   * Absolute queue position of the first loaded entry, when the page reports it.
+   */
+  loadedStart?: number | null;
+  /**
+   * The page's own continuation after the explicit list, at most
+   * [`MAX_PREVIEW_OFFICIAL_UPCOMING`] tracks.
+   */
+  officialUpcoming?: OfficialUpcoming | null;
+  /**
+   * A slice of the loaded window anchored on the current occurrence: a few played entries
+   * before it, then what follows. Without a current occurrence it is the window's start.
+   */
   previewEntries?: QueueEntry[];
+  /**
+   * Index of the first preview entry within the loaded window.
+   */
+  previewStart?: number;
   queueRevision: number;
+}
+/**
+ * One Up Next filter as the page shows it. `filter_id` is opaque: it names this chip for the
+ * suggestions it steers (their seed), so an id read while other suggestions were offered, for
+ * example before the listener changed songs, matches nothing and is refused.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "QueueFilter".
+ */
+export interface QueueFilter {
+  filterId: string;
+  label: string;
+  selected: boolean;
+}
+/**
+ * YouTube Music's own continuation after the explicit list (its autoplay suggestions). These
+ * are read-only facts: they are not queue occurrences and cannot be selected, moved or removed
+ * through queue edits.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "OfficialUpcoming".
+ */
+export interface OfficialUpcoming {
+  status: OfficialUpcomingStatus;
+  /**
+   * Loaded suggestions in play order, at most [`MAX_OFFICIAL_UPCOMING`]; only for `observed`.
+   */
+  tracks?: Track[];
 }
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
@@ -885,7 +972,21 @@ export interface BridgeLifecyclePayload {
  * via the `definition` "BridgePlaybackObservedPayload".
  */
 export interface BridgePlaybackObservedPayload {
+  /**
+   * The playing audio stream's average bit rate in kbit/s, from the same source.
+   */
+  audioBitrateKbps?: number | null;
+  /**
+   * The stream number (itag) of the audio stream now playing, as the official player's own
+   * statistics name it. It identifies the audio format; `quality_label` is a video label.
+   */
+  audioItag?: number | null;
   audioMode?: string | null;
+  /**
+   * How the official page itself labels the playing audio stream, read from its player
+   * response for that stream number. Absent when the page does not say.
+   */
+  audioQuality?: AudioQualityLevel | null;
   autoplay?: boolean | null;
   bridgeEpoch: BridgeEpoch;
   /**
@@ -923,6 +1024,11 @@ export interface QueueSnapshot {
    * tail after it can still make `completeness` partial; the explicit end stays provable.
    */
   explicitComplete?: boolean | null;
+  /**
+   * The Up Next filters (steering chips) the page offers now, in its order. Absent when none
+   * are offered or they could not be read.
+   */
+  filters?: QueueFilter[] | null;
   hasMore?: boolean | null;
   loadedRange?: QueueRange | null;
   /**
@@ -931,6 +1037,11 @@ export interface QueueSnapshot {
    * after every entry has loaded, so it does not by itself mean that anything follows.
    */
   mayLoadMore?: boolean | null;
+  /**
+   * What the page plays after the explicit list on its own. Absent when the page state was
+   * not readable; never mixed into `entries`.
+   */
+  officialUpcoming?: OfficialUpcoming | null;
   queueRevision: number;
 }
 /**
@@ -1375,6 +1486,10 @@ export interface PlayerCommandArgs {
   muted?: boolean | null;
   positionMs?: number | null;
   queueEntryId?: QueueEntryId | null;
+  /**
+   * An Up Next filter id read from the current queue snapshot.
+   */
+  queueFilterId?: string | null;
   queueRevision?: number | null;
   repeat?: RepeatMode | null;
   shuffle?: boolean | null;

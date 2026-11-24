@@ -31,11 +31,27 @@
   const copy = $derived(t.agentActivity);
   /** The core lists this many preferences on a plain read; "Load more" adds the same again. */
   const DEFAULT_PREFERENCES_LIMIT = 50;
-  const phaseTone: Partial<Record<AgentOperationPhase, string>> = {
-    verified: "var(--status-success)",
-    unknown: "var(--status-warning)",
-    partial: "var(--status-warning)",
-    rejected: "var(--status-danger)",
+  type Outcome = "inProgress" | "done" | "partly" | "unconfirmed" | "refused" | "cancelled";
+  /**
+   * The core's pipeline phases in plain words: the in-flight steps are one "In progress", then
+   * one of the four outcomes (done, partly done, couldn't confirm, refused), or the cancel.
+   */
+  const phaseOutcome: Record<AgentOperationPhase, Outcome> = {
+    accepted: "inProgress",
+    submitted: "inProgress",
+    acknowledged: "inProgress",
+    verified: "done",
+    partial: "partly",
+    unknown: "unconfirmed",
+    rejected: "refused",
+    cancelled: "cancelled",
+  };
+  /** Aqua for done, Lemon for partly or unconfirmed, Peach for refused; the rest stay neutral. */
+  const outcomeTone: Partial<Record<Outcome, string>> = {
+    done: "var(--status-success)",
+    partly: "var(--status-warning)",
+    unconfirmed: "var(--status-warning)",
+    refused: "var(--status-danger)",
   };
 
   let saved = $state.raw<{ scope: string; snapshot: AgentActivitySnapshot } | null>(null);
@@ -57,8 +73,10 @@
     return (copy.resources as Record<string, string>)[resource] ?? resource;
   }
 
-  function actionLabel(operation: AgentOperationSummary): string | null {
-    return operation.action ? ((copy.actions as Record<string, string>)[operation.action] ?? null) : null;
+  /** What the assistant asked for, in plain words; never the operation's id. */
+  function actionLabel(operation: AgentOperationSummary): string {
+    const known = operation.action ? (copy.actions as Record<string, string>)[operation.action] : undefined;
+    return known ?? (operation.resource ? resourceLabel(operation.resource) : copy.otherAction);
   }
 
   function stanceLabel(preference: AgentPreferenceSummary): string {
@@ -174,13 +192,15 @@
   onDestroy(() => { destroyed = true; });
 </script>
 
-<section class="flex flex-col gap-5" aria-labelledby="agent-activity-heading" data-testid="view-agent-activity">
-  <div class="flex flex-wrap items-center justify-between gap-3">
-    <h1 id="agent-activity-heading" class="type-xl font-bold tracking-tight">{copy.title}</h1>
+<section class="browse-page" aria-labelledby="agent-activity-heading" data-testid="view-agent-activity">
+  <header class="browse-head page-hero flex flex-wrap items-center justify-between gap-3">
+    <h1 id="agent-activity-heading" class="browse-title">{copy.title}</h1>
     <button type="button" class="btn-secondary" disabled={busy || !visible} onclick={refresh}>
       {reading ? copy.refreshing : copy.refresh}
     </button>
-  </div>
+  </header>
+
+  <div class="flex flex-col gap-5">
 
   {#if actionError?.scope === scopeKey}
     <p class="type-sm" role="status" style="color: var(--status-warning);">
@@ -200,16 +220,17 @@
         {:else}
           <ul class="operation-list">
             {#each activity.operations as operation (JSON.stringify([operation.principal, operation.operationId]))}
+              {@const outcome = phaseOutcome[operation.phase] ?? "unconfirmed"}
               <li class="flex flex-col gap-2 py-3">
                 <div class="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
                   <div class="min-w-0 flex flex-col gap-0.5">
-                    <p class="type-sm font-medium wrap-anywhere">{actionLabel(operation) ?? operation.operationId}</p>
+                    <p class="type-sm font-medium wrap-anywhere">{actionLabel(operation)}</p>
                     <p class="type-xs wrap-anywhere" style="color: var(--text-secondary);">
-                      <span style="color: var(--agent);">{operation.principal}</span>{#if operation.resource} · {resourceLabel(operation.resource)}{/if}{#if actionLabel(operation)} · <span class="tabular-nums">{operation.operationId}</span>{/if}
+                      <span style="color: var(--agent);">{operation.principal}</span>{#if operation.resource} · {resourceLabel(operation.resource)}{/if}
                     </p>
                   </div>
-                  <span class="chip" style:color={phaseTone[operation.phase]} data-testid="agent-operation-phase">
-                    {copy.phases[operation.phase]}
+                  <span class="chip" style:color={outcomeTone[outcome]} data-testid="agent-operation-phase">
+                    {copy.outcomes[outcome]}
                   </span>
                 </div>
                 {#if awaitsAccountHandoff(operation)}
@@ -234,7 +255,7 @@
                         type="button"
                         class="btn-ghost"
                         disabled={actionsDisabled}
-                        aria-label={copy.cancelFor.replace("{principal}", operation.principal).replace("{operation}", operation.operationId)}
+                        aria-label={copy.cancelFor.replace("{principal}", operation.principal).replace("{operation}", actionLabel(operation))}
                         onclick={() => void act({ action: "cancel", principal: operation.principal, operationId: operation.operationId })}
                       >{copy.cancelOperation}</button>
                     {/if}
@@ -279,7 +300,7 @@
                   class="btn-ghost"
                   disabled={actionsDisabled}
                   aria-label={copy.clearIntentFor.replace("{summary}", intentLabel(intent))}
-                  onclick={() => void act({ action: "clearListeningIntent", intentKey: intent.intentKey })}
+                  onclick={() => void act({ action: "clearListeningIntent", intentKey: intent.intentKey, intentId: intent.intentId })}
                 >{copy.clearIntent}</button>
               </li>
             {/each}
@@ -341,6 +362,7 @@
   {:else if readError === null || readError !== scopeKey}
     <div class="state-block" role="status">{t.states.loading}</div>
   {/if}
+  </div>
 </section>
 
 <style>

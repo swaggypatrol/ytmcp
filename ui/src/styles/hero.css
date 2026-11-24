@@ -1,0 +1,143 @@
+/* Page hero and the ambient light (L1). */
+
+/* ---- Ambient light -------------------------------------------------------------------------
+   Fixed to the window, under the scroll container; pages only report which cover lights it
+   (HeroWash). A band along the top of the window, or the whole window for Now playing.
+
+   Any text can sit on the light, so the art is bounded in tone before it is blended, whatever
+   the cover. Primary and secondary text keep 4.5:1 on it at the breath's peak (strength x 0.94):
+   by night the art's range is compressed to 0.21-0.39 of full brightness (secondary text 4.6:1
+   on a white cover), by day to 0.64-0.96 (secondary 4.57:1 on a black one). These are
+   hand-computed for neutral greys (WCAG luminance, sRGB blending); saturation shifts them a
+   little. Muted text would drop to about 3:1 there, and holding it at 4.5:1 would take the
+   light's strength down to about 0.44 by night and 0.21 by day. The light is fixed and pages
+   scroll under it, so no part of a page is safe: muted text on pages uses the secondary tone
+   (below). Glass and dialogs are outside the page and keep their own muted tone. */
+:root {
+  --ambient-band: 320px;
+  --ambient-strength: 0.77;
+  --ambient-art-filter: blur(22px) contrast(0.3) brightness(0.6) saturate(1.6);
+}
+:root[data-theme="light"] {
+  --ambient-strength: 0.68;
+  /* Dark artwork would read as a grey smudge on the light canvas: compress its lightness into
+     the upper range (contrast, then brightness) and restore its chroma. */
+  --ambient-art-filter: blur(22px) contrast(0.2) brightness(1.6) saturate(1.8);
+}
+
+/* Outer: window-sized always, so its transition group never changes geometry. Scrolling dims
+   it (--ambient-scroll, written by AmbientLayer); nothing here ever moves. */
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-ambient);
+  overflow: hidden;
+  pointer-events: none;
+  opacity: calc(var(--ambient-strength) * var(--ambient-scroll, 1));
+  transition: opacity var(--duration-normal) ease-out;
+}
+
+/* The breath: one compositing layer, once per 9s while playing. When playback stops it holds
+   where it is rather than jumping back. */
+.ambient-breath {
+  position: absolute;
+  inset: 0;
+  opacity: 0.85;
+  transform-origin: 50% 0;
+}
+.ambient[data-full] .ambient-breath {
+  transform-origin: 50% 50%;
+}
+.ambient[data-motion="breathing"] .ambient-breath,
+.ambient[data-motion="still"] .ambient-breath {
+  animation: ambient-breath var(--duration-breath) ease-in-out infinite;
+  will-change: opacity, transform;
+}
+.ambient[data-motion="still"] .ambient-breath {
+  animation-play-state: paused;
+}
+@keyframes ambient-breath {
+  0%,
+  100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  25% {
+    opacity: 0.94;
+    transform: scale(1.035);
+  }
+  75% {
+    opacity: 0.66;
+    transform: scale(1);
+  }
+}
+
+/* One layer per light source. A new layer fades in over 900ms on top; the old ones fade out
+   beneath it (ease-in, so the sum barely dips) and are then removed. */
+.ambient-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--ambient-band);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 18%, transparent);
+  transition: opacity var(--duration-ambient) var(--ease-standard);
+}
+@starting-style {
+  .ambient-layer {
+    opacity: 0;
+  }
+}
+.ambient-layer.is-full {
+  height: 100%;
+  mask-image: none;
+}
+.ambient-layer[data-leaving] {
+  opacity: 0;
+  transition-timing-function: cubic-bezier(0.55, 0, 1, 0.45);
+}
+
+/* Drawn at a quarter of its size and scaled up: a wide, cheap blur that also hides its edges. */
+.ambient-art {
+  position: absolute;
+  left: -10%;
+  top: -10%;
+  width: 30%;
+  height: 30%;
+  display: flex;
+  transform: scale(4);
+  transform-origin: 0 0;
+  filter: var(--ambient-art-filter);
+}
+.ambient-art > img {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+}
+/* No usable cover: the theme's own three colours. */
+.ambient-art:empty {
+  background: linear-gradient(115deg, var(--swatch-raindrops-on-roses), var(--swatch-orchid-tint) 50%, var(--swatch-ice-melt));
+}
+
+/* Reduced motion: no breath, and a change of light is a quick fade. The selector outranks the
+   global reduced-motion reset, which would otherwise make the change instant. */
+.ambient[data-motion="reduced"] .ambient-breath {
+  animation: none;
+}
+.ambient[data-motion="reduced"] .ambient-layer {
+  transition-duration: var(--duration-fast) !important;
+}
+
+/* Any page text can sit on the light (see above), so page text has no tone below secondary. */
+.app-page {
+  --text-muted: var(--text-secondary);
+}
+
+/* ---- Page hero ---------------------------------------------------------------------------- */
+
+/* A page's header block. */
+.page-hero {
+  position: relative;
+}

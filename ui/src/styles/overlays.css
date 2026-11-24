@@ -1,0 +1,94 @@
+/* Layers above the page and the glass: toasts (L4) and dialogs (L5). */
+
+/* ---- Dialogs (L5) --------------------------------------------------------------------------
+   A plain scrim over the whole window, never a blur. The dialog centres in the content area, so
+   it never lies on the sidebar or the player bar (glass never lies on glass). AccessibleDialog
+   moves this layer to the shell, so a dialog opened from inside a page is still on top. */
+.app-dialog-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--shell-gap) + var(--space-16)) var(--space-16)
+    calc(var(--player-bar-height) + var(--shell-gap) * 2 + var(--space-16)) calc(var(--content-inset) + var(--space-16));
+  background-color: var(--scrim);
+  transition: background-color var(--duration-fast) ease-out !important;
+}
+@starting-style {
+  .app-dialog-layer { background-color: transparent; }
+}
+:root[data-reduce-motion="true"] .app-dialog-layer {
+  transition-duration: var(--duration-fast) !important;
+}
+.app-dialog-layer[data-leaving] {
+  background-color: transparent;
+  pointer-events: none;
+}
+
+/* ---- Toasts (L4) ---------------------------------------------------------------------------
+   Bottom centre of the content area, 12px above the player bar. One at a time: the leaving and
+   the entering toast share one grid cell, so neither pushes anything. */
+.toast-region {
+  position: fixed;
+  left: var(--content-inset);
+  right: 0;
+  bottom: calc(var(--shell-gap) + var(--player-bar-height) + var(--space-12));
+  z-index: var(--z-overlay);
+  display: grid;
+  justify-items: center;
+  padding-inline: var(--space-16);
+  pointer-events: none;
+}
+.toast {
+  grid-area: 1 / 1;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-12);
+  height: 44px;
+  max-width: min(420px, 100%);
+  padding: 0 var(--space-16);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+}
+.toast:has(.toast-action) {
+  padding-right: var(--space-4);
+}
+.toast-mark {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background-color: var(--text-secondary);
+}
+.toast[data-tone="success"] .toast-mark {
+  background-color: var(--status-success);
+}
+.toast[data-tone="warning"] .toast-mark {
+  background-color: var(--status-warning);
+}
+.toast[data-tone="danger"] .toast-mark {
+  background-color: var(--status-danger);
+}
+.toast[data-tone="agent"] .toast-mark {
+  background-color: var(--agent);
+}
+.toast-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toast-action {
+  flex: none;
+  height: 36px;
+  padding: 0 var(--space-12);
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  color: var(--text-primary);
+  background-color: var(--lg-fill-hover);
+  white-space: nowrap;
+  cursor: pointer;
+}

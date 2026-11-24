@@ -103,6 +103,11 @@ pub enum PendingOpPlan {
     SetAutoplay {
         enabled: bool,
     },
+    /// Observed once a queue snapshot shows this filter selected; the track, the explicit list
+    /// and its revision may change meanwhile without settling it either way.
+    SetQueueFilter {
+        filter_id: String,
+    },
     Enqueue(Option<EnqueuePlan>),
     /// `video_id` is the selected entry's video in the core's queue mirror when the command was
     /// accepted; `None` when the mirror did not hold the entry, which can then never be observed.
@@ -702,6 +707,15 @@ pub fn validate_command_payload(payload: &PlayerCommandPayload) -> Result<(), Qu
                 return Err(invalid("setAutoplay requires a boolean autoplay value"));
             }
         }
+        PlayerOp::SetQueueFilter => {
+            let id = payload
+                .args
+                .as_ref()
+                .and_then(|args| args.queue_filter_id.as_deref());
+            if !id.is_some_and(|id| !id.is_empty() && id.len() <= 64) {
+                return Err(invalid("setQueueFilter requires a queueFilterId"));
+            }
+        }
         PlayerOp::PlayTarget | PlayerOp::PlayCollection => {
             let Some(target) = payload.args.as_ref().and_then(|args| args.target.as_ref()) else {
                 return Err(invalid("playback requires a target"));
@@ -1048,6 +1062,24 @@ pub fn evaluate_active_command(
         }
         PendingOpPlan::SetAutoplay { enabled } => {
             if observed.autoplay == Some(*enabled) {
+                PlanEvaluation::ReadyToComplete {
+                    sets_stopped_confirmed: false,
+                    clears_stopped_confirmed: false,
+                    ungate_transaction_id: None,
+                }
+            } else {
+                PlanEvaluation::StillPending
+            }
+        }
+        PendingOpPlan::SetQueueFilter { filter_id } => {
+            let selected = full_queue
+                .and_then(|queue| queue.filters.as_ref())
+                .is_some_and(|filters| {
+                    filters
+                        .iter()
+                        .any(|filter| filter.selected && &filter.filter_id == filter_id)
+                });
+            if selected {
                 PlanEvaluation::ReadyToComplete {
                     sets_stopped_confirmed: false,
                     clears_stopped_confirmed: false,

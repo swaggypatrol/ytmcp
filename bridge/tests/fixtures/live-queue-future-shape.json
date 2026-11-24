@@ -1,0 +1,1444 @@
+{
+ "about": "Scrubbed structure of the official YouTube Music page's queue state, recorded 2026-11-23 by tools/probes/bridge/live-queue-future-entry.mjs (Electron 45.4.1, en UI). Strings are replaced by their length; no ids, titles, tokens or account data. Chip labels are the page's generic filter names.",
+ "singleSearchResult": {
+  "atMs": 15000,
+  "page": {
+   "queueKeys": {
+    "automixItems": "array(50)",
+    "autoplay": "boolean:true",
+    "hasShownAutoplay": "boolean:true",
+    "hasUserChangedDefaultAutoplayMode": "boolean:true",
+    "header": "object",
+    "impressedVideoIds": "object",
+    "isFetchingChipSteer": "boolean:false",
+    "isGenerating": "boolean:false",
+    "isInfinite": "boolean:false",
+    "isRaarEnabled": "boolean:true",
+    "isRaarSkip": "boolean:false",
+    "items": "array(1)",
+    "nextQueueItemId": "number:51",
+    "playbackContentMode": "string",
+    "queueContextParams": "string",
+    "repeatMode": "string",
+    "responsiveSignals": "object",
+    "selectedItemIndex": "number:0",
+    "shuffleEnabled": "boolean:false",
+    "shuffleEndpoints": "object",
+    "steeringChips": "object",
+    "watchNextType": "object:null"
+   },
+   "itemCount": 1,
+   "automixCount": 50,
+   "firstItemShape": {
+    "playlistPanelVideoRenderer": {
+     "title": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(44)"
+       }
+      }
+     },
+     "longBylineText": {
+      "runs": {
+       "array": 5,
+       "first": {
+        "text": "string(9)",
+        "navigationEndpoint": {
+         "clickTrackingParams": "string(48)",
+         "browseEndpoint": "object"
+        }
+       }
+      }
+     },
+     "thumbnail": {
+      "thumbnails": {
+       "array": 6,
+       "first": {
+        "url": "string(129)",
+        "width": "number:n",
+        "height": "number:n"
+       }
+      }
+     },
+     "lengthText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(4)"
+       }
+      },
+      "accessibility": {
+       "accessibilityData": {
+        "label": "string(20)"
+       }
+      }
+     },
+     "selected": "boolean:true",
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(80)",
+      "watchEndpoint": {
+       "videoId": "string(11)",
+       "params": "string(82)",
+       "playerParams": "string(54)",
+       "watchEndpointMusicSupportedConfigs": {
+        "watchEndpointMusicConfig": {
+         "hasPersistentPlaylistPanel": "boolean:true",
+         "musicVideoType": "string(20)"
+        }
+       },
+       "index": "number:n"
+      }
+     },
+     "videoId": "string(11)",
+     "shortBylineText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(9)"
+       }
+      }
+     },
+     "trackingParams": "string(40)",
+     "menu": {
+      "menuRenderer": {
+       "items": {
+        "array": 15,
+        "first": {
+         "menuNavigationItemRenderer": "object"
+        }
+       },
+       "trackingParams": "string(40)",
+       "accessibility": {
+        "accessibilityData": {
+         "label": "string(11)"
+        }
+       }
+      }
+     },
+     "canReorder": "boolean:true",
+     "playlistEditParams": "string(56)",
+     "queueNavigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueAddEndpoint": {
+       "queueTarget": {
+        "videoId": "string(11)",
+        "backingQueuePlaylistId": "string(35)"
+       },
+       "queueInsertPosition": "string(13)",
+       "params": "string(8)"
+      }
+     }
+    }
+   },
+   "firstAutomixShape": {
+    "playlistPanelVideoRenderer": {
+     "title": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(13)"
+       }
+      }
+     },
+     "longBylineText": {
+      "runs": {
+       "array": 5,
+       "first": {
+        "text": "string(9)",
+        "navigationEndpoint": {
+         "clickTrackingParams": "string(48)",
+         "browseEndpoint": "object"
+        }
+       }
+      }
+     },
+     "thumbnail": {
+      "thumbnails": {
+       "array": 6,
+       "first": {
+        "url": "string(129)",
+        "width": "number:n",
+        "height": "number:n"
+       }
+      }
+     },
+     "lengthText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(4)"
+       }
+      },
+      "accessibility": {
+       "accessibilityData": {
+        "label": "string(21)"
+       }
+      }
+     },
+     "selected": "boolean:false",
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(80)",
+      "watchEndpoint": {
+       "videoId": "string(11)",
+       "playlistId": "string(17)",
+       "index": "number:n",
+       "params": "string(88)",
+       "playerParams": "string(80)",
+       "playlistSetVideoId": "string(16)",
+       "loggingContext": {
+        "vssLoggingContext": {
+         "serializedContextData": "string(32)"
+        }
+       },
+       "watchEndpointMusicSupportedConfigs": {
+        "watchEndpointMusicConfig": {
+         "hasPersistentPlaylistPanel": "boolean:true",
+         "musicVideoType": "string(20)"
+        }
+       }
+      }
+     },
+     "videoId": "string(11)",
+     "shortBylineText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(9)"
+       }
+      }
+     },
+     "trackingParams": "string(40)",
+     "menu": {
+      "menuRenderer": {
+       "items": {
+        "array": 15,
+        "first": {
+         "menuNavigationItemRenderer": "object"
+        }
+       },
+       "trackingParams": "string(40)",
+       "accessibility": {
+        "accessibilityData": {
+         "label": "string(11)"
+        }
+       }
+      }
+     },
+     "playlistSetVideoId": "string(16)",
+     "canReorder": "boolean:true",
+     "playlistEditParams": "string(56)",
+     "queueNavigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueAddEndpoint": {
+       "queueTarget": {
+        "videoId": "string(11)",
+        "backingQueuePlaylistId": "string(35)"
+       },
+       "queueInsertPosition": "string(13)",
+       "params": "string(8)"
+      }
+     }
+    }
+   },
+   "lastAutomixShape": {
+    "playlistPanelVideoRenderer": {
+     "title": {
+      "runs": "array(1)"
+     },
+     "longBylineText": {
+      "runs": "array(5)"
+     },
+     "thumbnail": {
+      "thumbnails": "array(3)"
+     },
+     "lengthText": {
+      "runs": "array(1)",
+      "accessibility": "object"
+     },
+     "selected": "boolean:false",
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(80)",
+      "watchEndpoint": "object"
+     },
+     "videoId": "string(11)",
+     "shortBylineText": {
+      "runs": "array(1)"
+     },
+     "trackingParams": "string(40)",
+     "menu": {
+      "menuRenderer": "object"
+     },
+     "playlistSetVideoId": "string(16)",
+     "canReorder": "boolean:true",
+     "playlistEditParams": "string(56)",
+     "queueNavigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueAddEndpoint": "object"
+     }
+    }
+   },
+   "responsesShape": null,
+   "steeringChipsShape": {
+    "chips": {
+     "array": 13,
+     "first": {
+      "chipCloudChipRenderer": {
+       "text": {
+        "runs": {
+         "array": 1,
+         "first": {
+          "text": "string(3)"
+         }
+        }
+       },
+       "navigationEndpoint": {
+        "clickTrackingParams": "string(48)",
+        "queueUpdateCommand": {
+         "queueUpdateSection": "string(29)",
+         "fetchContentsCommand": {
+          "clickTrackingParams": "string(48)",
+          "watchEndpoint": {
+           "playlistId": "string(17)",
+           "params": "string(84)",
+           "playerParams": "string(16)",
+           "loggingContext": "object",
+           "index": "number:n"
+          }
+         },
+         "dedupeAgainstLocalQueue": "boolean:true",
+         "syncMode": "string(43)"
+        }
+       },
+       "trackingParams": "string(40)",
+       "accessibilityData": {
+        "accessibilityData": {
+         "label": "string(3)"
+        }
+       },
+       "isSelected": "boolean:true",
+       "uniqueId": "string(3)"
+      }
+     }
+    },
+    "trackingParams": "string(36)",
+    "selectionBehavior": "string(59)"
+   },
+   "headerShape": {
+    "title": {
+     "runs": {
+      "array": 1,
+      "first": {
+       "text": "string(12)"
+      }
+     }
+    },
+    "subtitle": {
+     "runs": {
+      "array": 1,
+      "first": {
+       "text": "string(48)"
+      }
+     }
+    },
+    "buttons": {
+     "array": 1,
+     "first": {
+      "chipCloudChipRenderer": {
+       "style": "object",
+       "text": "object",
+       "navigationEndpoint": "object",
+       "trackingParams": "string(40)",
+       "icon": "object",
+       "accessibilityData": "object",
+       "isSelected": "boolean:false",
+       "uniqueId": "string(4)"
+      }
+     }
+    },
+    "trackingParams": "string(36)"
+   },
+   "isGenerating": false,
+   "selectedItemIndex": 0,
+   "pendingAutomixFetch": false,
+   "currentInAutomix": -1,
+   "currentInItems": 0,
+   "elementQueueKeys": [
+    "JSC$13068_queueApi",
+    "serverQueueApi",
+    "playerApi",
+    "store",
+    "prefStoragePromise",
+    "JSC$13068_mdxService",
+    "continuation",
+    "pendingFetchItemsRequest",
+    "pendingFetchAutomixItemsRequest",
+    "pendingRemoteQueueRequest",
+    "pendingMetadataVideoId",
+    "defaultAutoplayMode",
+    "blockPlaybackAutostart",
+    "autoPlaying",
+    "JSC$13068_shortcutManager",
+    "commentEngagementService",
+    "unblockPlaybackAutostart"
+   ],
+   "elementAutoPlaying": false,
+   "hasContinuation": true,
+   "automixSwitch": {
+    "checked": true,
+    "ariaChecked": null,
+    "disabled": false
+   },
+   "chips": [
+    {
+     "label": "Save",
+     "selected": false
+    },
+    {
+     "label": "All",
+     "selected": true
+    },
+    {
+     "label": "Familiar",
+     "selected": false
+    },
+    {
+     "label": "Popular",
+     "selected": false
+    },
+    {
+     "label": "Discover",
+     "selected": false
+    },
+    {
+     "label": "Deep cuts",
+     "selected": false
+    },
+    {
+     "label": "2010s",
+     "selected": false
+    },
+    {
+     "label": "2020s",
+     "selected": false
+    },
+    {
+     "label": "Workout",
+     "selected": false
+    },
+    {
+     "label": "Electronic",
+     "selected": false
+    },
+    {
+     "label": "Focus",
+     "selected": false
+    },
+    {
+     "label": "Instrumental",
+     "selected": false
+    },
+    {
+     "label": "Sleep",
+     "selected": false
+    },
+    {
+     "label": "Soundtracks",
+     "selected": false
+    }
+   ],
+   "chipContainers": [
+    "ytmusic-tab-renderer",
+    "ytmusic-player-queue"
+   ],
+   "chipDataShapes": {
+    "save": {
+     "style": {
+      "styleType": "string(17)"
+     },
+     "text": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(4)"
+       }
+      }
+     },
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "saveQueueToPlaylistCommand": {}
+     },
+     "trackingParams": "string(40)",
+     "icon": {
+      "iconType": "string(15)"
+     },
+     "accessibilityData": {
+      "accessibilityData": {
+       "label": "string(4)"
+      }
+     },
+     "isSelected": "boolean:false",
+     "uniqueId": "string(4)"
+    },
+    "filter": {
+     "text": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(3)"
+       }
+      }
+     },
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueUpdateCommand": {
+       "queueUpdateSection": "string(29)",
+       "fetchContentsCommand": {
+        "clickTrackingParams": "string(48)",
+        "watchEndpoint": {
+         "playlistId": "string(17)",
+         "params": "string(84)",
+         "playerParams": "string(16)",
+         "loggingContext": {
+          "vssLoggingContext": {
+           "serializedContextData": "string(32)"
+          }
+         },
+         "index": "number:n"
+        }
+       },
+       "dedupeAgainstLocalQueue": "boolean:true",
+       "syncMode": "string(43)"
+      }
+     },
+     "trackingParams": "string(40)",
+     "accessibilityData": {
+      "accessibilityData": {
+       "label": "string(3)"
+      }
+     },
+     "isSelected": "boolean:true",
+     "uniqueId": "string(3)"
+    }
+   }
+  },
+  "bridge": {
+   "entries": 1,
+   "currentInWindow": true,
+   "currentIndex": 0,
+   "loadedRange": {
+    "start": 0,
+    "endExclusive": 1
+   },
+   "completeness": "partial",
+   "hasMore": true,
+   "explicitComplete": true,
+   "mayLoadMore": true
+  },
+  "capabilities": {
+   "queueClear": null
+  },
+  "autoplay": true
+ },
+ "afterSingleTrackEndedIntoAutoplay": {
+  "atMs": 15000,
+  "page": {
+   "queueKeys": {
+    "automixItems": "array(49)",
+    "autoplay": "boolean:true",
+    "hasShownAutoplay": "boolean:true",
+    "hasUserChangedDefaultAutoplayMode": "boolean:true",
+    "header": "object",
+    "impressedVideoIds": "object",
+    "isFetchingChipSteer": "boolean:false",
+    "isGenerating": "boolean:false",
+    "isInfinite": "boolean:false",
+    "isRaarEnabled": "boolean:true",
+    "isRaarSkip": "boolean:false",
+    "items": "array(2)",
+    "nextQueueItemId": "number:51",
+    "playbackContentMode": "string",
+    "queueContextParams": "string",
+    "repeatMode": "string",
+    "responsiveSignals": "object",
+    "selectedItemIndex": "number:1",
+    "shuffleEnabled": "boolean:false",
+    "shuffleEndpoints": "object",
+    "steeringChips": "object",
+    "watchNextType": "object:null"
+   },
+   "itemCount": 2,
+   "automixCount": 49,
+   "firstItemShape": {
+    "playlistPanelVideoRenderer": {
+     "title": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(44)"
+       }
+      }
+     },
+     "longBylineText": {
+      "runs": {
+       "array": 5,
+       "first": {
+        "text": "string(9)",
+        "navigationEndpoint": {
+         "clickTrackingParams": "string(48)",
+         "browseEndpoint": "object"
+        }
+       }
+      }
+     },
+     "thumbnail": {
+      "thumbnails": {
+       "array": 6,
+       "first": {
+        "url": "string(129)",
+        "width": "number:n",
+        "height": "number:n"
+       }
+      }
+     },
+     "lengthText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(4)"
+       }
+      },
+      "accessibility": {
+       "accessibilityData": {
+        "label": "string(20)"
+       }
+      }
+     },
+     "selected": "boolean:false",
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(80)",
+      "watchEndpoint": {
+       "videoId": "string(11)",
+       "params": "string(82)",
+       "playerParams": "string(54)",
+       "watchEndpointMusicSupportedConfigs": {
+        "watchEndpointMusicConfig": {
+         "hasPersistentPlaylistPanel": "boolean:true",
+         "musicVideoType": "string(20)"
+        }
+       },
+       "index": "number:n"
+      }
+     },
+     "videoId": "string(11)",
+     "shortBylineText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(9)"
+       }
+      }
+     },
+     "trackingParams": "string(40)",
+     "menu": {
+      "menuRenderer": {
+       "items": {
+        "array": 15,
+        "first": {
+         "menuNavigationItemRenderer": "object"
+        }
+       },
+       "trackingParams": "string(40)",
+       "accessibility": {
+        "accessibilityData": {
+         "label": "string(11)"
+        }
+       }
+      }
+     },
+     "canReorder": "boolean:true",
+     "playlistEditParams": "string(56)",
+     "queueNavigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueAddEndpoint": {
+       "queueTarget": {
+        "videoId": "string(11)",
+        "backingQueuePlaylistId": "string(35)"
+       },
+       "queueInsertPosition": "string(13)",
+       "params": "string(8)"
+      }
+     }
+    }
+   },
+   "firstAutomixShape": {
+    "playlistPanelVideoRenderer": {
+     "title": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(13)"
+       }
+      }
+     },
+     "longBylineText": {
+      "runs": {
+       "array": 5,
+       "first": {
+        "text": "string(10)",
+        "navigationEndpoint": {
+         "clickTrackingParams": "string(48)",
+         "browseEndpoint": "object"
+        }
+       }
+      }
+     },
+     "thumbnail": {
+      "thumbnails": {
+       "array": 6,
+       "first": {
+        "url": "string(128)",
+        "width": "number:n",
+        "height": "number:n"
+       }
+      }
+     },
+     "lengthText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(4)"
+       }
+      },
+      "accessibility": {
+       "accessibilityData": {
+        "label": "string(21)"
+       }
+      }
+     },
+     "selected": "boolean:false",
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(80)",
+      "watchEndpoint": {
+       "videoId": "string(11)",
+       "playlistId": "string(17)",
+       "index": "number:n",
+       "params": "string(88)",
+       "playerParams": "string(80)",
+       "playlistSetVideoId": "string(16)",
+       "loggingContext": {
+        "vssLoggingContext": {
+         "serializedContextData": "string(32)"
+        }
+       },
+       "watchEndpointMusicSupportedConfigs": {
+        "watchEndpointMusicConfig": {
+         "hasPersistentPlaylistPanel": "boolean:true",
+         "musicVideoType": "string(20)"
+        }
+       }
+      }
+     },
+     "videoId": "string(11)",
+     "shortBylineText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(10)"
+       }
+      }
+     },
+     "trackingParams": "string(40)",
+     "menu": {
+      "menuRenderer": {
+       "items": {
+        "array": 15,
+        "first": {
+         "menuNavigationItemRenderer": "object"
+        }
+       },
+       "trackingParams": "string(40)",
+       "accessibility": {
+        "accessibilityData": {
+         "label": "string(11)"
+        }
+       }
+      }
+     },
+     "playlistSetVideoId": "string(16)",
+     "canReorder": "boolean:true",
+     "playlistEditParams": "string(56)",
+     "queueNavigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueAddEndpoint": {
+       "queueTarget": {
+        "videoId": "string(11)",
+        "backingQueuePlaylistId": "string(35)"
+       },
+       "queueInsertPosition": "string(13)",
+       "params": "string(8)"
+      }
+     }
+    }
+   },
+   "lastAutomixShape": {
+    "playlistPanelVideoRenderer": {
+     "title": {
+      "runs": "array(1)"
+     },
+     "longBylineText": {
+      "runs": "array(5)"
+     },
+     "thumbnail": {
+      "thumbnails": "array(3)"
+     },
+     "lengthText": {
+      "runs": "array(1)",
+      "accessibility": "object"
+     },
+     "selected": "boolean:false",
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(80)",
+      "watchEndpoint": "object"
+     },
+     "videoId": "string(11)",
+     "shortBylineText": {
+      "runs": "array(1)"
+     },
+     "trackingParams": "string(40)",
+     "menu": {
+      "menuRenderer": "object"
+     },
+     "playlistSetVideoId": "string(16)",
+     "canReorder": "boolean:true",
+     "playlistEditParams": "string(56)",
+     "queueNavigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueAddEndpoint": "object"
+     }
+    }
+   },
+   "responsesShape": null,
+   "steeringChipsShape": {
+    "chips": {
+     "array": 13,
+     "first": {
+      "chipCloudChipRenderer": {
+       "text": {
+        "runs": {
+         "array": 1,
+         "first": {
+          "text": "string(3)"
+         }
+        }
+       },
+       "navigationEndpoint": {
+        "clickTrackingParams": "string(48)",
+        "queueUpdateCommand": {
+         "queueUpdateSection": "string(29)",
+         "fetchContentsCommand": {
+          "clickTrackingParams": "string(48)",
+          "watchEndpoint": {
+           "playlistId": "string(17)",
+           "params": "string(84)",
+           "playerParams": "string(16)",
+           "loggingContext": "object",
+           "index": "number:n"
+          }
+         },
+         "dedupeAgainstLocalQueue": "boolean:true",
+         "syncMode": "string(43)"
+        }
+       },
+       "trackingParams": "string(40)",
+       "accessibilityData": {
+        "accessibilityData": {
+         "label": "string(3)"
+        }
+       },
+       "isSelected": "boolean:true",
+       "uniqueId": "string(3)"
+      }
+     }
+    },
+    "trackingParams": "string(36)",
+    "selectionBehavior": "string(59)"
+   },
+   "headerShape": {
+    "title": {
+     "runs": {
+      "array": 1,
+      "first": {
+       "text": "string(12)"
+      }
+     }
+    },
+    "subtitle": {
+     "runs": {
+      "array": 1,
+      "first": {
+       "text": "string(48)"
+      }
+     }
+    },
+    "buttons": {
+     "array": 1,
+     "first": {
+      "chipCloudChipRenderer": {
+       "style": "object",
+       "text": "object",
+       "navigationEndpoint": "object",
+       "trackingParams": "string(40)",
+       "icon": "object",
+       "accessibilityData": "object",
+       "isSelected": "boolean:false",
+       "uniqueId": "string(4)"
+      }
+     }
+    },
+    "trackingParams": "string(36)"
+   },
+   "isGenerating": false,
+   "selectedItemIndex": 1,
+   "pendingAutomixFetch": false,
+   "currentInAutomix": -1,
+   "currentInItems": 1,
+   "elementQueueKeys": [
+    "JSC$13068_queueApi",
+    "serverQueueApi",
+    "playerApi",
+    "store",
+    "prefStoragePromise",
+    "JSC$13068_mdxService",
+    "continuation",
+    "pendingFetchItemsRequest",
+    "pendingFetchAutomixItemsRequest",
+    "pendingRemoteQueueRequest",
+    "pendingMetadataVideoId",
+    "defaultAutoplayMode",
+    "blockPlaybackAutostart",
+    "autoPlaying",
+    "JSC$13068_shortcutManager",
+    "commentEngagementService",
+    "unblockPlaybackAutostart"
+   ],
+   "elementAutoPlaying": true,
+   "hasContinuation": true,
+   "automixSwitch": {
+    "checked": true,
+    "ariaChecked": null,
+    "disabled": false
+   },
+   "chips": [
+    {
+     "label": "Save",
+     "selected": false
+    },
+    {
+     "label": "All",
+     "selected": true
+    },
+    {
+     "label": "Familiar",
+     "selected": false
+    },
+    {
+     "label": "Popular",
+     "selected": false
+    },
+    {
+     "label": "Discover",
+     "selected": false
+    },
+    {
+     "label": "Deep cuts",
+     "selected": false
+    },
+    {
+     "label": "2010s",
+     "selected": false
+    },
+    {
+     "label": "2020s",
+     "selected": false
+    },
+    {
+     "label": "Workout",
+     "selected": false
+    },
+    {
+     "label": "Electronic",
+     "selected": false
+    },
+    {
+     "label": "Focus",
+     "selected": false
+    },
+    {
+     "label": "Instrumental",
+     "selected": false
+    },
+    {
+     "label": "Sleep",
+     "selected": false
+    },
+    {
+     "label": "Soundtracks",
+     "selected": false
+    }
+   ],
+   "chipContainers": [
+    "ytmusic-tab-renderer",
+    "ytmusic-player-queue"
+   ],
+   "chipDataShapes": {
+    "save": {
+     "style": {
+      "styleType": "string(17)"
+     },
+     "text": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(4)"
+       }
+      }
+     },
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "saveQueueToPlaylistCommand": {}
+     },
+     "trackingParams": "string(40)",
+     "icon": {
+      "iconType": "string(15)"
+     },
+     "accessibilityData": {
+      "accessibilityData": {
+       "label": "string(4)"
+      }
+     },
+     "isSelected": "boolean:false",
+     "uniqueId": "string(4)"
+    },
+    "filter": {
+     "text": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(3)"
+       }
+      }
+     },
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueUpdateCommand": {
+       "queueUpdateSection": "string(29)",
+       "fetchContentsCommand": {
+        "clickTrackingParams": "string(48)",
+        "watchEndpoint": {
+         "playlistId": "string(17)",
+         "params": "string(84)",
+         "playerParams": "string(16)",
+         "loggingContext": {
+          "vssLoggingContext": {
+           "serializedContextData": "string(32)"
+          }
+         },
+         "index": "number:n"
+        }
+       },
+       "dedupeAgainstLocalQueue": "boolean:true",
+       "syncMode": "string(43)"
+      }
+     },
+     "trackingParams": "string(40)",
+     "accessibilityData": {
+      "accessibilityData": {
+       "label": "string(3)"
+      }
+     },
+     "isSelected": "boolean:true",
+     "uniqueId": "string(3)"
+    }
+   }
+  },
+  "bridge": {
+   "entries": 2,
+   "currentInWindow": true,
+   "currentIndex": 1,
+   "loadedRange": {
+    "start": 0,
+    "endExclusive": 2
+   },
+   "completeness": "partial",
+   "hasMore": true,
+   "explicitComplete": true,
+   "mayLoadMore": true
+  },
+  "capabilities": {
+   "queueClear": null
+  },
+  "autoplay": true
+ },
+ "publicRadio": {
+  "atMs": 15000,
+  "page": {
+   "queueKeys": {
+    "automixItems": "array(0)",
+    "autoplay": "boolean:true",
+    "hasShownAutoplay": "boolean:false",
+    "hasUserChangedDefaultAutoplayMode": "boolean:true",
+    "header": "object",
+    "impressedVideoIds": "object",
+    "isFetchingChipSteer": "boolean:false",
+    "isGenerating": "boolean:false",
+    "isInfinite": "boolean:true",
+    "isRaarEnabled": "boolean:true",
+    "isRaarSkip": "boolean:false",
+    "items": "array(50)",
+    "nextQueueItemId": "number:50",
+    "playbackContentMode": "string",
+    "queueContextParams": "string",
+    "repeatMode": "string",
+    "responsiveSignals": "object",
+    "selectedItemIndex": "number:0",
+    "shuffleEnabled": "boolean:false",
+    "shuffleEndpoints": "object",
+    "steeringChips": "object",
+    "watchNextType": "object:null"
+   },
+   "itemCount": 50,
+   "automixCount": 0,
+   "firstItemShape": {
+    "playlistPanelVideoRenderer": {
+     "title": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(44)"
+       }
+      }
+     },
+     "longBylineText": {
+      "runs": {
+       "array": 5,
+       "first": {
+        "text": "string(9)",
+        "navigationEndpoint": {
+         "clickTrackingParams": "string(48)",
+         "browseEndpoint": "object"
+        }
+       }
+      }
+     },
+     "thumbnail": {
+      "thumbnails": {
+       "array": 6,
+       "first": {
+        "url": "string(129)",
+        "width": "number:n",
+        "height": "number:n"
+       }
+      }
+     },
+     "lengthText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(4)"
+       }
+      },
+      "accessibility": {
+       "accessibilityData": {
+        "label": "string(20)"
+       }
+      }
+     },
+     "selected": "boolean:true",
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(80)",
+      "watchEndpoint": {
+       "videoId": "string(11)",
+       "params": "string(82)",
+       "playerParams": "string(54)",
+       "watchEndpointMusicSupportedConfigs": {
+        "watchEndpointMusicConfig": {
+         "hasPersistentPlaylistPanel": "boolean:true",
+         "musicVideoType": "string(20)"
+        }
+       },
+       "index": "number:n"
+      }
+     },
+     "videoId": "string(11)",
+     "shortBylineText": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(9)"
+       }
+      }
+     },
+     "trackingParams": "string(40)",
+     "menu": {
+      "menuRenderer": {
+       "items": {
+        "array": 15,
+        "first": {
+         "menuNavigationItemRenderer": "object"
+        }
+       },
+       "trackingParams": "string(40)",
+       "accessibility": {
+        "accessibilityData": {
+         "label": "string(11)"
+        }
+       }
+      }
+     },
+     "canReorder": "boolean:true",
+     "playlistEditParams": "string(56)",
+     "queueNavigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueAddEndpoint": {
+       "queueTarget": {
+        "videoId": "string(11)",
+        "backingQueuePlaylistId": "string(35)"
+       },
+       "queueInsertPosition": "string(13)",
+       "params": "string(8)"
+      }
+     }
+    }
+   },
+   "firstAutomixShape": "undefined",
+   "lastAutomixShape": null,
+   "responsesShape": null,
+   "elementQueueKeys": [
+    "JSC$13068_queueApi",
+    "serverQueueApi",
+    "playerApi",
+    "store",
+    "prefStoragePromise",
+    "JSC$13068_mdxService",
+    "continuation",
+    "pendingFetchItemsRequest",
+    "pendingFetchAutomixItemsRequest",
+    "pendingRemoteQueueRequest",
+    "pendingMetadataVideoId",
+    "defaultAutoplayMode",
+    "blockPlaybackAutostart",
+    "autoPlaying",
+    "JSC$13068_shortcutManager",
+    "commentEngagementService"
+   ],
+   "elementAutoPlaying": false,
+   "hasContinuation": true,
+   "automixSwitch": {
+    "checked": true,
+    "ariaChecked": null,
+    "disabled": false
+   },
+   "chips": [
+    {
+     "label": "Save",
+     "selected": false
+    },
+    {
+     "label": "All",
+     "selected": true
+    },
+    {
+     "label": "Familiar",
+     "selected": false
+    },
+    {
+     "label": "Popular",
+     "selected": false
+    },
+    {
+     "label": "Discover",
+     "selected": false
+    },
+    {
+     "label": "Deep cuts",
+     "selected": false
+    },
+    {
+     "label": "2010s",
+     "selected": false
+    },
+    {
+     "label": "2020s",
+     "selected": false
+    },
+    {
+     "label": "Workout",
+     "selected": false
+    },
+    {
+     "label": "2000s",
+     "selected": false
+    },
+    {
+     "label": "Electronic",
+     "selected": false
+    },
+    {
+     "label": "Focus",
+     "selected": false
+    },
+    {
+     "label": "Instrumental",
+     "selected": false
+    },
+    {
+     "label": "Sleep",
+     "selected": false
+    },
+    {
+     "label": "All",
+     "selected": true
+    },
+    {
+     "label": "Familiar",
+     "selected": false
+    },
+    {
+     "label": "Popular",
+     "selected": false
+    },
+    {
+     "label": "Discover",
+     "selected": false
+    },
+    {
+     "label": "Deep cuts",
+     "selected": false
+    },
+    {
+     "label": "2010s",
+     "selected": false
+    },
+    {
+     "label": "2020s",
+     "selected": false
+    },
+    {
+     "label": "Workout",
+     "selected": false
+    },
+    {
+     "label": "2000s",
+     "selected": false
+    },
+    {
+     "label": "Electronic",
+     "selected": false
+    },
+    {
+     "label": "Focus",
+     "selected": false
+    },
+    {
+     "label": "Instrumental",
+     "selected": false
+    },
+    {
+     "label": "Sleep",
+     "selected": false
+    }
+   ],
+   "chipContainers": [
+    "ytmusic-tab-renderer",
+    "ytmusic-player-queue"
+   ],
+   "chipDataShapes": {
+    "save": {
+     "style": {
+      "styleType": "string(17)"
+     },
+     "text": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(4)"
+       }
+      }
+     },
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "saveQueueToPlaylistCommand": {}
+     },
+     "trackingParams": "string(40)",
+     "icon": {
+      "iconType": "string(15)"
+     },
+     "accessibilityData": {
+      "accessibilityData": {
+       "label": "string(4)"
+      }
+     },
+     "isSelected": "boolean:false",
+     "uniqueId": "string(4)"
+    },
+    "filter": {
+     "text": {
+      "runs": {
+       "array": 1,
+       "first": {
+        "text": "string(3)"
+       }
+      }
+     },
+     "navigationEndpoint": {
+      "clickTrackingParams": "string(48)",
+      "queueUpdateCommand": {
+       "queueUpdateSection": "string(26)",
+       "fetchContentsCommand": {
+        "clickTrackingParams": "string(48)",
+        "watchEndpoint": {
+         "playlistId": "string(17)",
+         "params": "string(74)",
+         "loggingContext": {
+          "vssLoggingContext": {
+           "serializedContextData": "string(32)"
+          }
+         },
+         "index": "number:n"
+        }
+       },
+       "dedupeAgainstLocalQueue": "boolean:true",
+       "syncMode": "string(43)"
+      }
+     },
+     "trackingParams": "string(40)",
+     "accessibilityData": {
+      "accessibilityData": {
+       "label": "string(3)"
+      }
+     },
+     "isSelected": "boolean:true",
+     "uniqueId": "string(3)"
+    }
+   }
+  },
+  "bridge": {
+   "entries": 50,
+   "currentInWindow": true,
+   "currentIndex": 0,
+   "loadedRange": {
+    "start": 0,
+    "endExclusive": 50
+   },
+   "completeness": "partial",
+   "hasMore": true,
+   "explicitComplete": false,
+   "mayLoadMore": true
+  },
+  "capabilities": {
+   "queueClear": null
+  },
+  "autoplay": true
+ }
+}
