@@ -2,7 +2,7 @@
 
 Versions are `<app version>-<package revision>`; see [docs/building.md](docs/building.md#versioning).
 
-## Unreleased
+## 1.3.0-1
 
 - **A window that uses its space.** The layout follows the width of the content area in four steps instead of stretching one narrow column: on a 1920-wide window the page is over 1500 wide. A list is the page itself, with one scrollbar, running under the player bar; lists and the library load further as you scroll, with no **Load more** buttons. From 880 px of content width, writable rows with a known rating have a heart beside the duration. Use the row menu in a narrower window.
 - **Light that stays put.** The colour behind the page comes from the cover and now belongs to the window: it no longer scrolls away with the page or flashes over the sidebar when pages change. It breathes slowly while music plays and rests when paused or hidden.

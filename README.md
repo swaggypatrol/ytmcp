@@ -67,10 +67,10 @@ That's the whole remote control. The agent you already talk to, Claude Code or a
 
 YTMcp is made for Arch-based Linux with KDE Plasma 6 on Wayland; other setups are untested. You need a YouTube Music account and an AI agent that speaks MCP, such as Claude Code.
 
-**1. Install it.** Download `ytmcp-1.2.0-1-x86_64.pkg.tar.zst` from [Releases](https://github.com/swaggypatrol/ytmcp/releases) and install it with pacman:
+**1. Install it.** Download `ytmcp-1.3.0-1-x86_64.pkg.tar.zst` from [Releases](https://github.com/swaggypatrol/ytmcp/releases) and install it with pacman:
 
 ```sh
-sudo pacman -U ytmcp-1.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ytmcp-1.3.0-1-x86_64.pkg.tar.zst
 ```
 
 Or build the Arch package from this repository (prerequisites in [docs/building.md](docs/building.md)):

@@ -87,7 +87,7 @@ Evidence files are redacted before they are written: titles, account identifiers
 
 ## Versioning
 
-The application version (`1.2.0`) is kept in `config/app-identity.json`, `package.json` and the Cargo manifests; the Arch package revision (`pkgrel`) in `packaging/PKGBUILD` counts builds of that version, so releases are named `1.2.0-N`. [CHANGELOG.md](../CHANGELOG.md) has one section per release. When updating Electron, Rust or pnpm, update the pinned version and checksum, regenerate the license notices, run the offline gates, then rerun the affected live checks with a new package. When the official page changes, add a minimal scrubbed fixture under `bridge/` and cover ready, lifecycle, control observation, queue and failure behavior; catalog shape changes are covered in `crates/ytm-data/`.
+The application version (`1.3.0`) is kept in `config/app-identity.json`, `package.json` and the Cargo manifests; the Arch package revision (`pkgrel`) in `packaging/PKGBUILD` counts builds of that version, so releases are named `1.3.0-N`. [CHANGELOG.md](../CHANGELOG.md) has one section per release. When updating Electron, Rust or pnpm, update the pinned version and checksum, regenerate the license notices, run the offline gates, then rerun the affected live checks with a new package. When the official page changes, add a minimal scrubbed fixture under `bridge/` and cover ready, lifecycle, control observation, queue and failure behavior; catalog shape changes are covered in `crates/ytm-data/`.
 
 ## Data, logs and troubleshooting
 
