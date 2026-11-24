@@ -4632,4 +4632,110 @@ async fn launch_autoplay_honors_setting_when_page_self_restores_and_manual_pause
         );
         h.engine.shutdown().await.unwrap();
     }
+
+    // 5. Controlled daemon restart (core_restart_count > 0) must NOT re-trigger autoplayOnLaunch
+    //    either on page self-restore or saved-track restore.
+    {
+        let h = engine_with_storage(RecordingStorage::default(), true).await;
+        h.engine
+            .on_host_hello(ytm_protocol::HostHelloPayload {
+                app_version: "1.2.0".to_string(),
+                electron_version: "45.4.1".to_string(),
+                chromium_version: "136.0".to_string(),
+                host_health: ytm_protocol::HostHealth {
+                    wayland_native: Some(true),
+                    gpu_accelerated: Some(true),
+                    sandbox_enabled: true,
+                    secret_store_backend: "kwallet".to_string(),
+                    safe_storage_available: true,
+                    tray_available: true,
+                    mpris_active: true,
+                    core_restart_count: 1,
+                    last_error: Some("unexpected daemon exit".to_string()),
+                },
+                network_state: NetworkState::Online,
+                mock_mode: false,
+            })
+            .await
+            .unwrap();
+        sign_in(&h.engine).await;
+        init_ready_bridge(&h.engine, "bridge-1", 1).await;
+        assert!(
+            h.engine
+                .on_bridge_queue_observed(
+                    2,
+                    QueueSnapshot {
+                        bridge_epoch: Some(BridgeEpoch::new("bridge-1").unwrap()),
+                        queue_revision: 1,
+                        current_entry_id: Some(QueueEntryId::new("qe-r").unwrap()),
+                        loaded_range: None,
+                        completeness: ytm_protocol::QueueCompleteness::Complete,
+                        has_more: Some(false),
+                        explicit_complete: Some(true),
+                        may_load_more: Some(false),
+                        entries: vec![QueueEntry {
+                            entry_id: QueueEntryId::new("qe-r").unwrap(),
+                            video_id: VideoId::new("vid-last").unwrap(),
+                            track: make_track("vid-last", "Last", Some(200_000)),
+                            availability: TrackAvailability::Available,
+                        }],
+                    },
+                )
+                .await
+                .unwrap()
+        );
+        observe_restore(&h.engine, 3, PlaybackStatus::Paused, 12_000).await;
+        assert!(
+            h.bridge.sent_ops().is_empty(),
+            "daemon restart should keep paused track paused, got {:?}",
+            h.bridge.sent_ops()
+        );
+        h.engine.shutdown().await.unwrap();
+    }
+
+    {
+        let storage = RecordingStorage::default();
+        *storage.last_session.lock().unwrap() = Some(LastSession {
+            account_scope: AccountScope::new("scope-acct-1").unwrap(),
+            last_played: Some(LastPlayed {
+                track: make_track("vid-last", "Last", Some(200_000)),
+                playback_ref: None,
+                position_ms: 42_000,
+            }),
+        });
+        let h = engine_with_storage(storage, true).await;
+        h.engine
+            .on_host_hello(ytm_protocol::HostHelloPayload {
+                app_version: "1.2.0".to_string(),
+                electron_version: "45.4.1".to_string(),
+                chromium_version: "136.0".to_string(),
+                host_health: ytm_protocol::HostHealth {
+                    wayland_native: Some(true),
+                    gpu_accelerated: Some(true),
+                    sandbox_enabled: true,
+                    secret_store_backend: "kwallet".to_string(),
+                    safe_storage_available: true,
+                    tray_available: true,
+                    mpris_active: true,
+                    core_restart_count: 1,
+                    last_error: None,
+                },
+                network_state: NetworkState::Online,
+                mock_mode: false,
+            })
+            .await
+            .unwrap();
+        sign_in(&h.engine).await;
+        init_ready_bridge(&h.engine, "bridge-1", 1).await;
+        observe_empty_page(&h.engine, 2).await;
+        observe_restore(&h.engine, 3, PlaybackStatus::Playing, 0).await;
+        observe_restore(&h.engine, 4, PlaybackStatus::Playing, 42_000).await;
+        observe_restore(&h.engine, 5, PlaybackStatus::Paused, 42_000).await;
+        assert_eq!(
+            h.bridge.sent_ops(),
+            vec![PlayerOp::PlayTarget, PlayerOp::Seek, PlayerOp::Pause],
+            "daemon restart restore must stay paused without extra Play"
+        );
+        h.engine.shutdown().await.unwrap();
+    }
 }

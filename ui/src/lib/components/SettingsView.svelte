@@ -1,13 +1,17 @@
 <script lang="ts">
   import type { AppSettings, AppSettingsPatch, AppSnapshot, ThemeMode } from "@ytmcp/protocol";
   import { LOCALE_NAMES, LOCALES, t, type Locale } from "../i18n/index.svelte.js";
-  import type { CacheClearOutcome, SettingsUpdateOutcome } from "../ipc/client.js";
+  import type { CacheClearOutcome, SettingsUpdateOutcome, YtmUiClient } from "../ipc/client.js";
   import AccessibleDialog from "./AccessibleDialog.svelte";
   import Icon from "./Icon.svelte";
+  import MomentSettingsSection from "./MomentSettingsSection.svelte";
 
   interface Props {
     snapshot: AppSnapshot | null;
     resnapshotCount: number;
+    momentClient?: Pick<YtmUiClient, "momentSettings">;
+    momentScopeKey?: string | null;
+    momentRevision?: number;
     onUpdateSettings: (patch: AppSettingsPatch) => Promise<SettingsUpdateOutcome>;
     onOpenDiagnostics: () => void;
     onOpenOfficialPlayer?: () => void;
@@ -19,6 +23,9 @@
   let {
     snapshot,
     resnapshotCount,
+    momentClient,
+    momentScopeKey = null,
+    momentRevision = 0,
     onUpdateSettings,
     onOpenDiagnostics,
     onOpenOfficialPlayer,
@@ -240,6 +247,10 @@
         </div>
       </div>
     </div>
+
+    {#if momentClient}
+      <MomentSettingsSection client={momentClient} scopeKey={momentScopeKey} revision={momentRevision} />
+    {/if}
 
     <div class="card p-5 flex flex-wrap items-center justify-between gap-4">
       <div class="flex flex-col gap-1.5">

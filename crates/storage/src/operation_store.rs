@@ -3,8 +3,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::{Arc, Mutex};
 use ytm_control_api::{
-    AccountHandoffState, ControlError, ErrorCode, InterruptResumeState, ItemPhase, OperationPhase,
-    OperationReceipt, OperationResource, RetryDisposition, WriteAction, WriteInput,
+    AccountHandoffState, ControlError, DjFeedbackChange, ErrorCode, InterruptResumeState,
+    ItemPhase, ListeningIntentChange, ListeningIntentInstruction, OperationPhase, OperationReceipt,
+    OperationReplayInput, OperationResource, RetryDisposition, WriteAction, WriteInput,
+    compute_action_hashes,
 };
 use ytm_core::BoxFuture;
 use ytm_core::control::journal::{
@@ -116,6 +118,31 @@ impl SqliteStorage {
             record.as_deref().map(decode).transpose()
         })
     }
+}
+
+fn redact_settled_request(mut input: WriteInput) -> (WriteInput, bool) {
+    let mut changed = false;
+    match &mut input.action {
+        WriteAction::SetDjFeedback {
+            change: DjFeedbackChange::Record { note, .. },
+        } => {
+            if note.take().is_some() {
+                changed = true;
+            }
+        }
+        WriteAction::SetListeningIntent {
+            change:
+                ListeningIntentChange::Set {
+                    instruction: ListeningIntentInstruction::MusicBrief { brief },
+                    ..
+                },
+        } if brief != "[redacted]" => {
+            *brief = "[redacted]".to_owned();
+            changed = true;
+        }
+        _ => {}
+    }
+    (input, changed)
 }
 
 impl OperationStore for SqliteStorage {
@@ -252,9 +279,15 @@ impl OperationStore for SqliteStorage {
                     Ok(Claim::Conflict)
                 };
             }
+            let (action_hash, tokenless_hash) = compute_action_hashes(&input.action);
+            let stored_input = if initial.settled {
+                redact_settled_request(input).0
+            } else {
+                input
+            };
             tx.execute(
-                "INSERT INTO control_operations (principal, account_scope, operation_id, payload_hash, revision, settled, updated_at_ms, request_json, receipt_json, claimed_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?7)",
-                params![principal, scope, id, payload_hash.as_slice(), sqlite_revision(initial.revision)?, initial.settled, now_ms, encode(&input)?, encode(&initial)?],
+                "INSERT INTO control_operations (principal, account_scope, operation_id, payload_hash, action_hash, action_tokenless_hash, revision, settled, updated_at_ms, request_json, receipt_json, claimed_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?9)",
+                params![principal, scope, id, payload_hash.as_slice(), action_hash, tokenless_hash, sqlite_revision(initial.revision)?, initial.settled, now_ms, encode(&stored_input)?, encode(&initial)?],
             ).map_err(|_| error_storage())?;
             tx.commit().map_err(|_| error_storage())?;
             Ok(Claim::New(initial))
@@ -297,14 +330,47 @@ impl OperationStore for SqliteStorage {
             }
             let now_ms = i64::try_from(now_ms).unwrap_or(i64::MAX);
             let (principal, scope, id) = key_fields(&key);
-            let changes = conn.execute(
-                "UPDATE control_operations SET revision = ?5, settled = ?6, updated_at_ms = ?7, receipt_json = ?8
-                 WHERE principal = ?1 AND account_scope = ?2 AND operation_id = ?3 AND revision = ?4",
-                params![principal, scope, id, sqlite_revision(expected_revision)?, sqlite_revision(next.revision)?, next.settled, now_ms, encode(&next)?],
-            ).map_err(|_| error_storage())?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|_| error_storage())?;
+            let mut scrubbed_request: Option<String> = None;
+            if next.settled
+                && let Some(encoded_req) = tx
+                    .query_row(
+                        "SELECT request_json FROM control_operations
+                         WHERE principal = ?1 AND account_scope = ?2 AND operation_id = ?3",
+                        params![principal, scope, id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|_| error_storage())?
+                && let Ok(parsed) = serde_json::from_str::<WriteInput>(&encoded_req)
+            {
+                let (redacted, changed) = redact_settled_request(parsed);
+                if changed {
+                    scrubbed_request = Some(encode(&redacted)?);
+                }
+            }
+            let changes = if let Some(req_json) = scrubbed_request {
+                tx.execute(
+                    "UPDATE control_operations
+                     SET revision = ?5, settled = ?6, updated_at_ms = ?7, receipt_json = ?8, request_json = ?9
+                     WHERE principal = ?1 AND account_scope = ?2 AND operation_id = ?3 AND revision = ?4",
+                    params![principal, scope, id, sqlite_revision(expected_revision)?, sqlite_revision(next.revision)?, next.settled, now_ms, encode(&next)?, req_json],
+                )
+                .map_err(|_| error_storage())?
+            } else {
+                tx.execute(
+                    "UPDATE control_operations SET revision = ?5, settled = ?6, updated_at_ms = ?7, receipt_json = ?8
+                     WHERE principal = ?1 AND account_scope = ?2 AND operation_id = ?3 AND revision = ?4",
+                    params![principal, scope, id, sqlite_revision(expected_revision)?, sqlite_revision(next.revision)?, next.settled, now_ms, encode(&next)?],
+                )
+                .map_err(|_| error_storage())?
+            };
             if changes == 0 {
                 return Err(error_revision());
             }
+            tx.commit().map_err(|_| error_storage())?;
             Ok(())
         })
     }
@@ -342,13 +408,82 @@ impl OperationStore for SqliteStorage {
                     }
                     receipt.revision =
                         receipt.revision.checked_add(1).ok_or_else(error_revision)?;
-                    tx.execute(
-                        "UPDATE control_operations SET revision = ?2, settled = ?3, updated_at_ms = ?4, receipt_json = ?5 WHERE rowid = ?1",
-                        params![rowid, sqlite_revision(receipt.revision)?, receipt.settled, now_ms, encode(&receipt)?],
-                    ).map_err(|_| error_storage())?;
+                    let scrubbed_request = if receipt.settled
+                        && let Some(req) = request
+                    {
+                        let (redacted, changed) = redact_settled_request(req);
+                        changed.then(|| encode(&redacted)).transpose()?
+                    } else {
+                        None
+                    };
+                    if let Some(req_json) = scrubbed_request {
+                        tx.execute(
+                            "UPDATE control_operations SET revision = ?2, settled = ?3, updated_at_ms = ?4, receipt_json = ?5, request_json = ?6 WHERE rowid = ?1",
+                            params![rowid, sqlite_revision(receipt.revision)?, receipt.settled, now_ms, encode(&receipt)?, req_json],
+                        ).map_err(|_| error_storage())?;
+                    } else {
+                        tx.execute(
+                            "UPDATE control_operations SET revision = ?2, settled = ?3, updated_at_ms = ?4, receipt_json = ?5 WHERE rowid = ?1",
+                            params![rowid, sqlite_revision(receipt.revision)?, receipt.settled, now_ms, encode(&receipt)?],
+                        ).map_err(|_| error_storage())?;
+                    }
                 }
             }
             tx.commit().map_err(|_| error_storage())
+        })
+    }
+
+    fn check_replay(
+        &self,
+        key: OperationKey,
+        replay: OperationReplayInput,
+    ) -> BoxFuture<'_, Result<Option<OperationReceipt>, ControlError>> {
+        journal_task(Arc::clone(&self.journal), move |conn| {
+            let (principal, scope, id) = key_fields(&key);
+            let row: Option<(Option<String>, Option<String>, String, String)> = conn
+                .query_row(
+                    "SELECT action_hash, action_tokenless_hash, request_json, receipt_json
+                     FROM control_operations
+                     WHERE principal = ?1 AND account_scope = ?2 AND operation_id = ?3",
+                    params![principal, scope, id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(|_| error_storage())?;
+            let Some((stored_exact, stored_tokenless, encoded_request, encoded_receipt)) = row
+            else {
+                return Ok(None);
+            };
+            let stored_input: WriteInput = decode(&encoded_request)?;
+            let expected_hash = match (replay.token_was_missing, stored_tokenless, stored_exact) {
+                (true, Some(h), _) => h,
+                (false, _, Some(h)) => h,
+                _ => {
+                    let (exact, tokenless) = compute_action_hashes(&stored_input.action);
+                    if replay.token_was_missing {
+                        tokenless
+                    } else {
+                        exact
+                    }
+                }
+            };
+            if expected_hash != replay.action_hash {
+                return Err(ControlError::new(
+                    ErrorCode::IdempotencyConflict,
+                    RetryDisposition::NotRetryable,
+                    "the operation ID already identifies different parameters",
+                ));
+            }
+            if let Some(expected_pre) = replay.explicit_preconditions
+                && stored_input.preconditions != expected_pre
+            {
+                return Err(ControlError::new(
+                    ErrorCode::IdempotencyConflict,
+                    RetryDisposition::NotRetryable,
+                    "the operation ID already identifies different preconditions",
+                ));
+            }
+            decode(&encoded_receipt).map(Some)
         })
     }
 }

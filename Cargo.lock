@@ -2833,13 +2833,15 @@ dependencies = [
 
 [[package]]
 name = "ytm-control-api"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "futures-util",
+ "hex",
  "rustix",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-util",
  "ytm-protocol",
@@ -2847,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "hex",
  "serde",
@@ -2864,7 +2866,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-daemon"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "directories",
  "hex",
@@ -2890,7 +2892,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-data"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "hex",
  "rand",
@@ -2913,7 +2915,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-lyrics"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -2930,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-mpris"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "mpris-server",
  "thiserror",
@@ -2944,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-protocol"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "schemars",
  "serde",
@@ -2954,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-storage"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "directories",
  "hex",
@@ -2996,7 +2998,7 @@ dependencies = [
 
 [[package]]
 name = "ytmcp"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "directories",
  "hex",

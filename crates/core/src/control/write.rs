@@ -231,6 +231,7 @@ impl MusicOperation {
             WriteAction::SetLibraryMembership { .. } => self.set_library_membership().await,
             WriteAction::EditLocalHistory { .. } => self.edit_local_history().await,
             WriteAction::SetDjFeedback { .. } => self.set_dj_feedback().await,
+            WriteAction::SetListeningIntent { .. } => self.set_listening_intent().await,
             WriteAction::AccountHandoff { .. } => self.account_handoff().await,
             WriteAction::UpdateSettings { .. } => self.update_settings().await,
             WriteAction::SetLyricsOffset { .. } => self.set_lyrics_offset().await,
@@ -877,7 +878,7 @@ pub(super) fn required_scope(action: &WriteAction) -> Result<GrantAction, Contro
         | Shuffle { .. }
         | Repeat { .. } => Ok(GrantAction::Playback),
         UpdateSettings { .. } | SetLyricsOffset { .. } => Ok(GrantAction::Preferences),
-        SetDjFeedback { .. } => Ok(GrantAction::Dj),
+        SetDjFeedback { .. } | SetListeningIntent { .. } => Ok(GrantAction::Dj),
         UpdatePlaylist { .. } | RemovePlaylistEntries { .. } | MovePlaylistEntry { .. } => {
             Ok(GrantAction::EditPlaylist)
         }

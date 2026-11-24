@@ -1,4 +1,7 @@
-use ytm_control_api::{ControlError, OperationReceipt, WriteInput};
+use ytm_control_api::{
+    ControlError, ErrorCode, OperationReceipt, OperationReplayInput, RetryDisposition, WriteInput,
+    compute_action_hashes,
+};
 use ytm_protocol::AccountScope;
 
 use crate::BoxFuture;
@@ -86,4 +89,43 @@ pub trait OperationStore: Send + Sync {
     /// Resolve interrupted process-local schedules on a new daemon start. Submitted mutations
     /// remain queryable and unknown until fresh remote evidence establishes what happened.
     fn recover(&self, now_ms: u64) -> BoxFuture<'_, Result<(), ControlError>>;
+
+    /// Validates an operation ID replay against stored business action hashes when the caller
+    /// omitted bookkeeping fields (`contextToken` / `preconditions`). Returns `Ok(None)` when no
+    /// operation with `key` exists yet, `Ok(Some(receipt))` when intent matches, or
+    /// `Err(IdempotencyConflict)` when parameters differ.
+    fn check_replay(
+        &self,
+        key: OperationKey,
+        replay: OperationReplayInput,
+    ) -> BoxFuture<'_, Result<Option<OperationReceipt>, ControlError>> {
+        Box::pin(async move {
+            let Some(stored) = self.load_request(key.clone()).await? else {
+                return Ok(None);
+            };
+            let (exact_hash, tokenless_hash) = compute_action_hashes(&stored.action);
+            let stored_hash = if replay.token_was_missing {
+                tokenless_hash
+            } else {
+                exact_hash
+            };
+            if stored_hash != replay.action_hash {
+                return Err(ControlError::new(
+                    ErrorCode::IdempotencyConflict,
+                    RetryDisposition::NotRetryable,
+                    "the operation ID already identifies different parameters",
+                ));
+            }
+            if let Some(expected_pre) = replay.explicit_preconditions
+                && stored.preconditions != expected_pre
+            {
+                return Err(ControlError::new(
+                    ErrorCode::IdempotencyConflict,
+                    RetryDisposition::NotRetryable,
+                    "the operation ID already identifies different preconditions",
+                ));
+            }
+            self.get(key).await
+        })
+    }
 }

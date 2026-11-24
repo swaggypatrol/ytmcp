@@ -2658,3 +2658,654 @@ async fn ui_settings_patch_preserves_concurrent_mcp_edit_and_persists_both() {
     assert_eq!(override_ui.ui_language, UiLanguage::SimplifiedChinese);
     engine.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn f1_redaction_f5_replay_and_moment_dj_contract() {
+    use ytm_control_api::{
+        DjFeedbackChange, DjFeedbackTarget, DjPreferenceStance, ListeningIntentChange,
+        ListeningIntentDuration, ListeningIntentInstruction, MomentSectionStatus,
+        OperationReplayInput, ReportedIntentBasis, VocalsMode, compute_action_hashes,
+    };
+    use ytm_core::control::journal::{OperationKey, OperationStore};
+    use ytm_protocol::{
+        HostEnvironmentSnapshotPayload, HostOccasion, MomentDesktopRequest, OwnerMomentConfigPatch,
+        PrincipalShareUpdate,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let clock = Arc::new(MockClock::with_wall_offset(1_000, 1_760_000_000_000));
+    let storage = open_storage(&dir, clock.clone());
+    let (sender, _commands) = mpsc::channel(8);
+    let engine = CoreEngine::start(
+        CoreDeps {
+            clock: clock.clone(),
+            bridge: Arc::new(Bridge(sender)),
+            catalog: Some(Arc::new(Catalog)),
+            storage: Some(storage.clone()),
+            ..Default::default()
+        },
+        EngineConfig::default(),
+    );
+    assert!(
+        engine
+            .on_bridge_ready(
+                1,
+                BridgeReadyPayload {
+                    bridge_epoch: BridgeEpoch::new(BRIDGE).unwrap(),
+                    bridge_version: "1.0.0".into(),
+                    capabilities: CapabilitySet::default(),
+                    account_hint: Some(HINT.into()),
+                    logged_in_observed: true,
+                }
+            )
+            .await
+            .unwrap()
+    );
+    engine
+        .on_session_material(SessionMaterialPayload {
+            account_epoch: AccountEpoch::new(EPOCH).unwrap(),
+            credential_revision: CredentialRevision::new("cred-moment-1").unwrap(),
+            cookie_pairs: Default::default(),
+            auth_user_index: None,
+            channel_label: None,
+        })
+        .await
+        .unwrap();
+    let service = Arc::new(
+        ControlService::new(engine.clone())
+            .with_operations(storage.clone())
+            .with_dj_store(storage.clone())
+            .with_moment_store(storage.clone()),
+    );
+    let agent = ReadGrant::new(
+        "fixture-agent".to_string(),
+        Some(AccountScope::new(ACCOUNT).unwrap()),
+    );
+    let other_agent = ReadGrant::new(
+        "fixture-other".to_string(),
+        Some(AccountScope::new(ACCOUNT).unwrap()),
+    );
+
+    // 1. F1 + F5: SetDjFeedback note is scrubbed from settled operation journal while kept on
+    // DjPreference and ReplayOperation hash check still validates original intent.
+    struct DjGrant;
+    impl DispatchAuthority for DjGrant {
+        fn authorize(
+            &self,
+            _action: GrantAction,
+        ) -> BoxFuture<'_, Result<DispatchGrant, ControlError>> {
+            Box::pin(async {
+                Ok(DispatchGrant {
+                    deadline_wall_ms: u64::MAX,
+                    editable_playlists: vec![],
+                })
+            })
+        }
+    }
+
+    let action = WriteAction::SetDjFeedback {
+        change: DjFeedbackChange::Record {
+            target: DjFeedbackTarget::Video {
+                video_id: VideoId::new("fixture-song-1").unwrap(),
+            },
+            stance: DjPreferenceStance::Prefer,
+            note: Some("loves midnight synthwave".to_owned()),
+        },
+    };
+    let (exact_hash, _) = compute_action_hashes(&action);
+    let receipt = service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            WriteInput {
+                operation_id: "op-pref-1".into(),
+                preconditions: Preconditions {
+                    expected_account_epoch: Some(AccountEpoch::new(EPOCH).unwrap()),
+                    expected_bridge_epoch: None,
+                    expected_queue_revision: None,
+                    expected_entity_revision: None,
+                },
+                action: action.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.operation_id, "op-pref-1");
+    timeout(WAIT, async {
+        loop {
+            if let ControlResponse::Operation(op) = service
+                .execute(
+                    &agent,
+                    ControlRequest::GetOperation(OperationInput {
+                        operation_id: "op-pref-1".into(),
+                    }),
+                )
+                .await
+                && op.settled
+            {
+                assert_eq!(op.phase, OperationPhase::Verified);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Settled request in control_operations must NOT retain note text.
+    let stored_req = storage
+        .load_request(OperationKey {
+            principal: "fixture-agent".into(),
+            account_scope: Some(AccountScope::new(ACCOUNT).unwrap()),
+            operation_id: "op-pref-1".into(),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let WriteAction::SetDjFeedback {
+        change: DjFeedbackChange::Record { note, .. },
+    } = stored_req.action
+    else {
+        panic!("expected SetDjFeedback");
+    };
+    assert_eq!(note, None, "settled operation journal must scrub note");
+
+    // Desktop activity shows the preference note verbatim and readable operation summary.
+    let activity = service
+        .desktop_activity(
+            Some(AccountEpoch::new(EPOCH).unwrap()),
+            ytm_protocol::AgentActivityRequest::Read,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        activity.preferences[0].note.as_deref(),
+        Some("loves midnight synthwave")
+    );
+    assert_eq!(
+        activity.operations[0].action.as_deref(),
+        Some("rememberTaste")
+    );
+
+    // F5 ReplayOperation accepts identical hash and rejects altered parameters.
+    let ControlResponse::Operation(replayed) = service
+        .execute(
+            &agent,
+            ControlRequest::ReplayOperation(OperationReplayInput {
+                operation_id: "op-pref-1".into(),
+                action_hash: exact_hash,
+                token_was_missing: false,
+                explicit_preconditions: None,
+            }),
+        )
+        .await
+    else {
+        panic!("expected matching replay receipt");
+    };
+    assert_eq!(replayed.operation_id, "op-pref-1");
+
+    let ControlResponse::Error(conflict) = service
+        .execute(
+            &agent,
+            ControlRequest::ReplayOperation(OperationReplayInput {
+                operation_id: "op-pref-1".into(),
+                action_hash: "0".repeat(64),
+                token_was_missing: false,
+                explicit_preconditions: None,
+            }),
+        )
+        .await
+    else {
+        panic!("expected IdempotencyConflict");
+    };
+    assert_eq!(conflict.code, ErrorCode::IdempotencyConflict);
+
+    // 2. Moment DJ defaults to notShared for every client.
+    let ControlResponse::Context(initial_ctx) = service
+        .execute(
+            &agent,
+            ControlRequest::GetContext(ContextInput {
+                preview_limit: Some(0),
+            }),
+        )
+        .await
+    else {
+        panic!("expected context");
+    };
+    let m0 = initial_ctx.moment.unwrap();
+    assert_eq!(m0.environment.status, MomentSectionStatus::NotShared);
+    assert_eq!(m0.listening_intents.status, MomentSectionStatus::NotShared);
+
+    // Unshared client cannot write listening intents.
+    let _ = service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            WriteInput {
+                operation_id: "op-intent-unshared".into(),
+                preconditions: Preconditions {
+                    expected_account_epoch: Some(AccountEpoch::new(EPOCH).unwrap()),
+                    expected_bridge_epoch: None,
+                    expected_queue_revision: None,
+                    expected_entity_revision: None,
+                },
+                action: WriteAction::SetListeningIntent {
+                    change: ListeningIntentChange::Set {
+                        instruction: ListeningIntentInstruction::Vocals {
+                            mode: VocalsMode::PreferInstrumental,
+                        },
+                        duration: ListeningIntentDuration::Session,
+                        basis: ReportedIntentBasis::UserRequest,
+                        expected_moment_revision: None,
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap();
+    timeout(WAIT, async {
+        loop {
+            if let ControlResponse::Operation(op) = service
+                .execute(
+                    &agent,
+                    ControlRequest::GetOperation(OperationInput {
+                        operation_id: "op-intent-unshared".into(),
+                    }),
+                )
+                .await
+                && op.settled
+            {
+                assert_eq!(op.phase, OperationPhase::Rejected);
+                assert_eq!(op.error.unwrap().code, ErrorCode::PermissionDenied);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Owner enables Moment sharing for `fixture-agent`, time, holidays (US), and sceneCity.
+    let desktop_snap = service
+        .desktop_moment_settings(
+            Some(AccountEpoch::new(EPOCH).unwrap()),
+            MomentDesktopRequest::Update {
+                patch: OwnerMomentConfigPatch {
+                    share_time: Some(true),
+                    holidays_enabled: Some(true),
+                    holiday_country: Some("US".into()),
+                    scene_city: Some("Seattle".into()),
+                    set_principal_shared: Some(PrincipalShareUpdate {
+                        principal: "fixture-agent".into(),
+                        shared: true,
+                    }),
+                    ..Default::default()
+                },
+            },
+            vec!["fixture-agent".into(), "fixture-other".into()],
+        )
+        .await
+        .unwrap();
+    let cfg_rev = desktop_snap.config.config_revision;
+    assert_eq!(cfg_rev, 1);
+
+    // Host delivers environment snapshot matching config_revision.
+    let now_wall = clock.wall_now_ms();
+    engine
+        .on_host_environment_snapshot(HostEnvironmentSnapshotPayload {
+            config_revision: cfg_rev,
+            captured_at_ms: now_wall,
+            valid_until_ms: now_wall + 120_000,
+            clock_ok: true,
+            calendar_ok: true,
+            time_zone: Some("America/Los_Angeles".into()),
+            local_date: Some("2026-12-24".into()),
+            weekday: Some("thursday".into()),
+            day_part: Some("evening".into()),
+            day_ends_at_utc_ms: Some(now_wall + 14_400_000),
+            occasions: vec![HostOccasion {
+                id: "occasion:us:christmas-day".into(),
+                label: "Christmas Day".into(),
+                phase: "eve".into(),
+                kind: "public".into(),
+                local_date: "2026-12-24".into(),
+                actual_date: Some("2026-12-25".into()),
+                provider_version: "date-holidays@3.39.2".into(),
+            }],
+            countries: vec![],
+        })
+        .await
+        .unwrap();
+
+    // `fixture-agent` sees time, occasion, sceneCity, weather_provided = false; `fixture-other`
+    // STILL sees `notShared`.
+    let ControlResponse::Context(shared_ctx) = service
+        .execute(
+            &agent,
+            ControlRequest::GetContext(ContextInput {
+                preview_limit: Some(0),
+            }),
+        )
+        .await
+    else {
+        panic!("expected context");
+    };
+    let moment = shared_ctx.moment.unwrap();
+    assert_eq!(moment.environment.status, MomentSectionStatus::Shared);
+    assert_eq!(moment.environment.occasions.len(), 1);
+    assert_eq!(
+        moment.environment.scene_city.as_ref().unwrap().label,
+        "Seattle"
+    );
+    assert!(!moment.environment.weather_provided);
+
+    let ControlResponse::Context(other_ctx) = service
+        .execute(
+            &other_agent,
+            ControlRequest::GetContext(ContextInput {
+                preview_limit: Some(0),
+            }),
+        )
+        .await
+    else {
+        panic!("expected context");
+    };
+    assert_eq!(
+        other_ctx.moment.unwrap().environment.status,
+        MomentSectionStatus::NotShared
+    );
+
+    // Owner preview matches `fixture-agent` projection.
+    let owner_preview = service
+        .desktop_moment_settings(
+            Some(AccountEpoch::new(EPOCH).unwrap()),
+            MomentDesktopRequest::Read {
+                preview_principal: Some("fixture-agent".into()),
+            },
+            vec!["fixture-agent".into()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        owner_preview.preview_json["environment"]["sceneCity"]["label"],
+        "Seattle"
+    );
+
+    // Set `today` intent -> locks concrete `dayEndsAtUtcMs`, and `DismissTheme` hides occasion!
+    let _ = service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            WriteInput {
+                operation_id: "op-intent-dismiss".into(),
+                preconditions: Preconditions {
+                    expected_account_epoch: Some(AccountEpoch::new(EPOCH).unwrap()),
+                    expected_bridge_epoch: None,
+                    expected_queue_revision: None,
+                    expected_entity_revision: None,
+                },
+                action: WriteAction::SetListeningIntent {
+                    change: ListeningIntentChange::Set {
+                        instruction: ListeningIntentInstruction::DismissTheme {
+                            theme_id: "occasion:us:christmas-day".into(),
+                        },
+                        duration: ListeningIntentDuration::Today,
+                        basis: ReportedIntentBasis::UserRequest,
+                        expected_moment_revision: Some(moment.revision),
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap();
+    timeout(WAIT, async {
+        loop {
+            if let ControlResponse::Operation(op) = service
+                .execute(
+                    &agent,
+                    ControlRequest::GetOperation(OperationInput {
+                        operation_id: "op-intent-dismiss".into(),
+                    }),
+                )
+                .await
+                && op.settled
+            {
+                assert_eq!(op.phase, OperationPhase::Verified);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let ControlResponse::Context(after_dismiss) = service
+        .execute(
+            &agent,
+            ControlRequest::GetContext(ContextInput {
+                preview_limit: Some(0),
+            }),
+        )
+        .await
+    else {
+        panic!("expected context");
+    };
+    let after_moment = after_dismiss.moment.unwrap();
+    assert!(
+        after_moment.environment.occasions.is_empty(),
+        "DismissTheme(today) must hide the matching occasion"
+    );
+    assert_eq!(after_moment.listening_intents.items.len(), 1);
+    assert_eq!(
+        after_moment.listening_intents.items[0].expires_at_ms,
+        now_wall + 14_400_000
+    );
+
+    // Assistant inference cannot overwrite userRequestReportedByAssistant on same key.
+    let _ = service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            WriteInput {
+                operation_id: "op-intent-clobber".into(),
+                preconditions: Preconditions {
+                    expected_account_epoch: Some(AccountEpoch::new(EPOCH).unwrap()),
+                    expected_bridge_epoch: None,
+                    expected_queue_revision: None,
+                    expected_entity_revision: None,
+                },
+                action: WriteAction::SetListeningIntent {
+                    change: ListeningIntentChange::Clear {
+                        intent_key: "dismissTheme:occasion:us:christmas-day".into(),
+                        basis: ReportedIntentBasis::Inference,
+                        expected_moment_revision: None,
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap();
+    timeout(WAIT, async {
+        loop {
+            if let ControlResponse::Operation(op) = service
+                .execute(
+                    &agent,
+                    ControlRequest::GetOperation(OperationInput {
+                        operation_id: "op-intent-clobber".into(),
+                    }),
+                )
+                .await
+                && op.settled
+            {
+                assert_eq!(op.phase, OperationPhase::Rejected);
+                assert_eq!(op.error.unwrap().code, ErrorCode::Conflict);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // A "today" written after the snapshot itself expired still ends at the same local midnight.
+    clock.advance(200_000);
+    let _ = service
+        .submit(
+            agent.clone(),
+            Arc::new(DjGrant),
+            WriteInput {
+                operation_id: "op-intent-late-today".into(),
+                preconditions: Preconditions {
+                    expected_account_epoch: Some(AccountEpoch::new(EPOCH).unwrap()),
+                    expected_bridge_epoch: None,
+                    expected_queue_revision: None,
+                    expected_entity_revision: None,
+                },
+                action: WriteAction::SetListeningIntent {
+                    change: ListeningIntentChange::Set {
+                        instruction: ListeningIntentInstruction::Vocals {
+                            mode: VocalsMode::PreferInstrumental,
+                        },
+                        duration: ListeningIntentDuration::Today,
+                        basis: ReportedIntentBasis::UserRequest,
+                        expected_moment_revision: None,
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap();
+    timeout(WAIT, async {
+        loop {
+            if let ControlResponse::Operation(op) = service
+                .execute(
+                    &agent,
+                    ControlRequest::GetOperation(OperationInput {
+                        operation_id: "op-intent-late-today".into(),
+                    }),
+                )
+                .await
+                && op.settled
+            {
+                assert_eq!(op.phase, OperationPhase::Verified, "{op:?}");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // The owner stops sharing intents: the theme dismissed for today stays out of the occasions.
+    let cfg_rev = service
+        .desktop_moment_settings(
+            Some(AccountEpoch::new(EPOCH).unwrap()),
+            MomentDesktopRequest::Update {
+                patch: OwnerMomentConfigPatch {
+                    share_listening_intents: Some(false),
+                    ..Default::default()
+                },
+            },
+            vec!["fixture-agent".into()],
+        )
+        .await
+        .unwrap()
+        .config
+        .config_revision;
+    let later = clock.wall_now_ms();
+    engine
+        .on_host_environment_snapshot(HostEnvironmentSnapshotPayload {
+            config_revision: cfg_rev,
+            captured_at_ms: later,
+            valid_until_ms: later + 120_000,
+            clock_ok: true,
+            calendar_ok: false,
+            time_zone: Some("America/Los_Angeles".into()),
+            local_date: Some("2026-12-24".into()),
+            weekday: Some("thursday".into()),
+            day_part: Some("evening".into()),
+            day_ends_at_utc_ms: Some(now_wall + 14_400_000),
+            occasions: vec![],
+            countries: vec![],
+        })
+        .await
+        .unwrap();
+    let read_moment = || async {
+        let ControlResponse::Context(ctx) = service
+            .execute(
+                &agent,
+                ControlRequest::GetContext(ContextInput {
+                    preview_limit: Some(0),
+                }),
+            )
+            .await
+        else {
+            panic!("expected context");
+        };
+        ctx.moment.unwrap()
+    };
+    // A calendar failure leaves the clock shared; only the occasions are missing.
+    let calendar_down = read_moment().await;
+    assert_eq!(
+        calendar_down.environment.status,
+        MomentSectionStatus::Shared
+    );
+    assert!(calendar_down.environment.time.is_some());
+    assert_eq!(calendar_down.environment.captured_at_ms, Some(later));
+    assert_eq!(
+        calendar_down.listening_intents.status,
+        MomentSectionStatus::NotShared
+    );
+    engine
+        .on_host_environment_snapshot(HostEnvironmentSnapshotPayload {
+            config_revision: cfg_rev,
+            captured_at_ms: later,
+            valid_until_ms: later + 120_000,
+            clock_ok: true,
+            calendar_ok: true,
+            time_zone: Some("America/Los_Angeles".into()),
+            local_date: Some("2026-12-24".into()),
+            weekday: Some("thursday".into()),
+            day_part: Some("evening".into()),
+            day_ends_at_utc_ms: Some(now_wall + 14_400_000),
+            occasions: vec![HostOccasion {
+                id: "occasion:us:christmas-day".into(),
+                label: "Christmas Day".into(),
+                phase: "eve".into(),
+                kind: "public".into(),
+                local_date: "2026-12-24".into(),
+                actual_date: Some("2026-12-25".into()),
+                provider_version: "date-holidays@3.39.2".into(),
+            }],
+            countries: vec![],
+        })
+        .await
+        .unwrap();
+    assert!(read_moment().await.environment.occasions.is_empty());
+
+    // Revoking the assistant turns everything off at its next read.
+    service
+        .desktop_moment_settings(
+            Some(AccountEpoch::new(EPOCH).unwrap()),
+            MomentDesktopRequest::Update {
+                patch: OwnerMomentConfigPatch {
+                    set_principal_shared: Some(PrincipalShareUpdate {
+                        principal: "fixture-agent".into(),
+                        shared: false,
+                    }),
+                    ..Default::default()
+                },
+            },
+            vec!["fixture-agent".into()],
+        )
+        .await
+        .unwrap();
+    let revoked = read_moment().await;
+    assert_eq!(revoked.environment.status, MomentSectionStatus::NotShared);
+    assert_eq!(
+        revoked.listening_intents.status,
+        MomentSectionStatus::NotShared
+    );
+
+    engine.shutdown().await.unwrap();
+}

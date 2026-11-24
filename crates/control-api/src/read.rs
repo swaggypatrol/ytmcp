@@ -216,6 +216,9 @@ pub struct ContextSnapshot {
     pub account: AccountState,
     pub queue: QueueProjection,
     pub capabilities: Vec<Capability>,
+    /// Owner-configured Moment DJ context projected for this client (`None` only in legacy fixtures).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moment: Option<crate::MomentView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

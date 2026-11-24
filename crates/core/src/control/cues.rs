@@ -746,14 +746,18 @@ impl ControlService {
                 chattiness,
             });
         };
-        let loaded = match (&grant.scope, self.dj_store.is_some()) {
-            (Some(scope), true) => self
-                .applied_preferences(scope)
-                .await
-                .map(|applied| applied.visible(&grant.principal))
-                .ok(),
-            _ => Some(Vec::new()),
-        };
+        let (loaded, preferences_total, preferences_unavailable) =
+            match (&grant.scope, self.dj_store.is_some()) {
+                (Some(scope), true) => match self.applied_preferences(scope).await {
+                    Ok(applied) => (
+                        Some(applied.visible(&grant.principal)),
+                        Some(applied.total),
+                        false,
+                    ),
+                    Err(_) => (None, None, true),
+                },
+                _ => (Some(Vec::new()), Some(0), false),
+            };
         let (preferences, preferences_unchanged) = self
             .cues
             .lock()
@@ -768,9 +772,11 @@ impl ControlService {
                 .map(|duration| duration.saturating_sub(sample.position_ms)),
         });
         let prompt = prompt_text(&pending, &sample, &listener, state.snapshot.player.autoplay);
+        let moment = self.project_moment(grant, &state).await;
         Ok(DjCueReply {
             cue: Some(DjCue {
                 seq: pending.seq,
+                core_epoch: Some(state.snapshot.core_epoch.clone()),
                 kind: pending.kind,
                 reasons: pending.reasons,
                 age_ms: now.saturating_sub(pending.fired_ms),
@@ -783,6 +789,9 @@ impl ControlService {
                 chattiness,
                 preferences,
                 preferences_unchanged,
+                preferences_total,
+                preferences_unavailable,
+                moment: Some(moment),
             }),
             chattiness,
         })

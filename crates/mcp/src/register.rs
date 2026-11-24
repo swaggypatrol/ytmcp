@@ -247,16 +247,28 @@ fn register_in(
 }
 
 /// The account scope of the player's newest active account epoch, read without modifying the
-/// player's database. `None` when the player has no signed-in account (or never ran).
+/// player's database. When `ytmcp.db` does not exist yet (upgraded install registered before
+/// first launch), falls back read-only to a sibling legacy `ytm-glass/ytm-glass.db`.
 fn active_account_scope(database: &Path) -> Result<Option<AccountScope>, String> {
     use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
-    if !database.exists() {
+    let candidate = if database.exists() {
+        database.to_path_buf()
+    } else if let Some(data_dir) = database.parent()
+        && let Some(base_data_dir) = data_dir.parent()
+    {
+        let sibling = base_data_dir.join("ytm-glass").join("ytm-glass.db");
+        if sibling.exists() {
+            sibling
+        } else {
+            return Ok(None);
+        }
+    } else {
         return Ok(None);
-    }
+    };
     let unreadable = |_| "the player's database could not be read".to_owned();
     let conn = Connection::open_with_flags(
-        database,
+        candidate,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(unreadable)?;
@@ -600,5 +612,29 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, PRIVACY_REFUSED);
         assert!(!fixture.config.join("control-clients.json").exists());
+    }
+
+    #[test]
+    fn registration_falls_back_read_only_to_legacy_database_before_first_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_dir = dir.path().join("data/ytm-glass");
+        let current_db = dir.path().join("data/ytmcp/ytmcp.db");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        let legacy_db = legacy_dir.join("ytm-glass.db");
+        let conn = rusqlite::Connection::open(&legacy_db).unwrap();
+        conn.execute(
+            "CREATE TABLE account_epochs (account_epoch TEXT PRIMARY KEY, account_scope TEXT NOT NULL, state TEXT NOT NULL, updated_at_ms INTEGER NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO account_epochs VALUES ('ep-1', 'legacy-scope', 'active', 100)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let scope = active_account_scope(&current_db).unwrap();
+        assert_eq!(scope.as_ref().map(|s| s.as_str()), Some("legacy-scope"));
     }
 }

@@ -150,6 +150,14 @@ pub enum OperationResource {
         id: String,
         cleared: bool,
     },
+    ListeningIntent {
+        intent_key: String,
+        intent_id: String,
+        cleared: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at_ms: Option<u64>,
+        moment_revision: u64,
+    },
     /// A request for the user to sign in, renew or switch the account in the player.
     AccountHandoff {
         goal: crate::AccountHandoffGoal,

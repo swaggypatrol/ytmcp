@@ -90,6 +90,16 @@ fn every_new_write_action_and_read_survives_the_socket_wire_format() {
         WriteAction::AccountHandoff {
             goal: AccountHandoffGoal::SwitchAccount,
         },
+        WriteAction::SetListeningIntent {
+            change: ytm_control_api::ListeningIntentChange::Set {
+                instruction: ytm_control_api::ListeningIntentInstruction::Vocals {
+                    mode: ytm_control_api::VocalsMode::PreferInstrumental,
+                },
+                duration: ytm_control_api::ListeningIntentDuration::Today,
+                basis: ytm_control_api::ReportedIntentBasis::UserRequest,
+                expected_moment_revision: Some(2),
+            },
+        },
     ];
     let mut requests: Vec<ControlRequest> = actions
         .into_iter()
@@ -109,6 +119,14 @@ fn every_new_write_action_and_read_survives_the_socket_wire_format() {
     requests.push(ControlRequest::GetDjPreferences(DjPreferencesInput {
         page: None,
     }));
+    requests.push(ControlRequest::ReplayOperation(
+        ytm_control_api::OperationReplayInput {
+            operation_id: "op-replay".into(),
+            action_hash: "a".repeat(64),
+            token_was_missing: true,
+            explicit_preconditions: None,
+        },
+    ));
     for (index, request) in requests.into_iter().enumerate() {
         let frame = RequestFrame {
             control_version: ytm_control_api::CONTROL_VERSION,

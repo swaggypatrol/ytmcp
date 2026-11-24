@@ -21,6 +21,7 @@ export const MAIN_UI_ALLOWED_OUTBOUND: ReadonlySet<MessageKind> = new Set<Messag
   "ui.mutation",
   "ui.agentActivity",
   "ui.settingsUpdate",
+  "ui.momentSettings",
   "ui.openPlayerWindow",
   "ui.logout",
   "ui.clearCache",
@@ -85,6 +86,7 @@ function ensureValidators(): {
       "ui.mutation": compileRef("#/definitions/MutationRequest"),
       "ui.agentActivity": compileRef("#/definitions/AgentActivityRequest"),
       "ui.settingsUpdate": compileRef("#/definitions/AppSettingsPatch"),
+      "ui.momentSettings": compileRef("#/definitions/MomentDesktopRequest"),
       "ui.openPlayerWindow": compileRef("#/definitions/OpenPlayerWindowPayload"),
       "core.snapshot": compileRef("#/definitions/AppSnapshot"),
       "core.delta": compileRef("#/definitions/StateDelta"),
@@ -94,6 +96,8 @@ function ensureValidators(): {
       "core.mutationResponse": compileRef("#/definitions/MutationResult"),
       "core.agentActivity": compileRef("#/definitions/AgentActivitySnapshot"),
       "core.settingsUpdated": compileRef("#/definitions/AppSettings"),
+      "core.momentSettings": compileRef("#/definitions/MomentDesktopSnapshot"),
+      "core.environmentConfig": compileRef("#/definitions/EnvironmentConfigPayload"),
       "core.error": compileRef("#/definitions/QueryError"),
       "bridge.error": compileRef("#/definitions/QueryError"),
       "host.hello": compileRef("#/definitions/HostHelloPayload"),
@@ -102,6 +106,7 @@ function ensureValidators(): {
       "host.networkChanged": compileRef("#/definitions/NetworkState"),
       "host.sessionMaterial": compileRef("#/definitions/SessionMaterialPayload"),
       "host.bridgeLifecycle": compileRef("#/definitions/BridgeLifecyclePayload"),
+      "host.environmentSnapshot": compileRef("#/definitions/HostEnvironmentSnapshotPayload"),
       "core.outputGateControl": compileRef("#/definitions/OutputGateControlPayload"),
       "host.outputGateResult": compileRef("#/definitions/OutputGateResultPayload"),
       "core.resolveAsset": compileRef("#/definitions/ResolveAssetPayload"),
@@ -171,6 +176,7 @@ export function isKindAllowedForRole(kind: MessageKind, role: SenderRole): boole
         kind === "host.sessionCleared" ||
         kind === "host.bridgeLifecycle" ||
         kind === "host.outputGateResult" ||
+        kind === "host.environmentSnapshot" ||
         kind === "core.resolveAsset" ||
         kind === "host.shutdown"
       );
@@ -185,6 +191,8 @@ export function isKindAllowedForRole(kind: MessageKind, role: SenderRole): boole
         kind === "core.mutationResponse" ||
         kind === "core.agentActivity" ||
         kind === "core.settingsUpdated" ||
+        kind === "core.momentSettings" ||
+        kind === "core.environmentConfig" ||
         kind === "core.error" ||
         kind === "core.pong" ||
         kind === "core.outputGateControl" ||

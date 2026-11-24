@@ -22,6 +22,8 @@
     onTrackActions?: (track: Track, index: number, entryId?: string) => void;
     /** Extra per-row controls before the actions button; gets the row index and roving tabindex. */
     rowActions?: Snippet<[index: number, tabindex: number]>;
+    /** Header spacer matching `rowActions` width so columns stay aligned. */
+    headerActions?: Snippet;
   }
 
   let {
@@ -36,6 +38,7 @@
     onPlayTrack,
     onTrackActions,
     rowActions,
+    headerActions,
   }: Props = $props();
 
   let scrollEl = $state<HTMLDivElement | null>(null);
@@ -138,9 +141,12 @@
 >
   {#if showHeader && tracks.length > 0}
     <div class="track-list-header type-xs" aria-hidden="true">
-      <span class="w-10 text-right shrink-0">{t.track.columnIndex}</span>
-      <span class="flex-1 min-w-0 pl-12">{t.track.columnTitle}</span>
-      <span class="w-12 text-right shrink-0">{t.track.columnDuration}</span>
+      <div class="flex-1 min-w-0 flex items-center gap-3 pl-3.5">
+        <span class="w-10 text-right shrink-0">{t.track.columnIndex}</span>
+        <span class="flex-1 min-w-0 pl-12">{t.track.columnTitle}</span>
+        <span class="w-12 text-right shrink-0">{t.track.columnDuration}</span>
+      </div>
+      {#if headerActions}{@render headerActions()}{/if}
       {#if onTrackActions}<span class="w-8 shrink-0"></span>{/if}
     </div>
   {/if}

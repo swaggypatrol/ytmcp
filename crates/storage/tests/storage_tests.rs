@@ -232,7 +232,7 @@ async fn migration_from_v1_creates_online_backup_and_preserves_data() {
     let storage =
         SqliteStorage::open(paths.clone(), clock, CoverCacheConfig::production()).unwrap();
 
-    assert_eq!(storage.current_schema_version().unwrap(), 7);
+    assert_eq!(storage.current_schema_version().unwrap(), 8);
     assert_eq!(storage.created_backups().len(), 1);
     let backup_path = &storage.created_backups()[0];
     assert!(backup_path.exists());

@@ -305,7 +305,8 @@ def run(daemon_bin, mcp_bin, root):
                 assert names == sorted(names) and "ytm_get_context" in names
                 # The operation ledger stays inside the adapter.
                 ledger = {"ytm_get_operation", "ytm_cancel_operation", "ytm_resume_operation"}
-                assert not ledger & set(names) and len(names) == 39, names
+                assert not ledger & set(names) and len(names) == 40, names
+                assert "ytm_set_listening_intent" in names
                 annotations = {tool["name"]: tool["annotations"] for tool in tools}
                 assert annotations["ytm_get_context"]["openWorldHint"] is False
                 if index == 0:
@@ -327,6 +328,14 @@ def run(daemon_bin, mcp_bin, root):
                 result = mcp.receive(lambda frame: frame.get("id") == 3)["result"]
                 assert result["structuredContent"]["value"]["player"]["track"]["videoId"] == playing_video
                 assert "https://synthetic.invalid" not in str(result)
+                # Moment DJ is off / not shared by default on first connect, and persists once shared.
+                initial_moment = result["structuredContent"]["value"]["moment"]
+                if index == 0:
+                    assert initial_moment["environment"]["status"] == "notShared", initial_moment
+                    assert initial_moment["listeningIntents"]["status"] == "notShared", initial_moment
+                else:
+                    assert initial_moment["environment"]["status"] == "shared", initial_moment
+                    assert initial_moment["environment"]["sceneCity"]["label"] == "Tokyo", initial_moment
                 if index == 0:
                     denied = mcp.call("ytm_set_library_membership", {
                         "operationId": "no-membership-grant", "preconditions": {},
@@ -397,6 +406,12 @@ def run(daemon_bin, mcp_bin, root):
                     retried = mcp.call("ytm_edit_queue", edit, 40)["structuredContent"]["value"]
                     assert retried.get("operationId") == "removeQueueEntry" and retried["phase"] == "verified", retried
                     assert retried["revision"] == edited["revision"], retried
+                    # Reusing the same operationId with DIFFERENT omitted-bookkeeping intent must fail!
+                    intent_conflict = mcp.call("ytm_edit_queue", {
+                        "operationId": "removeQueueEntry",
+                        "change": {"action": "clearUpcoming"},
+                    }, 41)["structuredContent"]["value"]
+                    assert intent_conflict.get("code") == "IDEMPOTENCY_CONFLICT", intent_conflict
 
                     autoplay = {"operationId": "autoplay-on", "preconditions": {"expectedBridgeEpoch": bridge,
                                 "expectedQueueRevision": 6}, "change": {"kind": "autoplay", "enabled": True}}
@@ -490,6 +505,52 @@ def run(daemon_bin, mcp_bin, root):
                     assert activity["kind"] == "core.agentActivity", activity
                     refill = next(row for row in activity["payload"]["operations"] if row["operationId"] == "queue-three")
                     assert refill["phase"] == "verified" and refill["verifiedItems"] == 3 and not refill["canCancel"]
+                    assert refill.get("action") == "editQueue", refill
+
+                    # Owner enables Moment sharing for offline-fixture via ui.momentSettings + host.environmentSnapshot.
+                    daemon.send(host("ui.momentSettings", 5, {
+                        "action": "update",
+                        "patch": {
+                            "shareTime": True,
+                            "sceneCity": "Tokyo",
+                            "setPrincipalShared": {"principal": "offline-fixture", "shared": True},
+                        },
+                    }, core=epoch, request="moment-cfg"))
+                    moment_snap = daemon.receive(lambda frame: frame.get("requestId") == "moment-cfg")
+                    assert moment_snap["kind"] == "core.momentSettings", moment_snap
+                    cfg_rev = moment_snap["payload"]["config"]["configRevision"]
+                    now_ms = int(time.time() * 1000)
+                    daemon.send(host("host.environmentSnapshot", 6, {
+                        "configRevision": cfg_rev,
+                        "capturedAtMs": now_ms,
+                        "validUntilMs": now_ms + 300_000,
+                        "clockOk": True,
+                        "calendarOk": True,
+                        "timeZone": "Asia/Tokyo",
+                        "localDate": "2026-12-31",
+                        "weekday": "thursday",
+                        "dayPart": "evening",
+                        "dayEndsAtUtcMs": now_ms + 14_400_000,
+                        "occasions": [],
+                        "countries": [],
+                    }, core=epoch))
+                    daemon.receive(lambda frame: frame["kind"] == "core.delta"
+                                   and frame["payload"].get("deltaType") == "momentChanged")
+                    shared_moment = mcp.call("ytm_get_context", {}, 49)["structuredContent"]["value"]["moment"]
+                    assert shared_moment["environment"]["status"] == "shared", shared_moment
+                    assert shared_moment["environment"]["time"]["timeZone"] == "Asia/Tokyo", shared_moment
+                    assert shared_moment["environment"]["sceneCity"]["label"] == "Tokyo", shared_moment
+                    assert shared_moment["environment"]["weatherProvided"] is False, shared_moment
+                    # Account grant is required before listening intents can be shared/written.
+                    assert shared_moment["listeningIntents"]["status"] == "notShared", shared_moment
+                    # The intent tool parses what an agent sends, fills the bookkeeping, and is refused
+                    # with a structured reason while this client has no account to share intents for.
+                    intent = mcp.call("ytm_set_listening_intent", {
+                        "operationId": "smoke-intent",
+                        "change": {"action": "set", "instruction": {"dimension": "vocals", "mode": "preferInstrumental"},
+                                   "duration": {"kind": "today"}, "basis": "userRequest"},
+                    }, 50)["structuredContent"]["value"]
+                    assert intent.get("code") == "PERMISSION_DENIED", intent
                     print("desktop activity read the same verified SQLite receipt")
 
                     # A queue occurrence played without bookkeeping gets its token and queue revision.

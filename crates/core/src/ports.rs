@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 use ytm_protocol::{
     AccountEpoch, AccountScope, AppSettings, AssetId, AssetResolvedPayload, BridgeEpoch,
     CatalogQueryRequest, CatalogResponsePayload, LyricsQueryRequest, LyricsResult, MutationRequest,
-    MutationResult, OutputGateResultPayload, PlaybackRef, PlayerCommandPayload, QueryError,
-    QueryErrorCode, SessionMaterialPayload, Track, VideoId,
+    MutationResult, OutputGateResultPayload, OwnerMomentConfig, PlaybackRef, PlayerCommandPayload,
+    QueryError, QueryErrorCode, SessionMaterialPayload, Track, VideoId,
 };
 
 /// Identity the catalog established for a session. `account_hint` is the opaque hash shared
@@ -223,6 +223,17 @@ pub trait StoragePort: Send + Sync {
     fn load_settings(&self) -> BoxFuture<'_, Result<Option<AppSettings>, QueryError>>;
 
     fn save_settings(&self, settings: AppSettings) -> BoxFuture<'_, Result<(), QueryError>>;
+
+    fn load_moment_config(&self) -> BoxFuture<'_, Result<OwnerMomentConfig, QueryError>> {
+        Box::pin(async { Ok(OwnerMomentConfig::default()) })
+    }
+
+    fn save_moment_config(
+        &self,
+        _config: OwnerMomentConfig,
+    ) -> BoxFuture<'_, Result<(), QueryError>> {
+        Box::pin(async { Ok(()) })
+    }
 
     fn clear_cache(
         &self,

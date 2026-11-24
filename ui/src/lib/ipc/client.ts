@@ -17,6 +17,8 @@ import {
   type LyricsQueryRequest,
   type LyricsResult,
   type MessageKind,
+  type MomentDesktopRequest,
+  type MomentDesktopSnapshot,
   type MutationRequest,
   type MutationResult,
   type PlayerCommandPayload,
@@ -118,6 +120,9 @@ export interface YtmcpUiBridge {
     req: AgentActivityRequest,
     accountEpoch: AccountEpoch | null,
   ): AgentActivitySnapshot | Promise<AgentActivitySnapshot>;
+  momentSettings?(
+    req: MomentDesktopRequest,
+  ): MomentDesktopSnapshot | Promise<MomentDesktopSnapshot>;
   logout?(): void | Promise<void>;
   /**
    * Asks core to clear the local cache. Success has no reply (core emits a `catalog`
@@ -411,6 +416,17 @@ export function wrapPreloadEnvelopeBridge(
       return resp.payload as AgentActivitySnapshot;
     },
 
+    async momentSettings(req: MomentDesktopRequest): Promise<MomentDesktopSnapshot> {
+      const resp = await sendRequest("ui.momentSettings", req, "ui-moment");
+      if (resp.kind === "core.error") {
+        throw new CoreRequestError(resp.payload as QueryError);
+      }
+      if (resp.kind !== "core.momentSettings") {
+        throw new Error(`Unexpected moment settings response: ${resp.kind}`);
+      }
+      return resp.payload as MomentDesktopSnapshot;
+    },
+
     async logout(): Promise<void> {
       await sendFireAndForget("ui.logout", {});
     },
@@ -450,6 +466,7 @@ export interface UiClientState {
   /** Full-cache invalidations delivered after a successful local cache clear. */
   cacheClearCount: number;
   activityRevision: number;
+  momentRevision: number;
 }
 
 export interface CreateUiClientOptions {
@@ -562,6 +579,7 @@ export function applyStateDelta(snapshot: AppSnapshot, delta: StateDelta): AppSn
     case "resourceInvalidated":
     case "manualTakeover":
     case "controlOperationChanged":
+    case "momentChanged":
       return {
         ...snapshot,
         revision: delta.revision,
@@ -604,6 +622,7 @@ export class YtmUiClient {
   private connectionError: string | null = null;
   private cacheClearCount = 0;
   private activityRevision = 0;
+  private momentRevision = 0;
   private readonly invalidationListeners = new Set<(resource: ResourceInvalidation) => void>();
 
   private listeners = new Set<UiClientListener>();
@@ -662,6 +681,7 @@ export class YtmUiClient {
         this.mockScenario === "loading" ? new Promise(() => {}) : fake.queryCatalog(req),
       queryLyrics: (req) => fake.queryLyrics(req),
       updateSettings: (patch) => fake.updateSettings(patch),
+      momentSettings: (req) => fake.momentSettings(req),
       openPlayerWindow: () => {
         // No-op in mock mode
       },
@@ -677,6 +697,7 @@ export class YtmUiClient {
       connectionError: this.connectionError,
       cacheClearCount: this.cacheClearCount,
       activityRevision: this.activityRevision,
+      momentRevision: this.momentRevision,
     };
   }
 
@@ -796,6 +817,7 @@ export class YtmUiClient {
       const previousCoreEpoch: CoreEpoch | null = this.snapshot?.coreEpoch ?? null;
       this.snapshot = subResult.snapshot;
       this.activityRevision += 1;
+      this.momentRevision += 1;
       this.connectionError = null;
       this.connectRetryAttempts = 0;
       this.restartResyncPending = false;
@@ -928,8 +950,15 @@ export class YtmUiClient {
       this.applyLocalReceipt(delta.receipt);
     } else if (delta.deltaType === "resourceInvalidated") {
       if (delta.resource_kind === "catalog") this.cacheClearCount += 1;
+      if (delta.resource_kind === "djPreferences" || delta.resource_kind === "listeningIntents") {
+        this.activityRevision += 1;
+      }
       this.invalidate(delta);
     } else if (delta.deltaType === "controlOperationChanged" || delta.deltaType === "manualTakeover" || delta.deltaType === "authChanged") {
+      this.activityRevision += 1;
+      if (delta.deltaType === "authChanged") this.momentRevision += 1;
+    } else if (delta.deltaType === "momentChanged") {
+      this.momentRevision += 1;
       this.activityRevision += 1;
     }
 
@@ -1126,6 +1155,11 @@ export class YtmUiClient {
   public async agentActivity(req: AgentActivityRequest): Promise<AgentActivitySnapshot> {
     if (!this.bridge?.agentActivity) throw new Error("Desktop activity is unavailable");
     return this.bridge.agentActivity(req, this.currentAccountEpoch());
+  }
+
+  public async momentSettings(req: MomentDesktopRequest): Promise<MomentDesktopSnapshot> {
+    if (!this.bridge?.momentSettings) throw new Error("Moment DJ settings are unavailable");
+    return await this.bridge.momentSettings(req);
   }
 
   public async queryLyrics(req: LyricsQueryRequest): Promise<LyricsResult> {

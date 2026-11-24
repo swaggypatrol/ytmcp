@@ -6,7 +6,8 @@ use rmcp::model::JsonObject;
 use ytm_control_api::{
     AccountHandoffState, ControlError, ControlResponse, DjCue, DjPreferenceStance,
     DjPreferenceSubject, DjTrack, DjTrackOutcome, ErrorCode, InterruptResumeState, ItemPhase,
-    OperationPhase, OperationReceipt, OperationResource, RetryDisposition,
+    ListeningIntentBasis, ListeningIntentInstruction, ListeningIntentScope, MomentSectionStatus,
+    MomentView, OperationPhase, OperationReceipt, OperationResource, RetryDisposition,
 };
 
 use crate::MusicTool;
@@ -104,6 +105,30 @@ fn receipt_text(tool: MusicTool, arguments: &JsonObject, receipt: &OperationRece
                  with createdByOperationId \"{}\".",
                 receipt.operation_id
             ),
+            (
+                Some(OperationResource::ListeningIntent {
+                    intent_key,
+                    cleared,
+                    expires_at_ms,
+                    moment_revision,
+                    ..
+                }),
+                MusicTool::SetListeningIntent,
+            ) => {
+                if *cleared {
+                    format!(
+                        "Done: cleared listening intent {intent_key} (momentRevision {moment_revision})."
+                    )
+                } else if let Some(exp) = expires_at_ms {
+                    format!(
+                        "Done: saved listening intent {intent_key} (expiresAtMs {exp}, momentRevision {moment_revision})."
+                    )
+                } else {
+                    format!(
+                        "Done: saved listening intent {intent_key} (momentRevision {moment_revision})."
+                    )
+                }
+            }
             _ => "Done.".to_owned(),
         },
         Partial => partly_done(tool, arguments, receipt),
@@ -362,7 +387,13 @@ pub fn cue_text(cue: &DjCue) -> String {
         Some(ms) => format!("The listener has been quiet for {}.", minutes(ms)),
         None => "The listener has not done or said anything yet.".to_owned(),
     });
-    if !cue.preferences.is_empty() {
+    if cue.preferences_unavailable {
+        lines.push(
+            "Recorded tastes: unavailable right now; keep any previously known tastes.".to_owned(),
+        );
+    } else if !cue.preferences_unchanged && cue.preferences.is_empty() {
+        lines.push("Recorded tastes: none (all earlier taste notes were cleared).".to_owned());
+    } else if !cue.preferences.is_empty() {
         let tastes: Vec<_> = cue
             .preferences
             .iter()
@@ -385,9 +416,161 @@ pub fn cue_text(cue: &DjCue) -> String {
                 }
             })
             .collect();
-        lines.push(format!("Recorded tastes: {}.", tastes.join("; ")));
+        let paging = cue
+            .preferences_total
+            .filter(|total| usize::try_from(*total).unwrap_or(usize::MAX) > cue.preferences.len())
+            .map(|total| {
+                format!(
+                    " (showing {} of {total}; page more with ytm_get_settings section djPreferences)",
+                    cue.preferences.len()
+                )
+            })
+            .unwrap_or_default();
+        lines.push(format!("Recorded tastes: {}.{paging}", tastes.join("; ")));
+    }
+    if let Some(moment) = &cue.moment {
+        lines.extend(moment_text_lines(moment));
     }
     lines.join("\n")
+}
+
+pub fn moment_text_lines(moment: &MomentView) -> Vec<String> {
+    let mut out = Vec::new();
+    let env = &moment.environment;
+    match env.status {
+        MomentSectionStatus::NotShared => {
+            out.push("Moment environment: not shared.".to_owned());
+        }
+        MomentSectionStatus::Unavailable => {
+            out.push("Moment environment: unavailable right now.".to_owned());
+        }
+        MomentSectionStatus::Shared => {
+            let mut parts = Vec::new();
+            if let Some(t) = &env.time {
+                let day_part = match serde_json::to_value(t.day_part)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                {
+                    Some(s) => s,
+                    None => "day".to_owned(),
+                };
+                parts.push(format!(
+                    "{} {day_part} ({}, {})",
+                    t.weekday, t.local_date, t.time_zone
+                ));
+            }
+            if !env.occasions.is_empty() {
+                let occ: Vec<_> = env
+                    .occasions
+                    .iter()
+                    .map(|o| {
+                        let phase = serde_json::to_value(o.phase)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "day".to_owned());
+                        format!("{} ({phase}, id={})", o.label, o.id)
+                    })
+                    .collect();
+                parts.push(format!("occasions: {}", occ.join(", ")));
+            }
+            if let Some(city) = &env.scene_city {
+                parts.push(format!(
+                    "scene city: {} (a mood the listener picked, not where they are; the player gives no weather)",
+                    city.label
+                ));
+            }
+            if parts.is_empty() {
+                out.push("Moment environment: shared (no active signals).".to_owned());
+            } else {
+                out.push(format!("Moment environment: {}.", parts.join("; ")));
+            }
+        }
+    }
+
+    let intents = &moment.listening_intents;
+    match intents.status {
+        MomentSectionStatus::NotShared => {
+            out.push("Listening intents: not shared.".to_owned());
+        }
+        MomentSectionStatus::Unavailable => {
+            out.push("Listening intents: unavailable right now.".to_owned());
+        }
+        MomentSectionStatus::Shared => {
+            if intents.items.is_empty() {
+                out.push(format!(
+                    "Listening intents: none active (momentRevision {}).",
+                    moment.revision
+                ));
+            } else {
+                let summary: Vec<_> = intents
+                    .items
+                    .iter()
+                    .map(|item| {
+                        let scope = match item.scope {
+                            ListeningIntentScope::Today => "today",
+                            ListeningIntentScope::Session => "session",
+                            ListeningIntentScope::Until => "until",
+                        };
+                        let basis = match item.basis {
+                            ListeningIntentBasis::OwnerInput => "owner",
+                            ListeningIntentBasis::UserRequestReportedByAssistant => "listener",
+                            ListeningIntentBasis::AssistantInference => "inferred",
+                        };
+                        let val = match &item.instruction {
+                            ListeningIntentInstruction::Vocals { mode } => {
+                                serde_json::to_value(mode)
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(|s| format!("vocals={s}")))
+                                    .unwrap_or_else(|| "vocals".into())
+                            }
+                            ListeningIntentInstruction::Energy { level } => {
+                                serde_json::to_value(level)
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(|s| format!("energy={s}")))
+                                    .unwrap_or_else(|| "energy".into())
+                            }
+                            ListeningIntentInstruction::Activity { kind } => {
+                                serde_json::to_value(kind)
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(|s| format!("activity={s}")))
+                                    .unwrap_or_else(|| "activity".into())
+                            }
+                            ListeningIntentInstruction::MusicBrief { brief } => {
+                                format!("brief=\"{brief}\"")
+                            }
+                            ListeningIntentInstruction::DismissTheme { theme_id } => {
+                                format!("dismissed={theme_id}")
+                            }
+                        };
+                        format!(
+                            "{val} ({scope}, {basis}, key={}, {})",
+                            item.intent_key,
+                            expires_in(item.expires_at_ms)
+                        )
+                    })
+                    .collect();
+                out.push(format!(
+                    "Listening intents (momentRevision {}): {}.",
+                    moment.revision,
+                    summary.join("; ")
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// "ends in 2 h 15 min" from the adapter's own clock, for clients that read only text.
+fn expires_in(expires_at_ms: u64) -> String {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    let minutes = expires_at_ms.saturating_sub(now_ms).div_ceil(60_000);
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("ends in {m} min"),
+        (h, 0) => format!("ends in {h} h"),
+        (h, m) => format!("ends in {h} h {m} min"),
+    }
 }
 
 fn track_label(track: &DjTrack) -> String {
@@ -745,5 +928,59 @@ mod tests {
              Recently, newest first: Gamma by Band (skipped by the listener).\n\
              The listener has been quiet for 12 minutes."
         );
+    }
+
+    #[test]
+    fn cue_text_distinguishes_cleared_unavailable_and_paged_tastes_plus_moment() {
+        let base = json!({
+            "seq": 2, "kind": "checkIn", "reasons": ["routine"], "ageMs": 0,
+            "prompt": "Check in.",
+            "nowPlaying": null, "upNext": [], "moreQueued": false, "recent": [],
+            "listener": {"lastInteraction": null, "lastInteractionAgoMs": null,
+                         "lastSpokenToAgoMs": null, "unansweredCheckIns": 0},
+            "chattiness": "normal", "preferences": [], "preferencesUnchanged": false
+        });
+
+        let cleared: DjCue = serde_json::from_value(base.clone()).unwrap();
+        assert!(
+            cue_text(&cleared)
+                .contains("Recorded tastes: none (all earlier taste notes were cleared).")
+        );
+
+        let mut unavail_val = base.clone();
+        unavail_val["preferencesUnavailable"] = json!(true);
+        unavail_val["preferencesUnchanged"] = json!(true);
+        let unavail: DjCue = serde_json::from_value(unavail_val).unwrap();
+        assert!(
+            cue_text(&unavail).contains(
+                "Recorded tastes: unavailable right now; keep any previously known tastes."
+            )
+        );
+
+        let mut moment_val = base;
+        moment_val["moment"] = json!({
+            "revision": 5,
+            "environment": {
+                "status": "shared",
+                "revision": "cfg-1-env-1",
+                "time": { "localDate": "2026-12-24", "weekday": "thursday", "dayPart": "evening", "timeZone": "America/New_York" },
+                "occasions": [{ "id": "occasion:us:christmas-day", "label": "Christmas Eve", "phase": "eve", "kind": "public", "localDate": "2026-12-24", "providerVersion": "date-holidays@3.39.2" }],
+                "sceneCity": { "label": "Tokyo", "source": "userConfigured" },
+                "weatherProvided": false
+            },
+            "listeningIntents": { "status": "notShared", "revision": "cfg-1", "items": [] }
+        });
+        let with_moment: DjCue = serde_json::from_value(moment_val).unwrap();
+        let txt = cue_text(&with_moment);
+        assert!(
+            txt.contains("thursday evening (2026-12-24, America/New_York)"),
+            "{txt}"
+        );
+        assert!(
+            txt.contains("Christmas Eve (eve, id=occasion:us:christmas-day)"),
+            "{txt}"
+        );
+        assert!(txt.contains("scene city: Tokyo"), "{txt}");
+        assert!(txt.contains("Listening intents: not shared."), "{txt}");
     }
 }

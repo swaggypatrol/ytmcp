@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import type { OutputGateControlPayload, OutputGateResultPayload } from "@ytmcp/protocol";
 import { app, net, powerMonitor } from "electron";
 import type { CoverAssetResolution, DesktopHostController, DesktopHostHooks } from "../bootstrap/main.js";
+import { EnvironmentProvider, nextEnvironmentSampleDelayMs } from "../environment/provider.js";
 import { attachPlayerBridgeInjector } from "./bridge-injector.js";
 import { RustHostClient, type MprisUiAction, type RustHostClientOptions } from "./client.js";
 
@@ -17,6 +18,8 @@ export interface IntegratedDesktopHost {
 const COVER_RESOLVE_TIMEOUT_MS = 8_000;
 /** Chromium's connectivity flag is cheap to read; Electron's main process has no event for it. */
 const NETWORK_POLL_MS = 5_000;
+/** Longest gap between environment samples; also how late a clock or time-zone change is seen. */
+const ENVIRONMENT_POLL_MS = 60_000;
 
 function readGpuAccelerated(): boolean | null {
   const status = app.getGPUFeatureStatus();
@@ -46,8 +49,11 @@ export function createIntegratedDesktopHooks(
   let bridgeInjector: ReturnType<typeof attachPlayerBridgeInjector> | null = null;
   let removeSystemListeners: (() => void) | null = null;
   let networkPoll: NodeJS.Timeout | null = null;
+  let environmentPoll: NodeJS.Timeout | null = null;
   let shutdownPromise: Promise<void> | null = null;
   let online = true;
+  const environmentProvider = new EnvironmentProvider();
+  let lastEnvSnapshotKey: string | null = null;
   /**
    * Tray availability last written into the cached hello (null before startup). The client
    * delivers that cache to the core: now, after the in-flight handshake, or on restart.
@@ -142,6 +148,11 @@ export function createIntegratedDesktopHooks(
       options.clientOptions?.onBridgeEnvelope?.(env);
     },
     onOutputGateControl: handleOutputGateControl,
+    onEnvironmentConfig: (cfg) => {
+      environmentProvider.setConfig(cfg);
+      emitEnvironmentSnapshot(true);
+      options.clientOptions?.onEnvironmentConfig?.(cfg);
+    },
     onMprisAction: (action) => {
       options.onMprisUiNotification?.(action);
       options.clientOptions?.onMprisAction?.(action);
@@ -169,6 +180,7 @@ export function createIntegratedDesktopHooks(
     onControlledRestarted: async (ready) => {
       // The restarted core starts without credentials.
       void controller?.credentialBroker.resendCurrent();
+      emitEnvironmentSnapshot(true);
       const playerWin = controller?.windowManager.getPlayerWindow();
       if (playerWin && !playerWin.isDestroyed()) {
         // Keep player paused and restore audio output only after paused state is ensured.
@@ -257,6 +269,27 @@ export function createIntegratedDesktopHooks(
     }
   };
 
+  let lastEnvValidUntilMs = 0;
+  function emitEnvironmentSnapshot(force: boolean): void {
+    if (shutdownPromise) return;
+    const status = rustHost.getStatus();
+    let delayMs = ENVIRONMENT_POLL_MS;
+    if (status === "ready" || status === "starting") {
+      const snap = environmentProvider.snapshot({ includeCountries: force });
+      const key = `${snap.configRevision}|${snap.timeZone ?? ""}|${snap.localDate ?? ""}|${snap.dayPart ?? ""}|${snap.occasions?.length ?? 0}`;
+      if (force || key !== lastEnvSnapshotKey || snap.capturedAtMs >= lastEnvValidUntilMs - 30_000) {
+        lastEnvSnapshotKey = key;
+        lastEnvValidUntilMs = snap.validUntilMs;
+        rustHost.sendEnvironmentSnapshot(snap);
+      }
+      delayMs = nextEnvironmentSampleDelayMs(snap, Date.now(), ENVIRONMENT_POLL_MS);
+    }
+    // Sample again before this snapshot runs out, so the core always holds a valid one.
+    if (environmentPoll) clearTimeout(environmentPoll);
+    environmentPoll = setTimeout(() => emitEnvironmentSnapshot(false), delayMs);
+    environmentPoll.unref();
+  }
+
   const attachController = async (ctrl: DesktopHostController): Promise<void> => {
     controller = ctrl;
     bridgeInjector = attachPlayerBridgeInjector(
@@ -301,6 +334,7 @@ export function createIntegratedDesktopHooks(
     if (!removeSystemListeners) {
       const onResume = (): void => {
         rustHost.sendPowerResume();
+        emitEnvironmentSnapshot(true);
         // Waking up restarts the retry budget even if net.isOnline() missed the outage.
         controller?.credentialBroker.handleNetworkOnline();
       };
@@ -312,6 +346,7 @@ export function createIntegratedDesktopHooks(
       };
       void app.getGPUInfo("basic").then(syncGpu, () => {});
     }
+    if (!environmentPoll) emitEnvironmentSnapshot(false);
     const gpuAccelerated = announcedGpu;
     const trayAvailable = ctrl.trayAvailable;
     announcedTray = trayAvailable;
@@ -338,6 +373,7 @@ export function createIntegratedDesktopHooks(
 
     syncGpu();
     syncTray();
+    emitEnvironmentSnapshot(true);
     await bridgeInjector.reinjectIfReady();
   };
 
@@ -348,6 +384,10 @@ export function createIntegratedDesktopHooks(
     if (networkPoll) {
       clearInterval(networkPoll);
       networkPoll = null;
+    }
+    if (environmentPoll) {
+      clearTimeout(environmentPoll);
+      environmentPoll = null;
     }
     return (shutdownPromise ??= rustHost.stop());
   };

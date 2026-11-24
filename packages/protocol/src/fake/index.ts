@@ -5,8 +5,12 @@ import type {
   CatalogQueryRequest,
   CatalogResponsePayload,
   CommandReceipt,
+  HostEnvironmentSnapshotPayload,
   LyricsQueryRequest,
   LyricsResult,
+  MomentDesktopRequest,
+  MomentDesktopSnapshot,
+  OwnerMomentConfig,
   PlayerCommandPayload,
   PlaylistSummary,
   QueueEntry,
@@ -89,6 +93,18 @@ export class FakeCoreClient {
   private playlists: PlaylistSummary[];
   private tracks10k: Track[];
   private injectGapNext = false;
+  private momentConfig: OwnerMomentConfig = {
+    configRevision: 0,
+    shareTime: false,
+    holidaysEnabled: false,
+    holidayCountry: null,
+    holidayState: null,
+    holidayRegion: null,
+    includeCulturalObservances: false,
+    sceneCity: null,
+    shareListeningIntents: true,
+    sharedPrincipalsByAccount: {},
+  };
 
   constructor(scenario: FakeScenario = "normal") {
     this.scenario = scenario;
@@ -541,6 +557,134 @@ export class FakeCoreClient {
       ...CALIBRATED_LRC_FIXTURE,
       videoId: req.track.videoId,
       userOffsetMs: req.resetUserOffset ? 0 : (req.setUserOffsetMs ?? 0),
+    };
+  }
+
+  public momentSettings(req: MomentDesktopRequest): MomentDesktopSnapshot {
+    const accountKey = this.snapshot.authState.accountScope ?? "__signed_out__";
+    const principals = ["mock-dj"];
+    let previewPrincipal: string | null = null;
+    if (req.action === "read") {
+      previewPrincipal = req.previewPrincipal ?? null;
+    } else if (req.action === "update") {
+      const p = req.patch;
+      previewPrincipal = p.previewPrincipal ?? null;
+      if (typeof p.shareTime === "boolean") this.momentConfig.shareTime = p.shareTime;
+      if (typeof p.holidaysEnabled === "boolean") {
+        this.momentConfig.holidaysEnabled = p.holidaysEnabled;
+      }
+      if (typeof p.holidayCountry === "string") {
+        const trimmed = p.holidayCountry.trim().toUpperCase();
+        this.momentConfig.holidayCountry = trimmed || null;
+      }
+      if (typeof p.holidayState === "string") {
+        const trimmed = p.holidayState.trim();
+        this.momentConfig.holidayState = trimmed || null;
+      }
+      if (typeof p.holidayRegion === "string") {
+        const trimmed = p.holidayRegion.trim();
+        this.momentConfig.holidayRegion = trimmed || null;
+      }
+      if (typeof p.includeCulturalObservances === "boolean") {
+        this.momentConfig.includeCulturalObservances = p.includeCulturalObservances;
+      }
+      if (typeof p.sceneCity === "string") {
+        const trimmed = p.sceneCity.trim();
+        this.momentConfig.sceneCity = trimmed || null;
+      }
+      if (typeof p.shareListeningIntents === "boolean") {
+        this.momentConfig.shareListeningIntents = p.shareListeningIntents;
+      }
+      if (p.setPrincipalShared) {
+        const map = (this.momentConfig.sharedPrincipalsByAccount ??= {});
+        const current = new Set(map[accountKey] ?? []);
+        if (p.setPrincipalShared.shared) {
+          current.add(p.setPrincipalShared.principal);
+        } else {
+          current.delete(p.setPrincipalShared.principal);
+        }
+        map[accountKey] = [...current].sort();
+      }
+      this.momentConfig.configRevision = (this.momentConfig.configRevision ?? 0) + 1;
+      this.snapshot.revision += 1;
+      this.emit({
+        deltaType: "momentChanged",
+        revision: this.snapshot.revision,
+      });
+    }
+
+    const now = Date.now();
+    const envSnap: HostEnvironmentSnapshotPayload = {
+      configRevision: this.momentConfig.configRevision ?? 0,
+      capturedAtMs: now,
+      validUntilMs: now + 300_000,
+      clockOk: true,
+      calendarOk: true,
+      timeZone: "America/New_York",
+      localDate: "2026-11-23",
+      weekday: "monday",
+      dayPart: "evening",
+      dayEndsAtUtcMs: now + 18_000_000,
+      occasions: [],
+      countries: [
+        { code: "CN", name: "China", states: [] },
+        { code: "JP", name: "Japan", states: [] },
+        { code: "GB", name: "United Kingdom", states: [] },
+        { code: "US", name: "United States", states: [{ code: "NY", name: "New York" }, { code: "WA", name: "Washington" }] },
+      ],
+    };
+
+    const selected = previewPrincipal && principals.includes(previewPrincipal)
+      ? previewPrincipal
+      : principals[0]!;
+    const sharedList = this.momentConfig.sharedPrincipalsByAccount?.[accountKey] ?? [];
+    const allowed = sharedList.includes(selected);
+    const revStr = `cfg-${this.momentConfig.configRevision ?? 0}`;
+    const previewJson = allowed
+      ? {
+          revision: this.momentConfig.configRevision ?? 0,
+          environment: {
+            status:
+              this.momentConfig.shareTime ||
+              this.momentConfig.holidaysEnabled ||
+              this.momentConfig.sceneCity
+                ? "shared"
+                : "notShared",
+            revision: revStr,
+            ...(this.momentConfig.shareTime
+              ? {
+                  time: {
+                    localDate: envSnap.localDate,
+                    weekday: envSnap.weekday,
+                    dayPart: envSnap.dayPart,
+                    timeZone: envSnap.timeZone,
+                  },
+                }
+              : {}),
+            ...(this.momentConfig.sceneCity
+              ? { sceneCity: { label: this.momentConfig.sceneCity, source: "userConfigured" } }
+              : {}),
+            weatherProvided: false,
+          },
+          listeningIntents: {
+            status: this.momentConfig.shareListeningIntents ? "shared" : "notShared",
+            revision: "intent-0",
+            items: [],
+          },
+        }
+      : {
+          revision: this.momentConfig.configRevision ?? 0,
+          environment: { status: "notShared", revision: revStr, weatherProvided: false },
+          listeningIntents: { status: "notShared", revision: revStr, items: [] },
+        };
+
+    return {
+      config: structuredClone(this.momentConfig),
+      currentAccountKey: accountKey,
+      registeredPrincipals: principals,
+      environment: envSnap,
+      previewPrincipal: selected,
+      previewJson,
     };
   }
 }

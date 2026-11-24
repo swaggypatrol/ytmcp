@@ -37,6 +37,23 @@ impl ControlClient {
     }
 
     pub async fn call(&self, request: ControlRequest) -> Result<ControlResponse, ControlError> {
+        self.call_inner(request, self.allow_start).await
+    }
+
+    /// Calls the player only if its local socket is already listening; never spawns the player
+    /// process in the background (used by `ytm_wait_dj_prompt` so quitting stays exited).
+    pub async fn call_attach_only(
+        &self,
+        request: ControlRequest,
+    ) -> Result<ControlResponse, ControlError> {
+        self.call_inner(request, false).await
+    }
+
+    async fn call_inner(
+        &self,
+        request: ControlRequest,
+        allow_start_now: bool,
+    ) -> Result<ControlResponse, ControlError> {
         let path = self.credential.clone();
         let credential =
             tokio::task::spawn_blocking(move || load_private_json::<ClientCredential>(&path))
@@ -54,16 +71,16 @@ impl ControlClient {
             auto_socket_path().map_err(|_| unavailable("a private XDG_RUNTIME_DIR is required"))?;
         let submit = matches!(request, ControlRequest::Submit(_));
         let stream = self
-            .attach(&socket)
+            .attach(&socket, allow_start_now)
             .await
             .map_err(|error| before_write(submit, error))?;
         exchange(stream, credential, request).await
     }
 
-    async fn attach(&self, path: &Path) -> Result<UnixStream, ControlError> {
+    async fn attach(&self, path: &Path, allow_start_now: bool) -> Result<UnixStream, ControlError> {
         match connect(path).await {
             Ok(stream) => return Ok(stream),
-            Err(err) if self.allow_start && is_unavailable(&err) => {}
+            Err(err) if allow_start_now && is_unavailable(&err) => {}
             Err(_) => {
                 return Err(unavailable(
                     "YTMcp is not available on the local control socket",

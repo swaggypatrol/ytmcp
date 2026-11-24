@@ -1,7 +1,7 @@
 use ytm_control_api::{
     AccountState, Album, Artist, AudioObservation, Capability, CapabilityArea, ContextSnapshot,
-    EventCursor, PendingPlayback, PlayerInclude, PlayerState, PlayerView, QueueOccurrence,
-    QueueProjection, Rating, Track,
+    EventCursor, MomentView, PendingPlayback, PlayerInclude, PlayerState, PlayerView,
+    QueueOccurrence, QueueProjection, Rating, Track,
 };
 use ytm_protocol::{
     AppSnapshot, CapabilitySupport, Freshness, PlayerConnectionState, QueueSnapshot,
@@ -39,6 +39,7 @@ pub(super) fn context_projection(
     captured_at_ms: u64,
     context_token: String,
     preview_limit: usize,
+    moment: Option<MomentView>,
 ) -> ContextSnapshot {
     let player = &snapshot.player;
     let start = queue
@@ -62,6 +63,7 @@ pub(super) fn context_projection(
         account: account_projection(&snapshot.auth_state),
         queue: queue_projection(snapshot, queue, start, preview_limit),
         capabilities: capabilities(snapshot),
+        moment,
     }
 }
 

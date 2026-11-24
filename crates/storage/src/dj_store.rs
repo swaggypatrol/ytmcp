@@ -183,6 +183,23 @@ impl DjStore for SqliteStorage {
             Ok((items, more))
         })
     }
+
+    fn count_preferences(
+        &self,
+        account_scope: AccountScope,
+    ) -> BoxFuture<'_, Result<u32, ControlError>> {
+        journal_task(Arc::clone(&self.journal), move |conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM control_dj_preferences
+                     WHERE account_scope = ?1 AND session_id = ''",
+                    params![account_scope.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|_| error_storage())?;
+            Ok(u32::try_from(count).unwrap_or(u32::MAX))
+        })
+    }
 }
 
 fn subject_key(subject: &DjPreferenceSubject) -> (&'static str, String) {

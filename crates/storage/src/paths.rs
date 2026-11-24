@@ -63,6 +63,10 @@ impl StoragePaths {
         self.config_dir.join("settings.json")
     }
 
+    pub fn moment_config_file(&self) -> PathBuf {
+        self.config_dir.join("moment-config.json")
+    }
+
     pub fn database_file(&self) -> PathBuf {
         self.data_dir.join("ytmcp.db")
     }

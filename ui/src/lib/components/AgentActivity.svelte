@@ -2,12 +2,13 @@
   import type {
     AgentActivityRequest,
     AgentActivitySnapshot,
+    AgentListeningIntentSummary,
     AgentOperationPhase,
     AgentOperationSummary,
     AgentPreferenceSummary,
   } from "@ytmcp/protocol";
   import { onDestroy, untrack } from "svelte";
-  import { t } from "../i18n/index.svelte.js";
+  import { getLocale, t } from "../i18n/index.svelte.js";
   import type { YtmUiClient } from "../ipc/client.js";
 
   interface Props {
@@ -23,10 +24,13 @@
     scope: string;
     revision: number;
     reload: number;
+    limit: number;
   }
 
   let { client, scopeKey, revision, visible, onOpenOfficialPlayer }: Props = $props();
   const copy = $derived(t.agentActivity);
+  /** The core lists this many preferences on a plain read; "Load more" adds the same again. */
+  const DEFAULT_PREFERENCES_LIMIT = 50;
   const phaseTone: Partial<Record<AgentOperationPhase, string>> = {
     verified: "var(--status-success)",
     unknown: "var(--status-warning)",
@@ -36,6 +40,8 @@
 
   let saved = $state.raw<{ scope: string; snapshot: AgentActivitySnapshot } | null>(null);
   let attempted = $state.raw<ReadRequest | null>(null);
+  let lastScopeKey = $state<string | null>(null);
+  let preferencesLimit = $state(DEFAULT_PREFERENCES_LIMIT);
   let readError = $state<string | null>(null);
   let actionError = $state<{ scope: string; stale: boolean } | null>(null);
   let reading = $state(false);
@@ -51,8 +57,44 @@
     return (copy.resources as Record<string, string>)[resource] ?? resource;
   }
 
+  function actionLabel(operation: AgentOperationSummary): string | null {
+    return operation.action ? ((copy.actions as Record<string, string>)[operation.action] ?? null) : null;
+  }
+
   function stanceLabel(preference: AgentPreferenceSummary): string {
     return copy.stances[preference.stance] ?? preference.stance;
+  }
+
+  function intentBasisLabel(intent: AgentListeningIntentSummary): string {
+    return (copy.intentBasis as Record<string, string>)[intent.basis] ?? intent.basis;
+  }
+
+  /** The intent in the interface language; a brief is shown exactly as the assistant wrote it. */
+  function intentLabel(intent: AgentListeningIntentSummary): string {
+    if (intent.kind === "musicBrief") return copy.intentBrief.replace("{brief}", intent.value);
+    if (intent.kind === "dismissTheme") {
+      const theme = ["holidays", "occasion"].includes(intent.value)
+        ? copy.allHolidays
+        : (intent.value.split(":").pop() ?? intent.value).replaceAll("-", " ");
+      return copy.intentDismissed.replace("{theme}", theme);
+    }
+    const values = (copy.intentValues as Record<string, Record<string, string>>)[intent.kind];
+    return values?.[intent.value] ?? `${intent.kind}: ${intent.value}`;
+  }
+
+  function intentEnds(intent: AgentListeningIntentSummary): string {
+    const end = new Date(intent.expiresAtMs);
+    const sameDay = end.toDateString() === new Date().toDateString();
+    const time = new Intl.DateTimeFormat(getLocale(), {
+      ...(sameDay ? {} : { weekday: "short" }),
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(end);
+    return copy.intentEnds.replace("{time}", time);
+  }
+
+  function intentScopeLabel(intent: AgentListeningIntentSummary): string {
+    return (copy.intentScope as Record<string, string>)[intent.scopeKind] ?? intent.scopeKind;
   }
 
   const activity = $derived(saved && saved.scope === scopeKey ? saved.snapshot : null);
@@ -64,7 +106,11 @@
     reading = true;
     readError = null;
     try {
-      const snapshot = await client.agentActivity({ action: "read" });
+      const req: AgentActivityRequest =
+        request.limit <= DEFAULT_PREFERENCES_LIMIT
+          ? { action: "read" }
+          : { action: "readWithOptions", preferencesLimit: request.limit };
+      const snapshot = await client.agentActivity(req);
       if (!destroyed && request.scope === scopeKey) saved = { scope: request.scope, snapshot };
     } catch {
       if (!destroyed && request.scope === scopeKey) readError = request.scope;
@@ -75,20 +121,38 @@
 
   $effect(() => {
     const scope = scopeKey;
+    if (scope !== lastScopeKey) {
+      lastScopeKey = scope;
+      preferencesLimit = DEFAULT_PREFERENCES_LIMIT;
+    }
     if (!visible || scope === null || busy) return;
-    if (attempted?.scope === scope && attempted.revision === revision && attempted.reload === reload) return;
-    const request = { scope, revision, reload };
+    const limit = preferencesLimit;
+    if (
+      attempted?.scope === scope &&
+      attempted.revision === revision &&
+      attempted.reload === reload &&
+      attempted.limit === limit
+    ) {
+      return;
+    }
+    const request = { scope, revision, reload, limit };
     untrack(() => void read(request));
   });
 
-  async function act(request: Exclude<AgentActivityRequest, { action: "read" }>) {
+  async function act(
+    request: Exclude<AgentActivityRequest, { action: "read" } | { action: "readWithOptions" }>
+  ) {
     const scope = scopeKey;
     if (scope === null || actionsDisabled) return;
     acting = true;
     actionError = null;
     try {
       const snapshot = await client.agentActivity(request);
-      if (!destroyed && scope === scopeKey) saved = { scope, snapshot };
+      // The reply lists the default page; after "Load more", read the longer list again instead.
+      if (!destroyed && scope === scopeKey) {
+        if (preferencesLimit > DEFAULT_PREFERENCES_LIMIT) reload += 1;
+        else saved = { scope, snapshot };
+      }
     } catch (error) {
       if (!destroyed && scope === scopeKey) {
         actionError = {
@@ -139,9 +203,9 @@
               <li class="flex flex-col gap-2 py-3">
                 <div class="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
                   <div class="min-w-0 flex flex-col gap-0.5">
-                    <p class="type-sm font-medium wrap-anywhere">{operation.operationId}</p>
+                    <p class="type-sm font-medium wrap-anywhere">{actionLabel(operation) ?? operation.operationId}</p>
                     <p class="type-xs wrap-anywhere" style="color: var(--text-secondary);">
-                      <span style="color: var(--agent);">{operation.principal}</span>{#if operation.resource} · {resourceLabel(operation.resource)}{/if}
+                      <span style="color: var(--agent);">{operation.principal}</span>{#if operation.resource} · {resourceLabel(operation.resource)}{/if}{#if actionLabel(operation)} · <span class="tabular-nums">{operation.operationId}</span>{/if}
                     </p>
                   </div>
                   <span class="chip" style:color={phaseTone[operation.phase]} data-testid="agent-operation-phase">
@@ -182,6 +246,47 @@
         {/if}
       </section>
 
+      <section class="card min-w-0 p-5 flex flex-col gap-3" aria-labelledby="agent-intents-heading" data-testid="agent-listening-intents">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="agent-intents-heading" class="type-lg font-semibold">{copy.listeningIntents}</h2>
+          {#if (activity.listeningIntents ?? []).length > 0}
+            <button
+              type="button"
+              class="btn-ghost"
+              disabled={actionsDisabled}
+              onclick={() => void act({ action: "clearAllListeningIntents" })}
+              data-testid="agent-clear-all-intents"
+            >{copy.clearAllIntents}</button>
+          {/if}
+        </div>
+        {#if (activity.listeningIntents ?? []).length === 0}
+          <p class="type-sm" style="color: var(--text-secondary);">{copy.noListeningIntents}</p>
+        {:else}
+          <ul class="operation-list">
+            {#each activity.listeningIntents ?? [] as intent (intent.intentId)}
+              <li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3" data-testid="agent-listening-intent">
+                <div class="min-w-0 flex flex-col gap-1">
+                  <p class="type-sm font-medium wrap-anywhere whitespace-pre-wrap">{intentLabel(intent)}</p>
+                  <div class="flex flex-wrap items-center gap-2 type-xs" style="color: var(--text-secondary);">
+                    <span class="chip" class:chip-agent={intent.basis !== "ownerInput"}>{intentBasisLabel(intent)}</span>
+                    <span class="chip">{intentScopeLabel(intent)}</span>
+                    <span class="tabular-nums" data-testid="agent-intent-ends">{intentEnds(intent)}</span>
+                    <span class="wrap-anywhere">{copy.recordedBy.replace("{client}", intent.reportedBy)}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="btn-ghost"
+                  disabled={actionsDisabled}
+                  aria-label={copy.clearIntentFor.replace("{summary}", intentLabel(intent))}
+                  onclick={() => void act({ action: "clearListeningIntent", intentKey: intent.intentKey })}
+                >{copy.clearIntent}</button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+
       <section class="card min-w-0 p-5 flex flex-col gap-3" aria-labelledby="agent-preferences-heading">
         <h2 id="agent-preferences-heading" class="type-lg font-semibold">{copy.preferences}</h2>
         {#if (activity.preferences ?? []).length === 0}
@@ -193,6 +298,9 @@
               <li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3" data-testid="agent-preference">
                 <div class="min-w-0 flex flex-col gap-1">
                   <p class="type-sm font-medium wrap-anywhere">{name}</p>
+                  {#if preference.note}
+                    <p class="type-xs wrap-anywhere whitespace-pre-wrap m-0" style="color: var(--text-secondary);" data-testid="agent-preference-note">{preference.note}</p>
+                  {/if}
                   <div class="flex flex-wrap items-center gap-2 type-xs" style="color: var(--text-secondary);">
                     <span class="chip chip-agent" data-testid="agent-preference-stance">{stanceLabel(preference)}</span>
                     <span class="wrap-anywhere">{copy.recordedBy.replace("{client}", preference.recordedBy)}</span>
@@ -209,11 +317,23 @@
             {/each}
           </ul>
           {#if (activity.preferencesTotal ?? 0) > (activity.preferences ?? []).length}
-            <p class="type-xs" style="color: var(--text-secondary);" data-testid="agent-preferences-truncated">
-              {copy.preferencesTruncated
-                .replace("{shown}", String((activity.preferences ?? []).length))
-                .replace("{total}", String(activity.preferencesTotal))}
-            </p>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="type-xs m-0" style="color: var(--text-secondary);" data-testid="agent-preferences-truncated">
+                {copy.preferencesTruncated
+                  .replace("{shown}", String((activity.preferences ?? []).length))
+                  .replace("{total}", String(activity.preferencesTotal))}
+              </p>
+              <button
+                type="button"
+                class="btn-secondary"
+                disabled={busy || !visible}
+                onclick={() => {
+                  preferencesLimit += DEFAULT_PREFERENCES_LIMIT;
+                  reload += 1;
+                }}
+                data-testid="agent-preferences-load-more"
+              >{copy.loadMorePreferences}</button>
+            </div>
           {/if}
         {/if}
       </section>

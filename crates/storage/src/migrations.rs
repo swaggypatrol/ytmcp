@@ -1,13 +1,14 @@
 use crate::error::StorageError;
 use crate::paths::{StoragePaths, ensure_dir_0700, set_file_0600};
-use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{info, warn};
+use ytm_control_api::{DjFeedbackChange, WriteAction, WriteInput, compute_action_hashes};
 use ytm_core::ports::Clock;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 7;
+pub const LATEST_SCHEMA_VERSION: u32 = 8;
 
 struct Migration {
     version: u32,
@@ -210,6 +211,34 @@ CREATE INDEX idx_control_operations_claimed
     ON control_operations (account_scope, claimed_at_ms);
 "#,
     },
+    Migration {
+        version: 8,
+        description: "add replay action hashes, scrub settled preference notes, and store listening intents",
+        sql: r#"
+ALTER TABLE control_operations ADD COLUMN action_hash TEXT;
+ALTER TABLE control_operations ADD COLUMN action_tokenless_hash TEXT;
+CREATE TABLE IF NOT EXISTS control_listening_intents (
+    account_scope TEXT NOT NULL,
+    intent_key TEXT NOT NULL,
+    intent_id TEXT NOT NULL,
+    instruction_json TEXT NOT NULL,
+    scope_kind TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    time_zone TEXT,
+    basis TEXT NOT NULL,
+    reported_by TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (account_scope, intent_key)
+);
+CREATE INDEX IF NOT EXISTS idx_control_listening_intents_scope_exp
+    ON control_listening_intents (account_scope, expires_at_ms);
+CREATE TABLE IF NOT EXISTS control_moment_revisions (
+    account_scope TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL
+);
+"#,
+    },
 ];
 
 pub fn open_and_migrate(
@@ -279,6 +308,9 @@ pub fn open_and_migrate(
                 let now_ms = i64::try_from(clock.wall_now_ms()).unwrap_or(i64::MAX);
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 tx.execute_batch(migration.sql)?;
+                if migration.version == 8 {
+                    apply_migration_v8_data(&tx)?;
+                }
                 tx.execute(
                     "INSERT INTO schema_version (version, applied_at_ms, description) VALUES (?1, ?2, ?3)",
                     params![migration.version, now_ms, migration.description],
@@ -398,5 +430,45 @@ fn perform_online_backup(src: &Connection, backup_path: &Path) -> Result<(), Sto
 
     set_file_0600(backup_path)?;
     info!(backup = %backup_path.display(), "created sqlite online backup prior to migration");
+    Ok(())
+}
+
+fn apply_migration_v8_data(tx: &Transaction<'_>) -> Result<(), StorageError> {
+    let rows: Vec<(i64, i64, String)> = {
+        let mut stmt = tx.prepare("SELECT rowid, settled, request_json FROM control_operations")?;
+        let mapped = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        mapped.collect::<Result<Vec<_>, _>>()?
+    };
+
+    for (rowid, settled, encoded) in rows {
+        let Ok(mut input) = serde_json::from_str::<WriteInput>(&encoded) else {
+            continue;
+        };
+        let (action_hash, tokenless_hash) = compute_action_hashes(&input.action);
+        let mut updated_json: Option<String> = None;
+        if settled != 0
+            && let WriteAction::SetDjFeedback {
+                change: DjFeedbackChange::Record { ref mut note, .. },
+            } = input.action
+            && note.take().is_some()
+        {
+            updated_json = serde_json::to_string(&input).ok();
+        }
+        if let Some(json) = updated_json {
+            tx.execute(
+                "UPDATE control_operations
+                 SET action_hash = ?2, action_tokenless_hash = ?3, request_json = ?4
+                 WHERE rowid = ?1",
+                params![rowid, action_hash, tokenless_hash, json],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE control_operations
+                 SET action_hash = ?2, action_tokenless_hash = ?3
+                 WHERE rowid = ?1",
+                params![rowid, action_hash, tokenless_hash],
+            )?;
+        }
+    }
     Ok(())
 }

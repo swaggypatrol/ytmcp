@@ -55,6 +55,12 @@
     "envelope": {
       "$ref": "#/definitions/Envelope"
     },
+    "environmentConfig": {
+      "$ref": "#/definitions/EnvironmentConfigPayload"
+    },
+    "hostEnvironmentSnapshot": {
+      "$ref": "#/definitions/HostEnvironmentSnapshotPayload"
+    },
     "hostHello": {
       "$ref": "#/definitions/HostHelloPayload"
     },
@@ -66,6 +72,12 @@
     },
     "lyricsResult": {
       "$ref": "#/definitions/LyricsResult"
+    },
+    "momentDesktopRequest": {
+      "$ref": "#/definitions/MomentDesktopRequest"
+    },
+    "momentDesktopSnapshot": {
+      "$ref": "#/definitions/MomentDesktopSnapshot"
     },
     "mutationRequest": {
       "$ref": "#/definitions/MutationRequest"
@@ -114,6 +126,10 @@
     "agentActivitySnapshot",
     "appSettings",
     "appSettingsPatch",
+    "momentDesktopRequest",
+    "momentDesktopSnapshot",
+    "environmentConfig",
+    "hostEnvironmentSnapshot",
     "hostHello",
     "coreReady",
     "hostWindowVisibility",
@@ -148,6 +164,29 @@
             "action": {
               "type": "string",
               "const": "read"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "description": "Read activity with a caller-chosen bounded preference window (1..=500).",
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "readWithOptions"
+            },
+            "preferencesLimit": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "maximum": 500,
+              "minimum": 1
             }
           },
           "additionalProperties": false,
@@ -199,12 +238,54 @@
             "action",
             "preferenceId"
           ]
+        },
+        {
+          "description": "The owner clears a temporary listening intent from the desktop.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "clearListeningIntent"
+            },
+            "intentKey": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "intentKey"
+          ]
+        },
+        {
+          "description": "The owner clears all temporary listening intents for the current account.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "clearAllListeningIntents"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
         }
       ]
     },
     "AgentActivitySnapshot": {
       "type": "object",
       "properties": {
+        "listeningIntents": {
+          "description": "Active temporary listening intents for the current account.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/AgentListeningIntentSummary"
+          }
+        },
         "operations": {
           "type": "array",
           "items": {
@@ -232,6 +313,53 @@
         "operations"
       ]
     },
+    "AgentListeningIntentSummary": {
+      "description": "A temporary listening intent as the desktop activity view displays it.",
+      "type": "object",
+      "properties": {
+        "basis": {
+          "description": "`ownerInput`, `userRequestReportedByAssistant`, or `assistantInference`.",
+          "type": "string"
+        },
+        "expiresAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "intentId": {
+          "type": "string"
+        },
+        "intentKey": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "`vocals`, `energy`, `activity`, `musicBrief` or `dismissTheme`.",
+          "type": "string"
+        },
+        "reportedBy": {
+          "type": "string"
+        },
+        "scopeKind": {
+          "description": "`today`, `session`, or `until`.",
+          "type": "string"
+        },
+        "value": {
+          "description": "The setting (`preferInstrumental`, `steady`, `gaming`, ...), the brief as written, or the\ndismissed occasion's id.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "intentKey",
+        "intentId",
+        "kind",
+        "value",
+        "scopeKind",
+        "expiresAtMs",
+        "basis",
+        "reportedBy"
+      ]
+    },
     "AgentOperationPhase": {
       "type": "string",
       "enum": [
@@ -248,6 +376,13 @@
     "AgentOperationSummary": {
       "type": "object",
       "properties": {
+        "action": {
+          "description": "What the operation did, as a stable key (`play`, `enqueue`, `rememberTaste`, ...) that the\ninterface words in its own language.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "canCancel": {
           "type": "boolean"
         },
@@ -299,6 +434,12 @@
       "type": "object",
       "properties": {
         "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
           "type": [
             "string",
             "null"
@@ -1617,11 +1758,91 @@
         "payload"
       ]
     },
+    "EnvironmentConfigPayload": {
+      "description": "Core -> Host: holiday region config sent whenever owner config changes or on host hello.\nNever carries `scene_city` or registered principals.",
+      "type": "object",
+      "properties": {
+        "configRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "holidayCountry": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidayRegion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidayState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidaysEnabled": {
+          "type": "boolean"
+        },
+        "includeCulturalObservances": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "configRevision",
+        "holidaysEnabled",
+        "includeCulturalObservances"
+      ]
+    },
     "Freshness": {
       "type": "string",
       "enum": [
         "fresh",
         "stale"
+      ]
+    },
+    "HolidayCountryOption": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "states": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/HolidaySubdivisionOption"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "name"
+      ]
+    },
+    "HolidaySubdivisionOption": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "name"
       ]
     },
     "HomeFeed": {
@@ -1657,6 +1878,87 @@
       "required": [
         "personalizedSupported",
         "freshness"
+      ]
+    },
+    "HostEnvironmentSnapshotPayload": {
+      "description": "Host -> Core: local clock & offline holiday snapshot computed in Electron main.",
+      "type": "object",
+      "properties": {
+        "calendarOk": {
+          "type": "boolean"
+        },
+        "capturedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "clockOk": {
+          "type": "boolean"
+        },
+        "configRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "countries": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/HolidayCountryOption"
+          }
+        },
+        "dayEndsAtUtcMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "dayPart": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "localDate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occasions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/HostOccasion"
+          }
+        },
+        "timeZone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "validUntilMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "weekday": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "configRevision",
+        "capturedAtMs",
+        "validUntilMs",
+        "clockOk",
+        "calendarOk"
       ]
     },
     "HostHealth": {
@@ -1739,6 +2041,46 @@
         "hostHealth",
         "networkState",
         "mockMode"
+      ]
+    },
+    "HostOccasion": {
+      "type": "object",
+      "properties": {
+        "actualDate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "`public` or `observance`.",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "localDate": {
+          "type": "string"
+        },
+        "phase": {
+          "description": "`eve`, `day`, or `observed`.",
+          "type": "string"
+        },
+        "providerVersion": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "phase",
+        "kind",
+        "localDate",
+        "providerVersion"
       ]
     },
     "HostWindowVisibilityPayload": {
@@ -1930,6 +2272,7 @@
         "ui.mutation",
         "ui.agentActivity",
         "ui.settingsUpdate",
+        "ui.momentSettings",
         "ui.openPlayerWindow",
         "ui.logout",
         "ui.clearCache",
@@ -1942,6 +2285,7 @@
         "core.mutationResponse",
         "core.agentActivity",
         "core.settingsUpdated",
+        "core.momentSettings",
         "core.error",
         "core.pong",
         "host.hello",
@@ -1956,6 +2300,8 @@
         "host.outputGateResult",
         "core.resolveAsset",
         "core.assetResolved",
+        "core.environmentConfig",
+        "host.environmentSnapshot",
         "host.shutdown",
         "bridge.ready",
         "bridge.playbackObserved",
@@ -1965,6 +2311,88 @@
         "bridge.error",
         "player.command",
         "player.snapshotRequest"
+      ]
+    },
+    "MomentDesktopRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "read"
+            },
+            "previewPrincipal": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "update"
+            },
+            "patch": {
+              "$ref": "#/definitions/OwnerMomentConfigPatch"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "patch"
+          ]
+        }
+      ]
+    },
+    "MomentDesktopSnapshot": {
+      "description": "Core -> Main UI: desktop Moment DJ settings + registered principals + live principal preview.",
+      "type": "object",
+      "properties": {
+        "config": {
+          "$ref": "#/definitions/OwnerMomentConfig"
+        },
+        "currentAccountKey": {
+          "type": "string"
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostEnvironmentSnapshotPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previewJson": true,
+        "previewPrincipal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registeredPrincipals": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "config",
+        "currentAccountKey",
+        "previewJson"
       ]
     },
     "MutationKind": {
@@ -2096,6 +2524,145 @@
         "transactionId",
         "applied"
       ]
+    },
+    "OwnerMomentConfig": {
+      "description": "Owner-managed Moment DJ privacy and local context configuration stored strictly on desktop.",
+      "type": "object",
+      "properties": {
+        "configRevision": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 0,
+          "minimum": 0
+        },
+        "holidayCountry": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidayRegion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidayState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidaysEnabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "includeCulturalObservances": {
+          "type": "boolean",
+          "default": false
+        },
+        "sceneCity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shareListeningIntents": {
+          "type": "boolean",
+          "default": true
+        },
+        "shareTime": {
+          "type": "boolean",
+          "default": false
+        },
+        "sharedPrincipalsByAccount": {
+          "description": "Per-account allowlist of registered MCP principal names granted Moment access.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "OwnerMomentConfigPatch": {
+      "type": "object",
+      "properties": {
+        "holidayCountry": {
+          "description": "ISO code (`\"US\"`, `\"CN\"`, ...) or `\"\"` to clear.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidayRegion": {
+          "description": "Region code or `\"\"` to clear.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidayState": {
+          "description": "Subdivision/state code or `\"\"` to clear.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "holidaysEnabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "includeCulturalObservances": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "previewPrincipal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sceneCity": {
+          "description": "User-entered city mood context (max 80 chars), or `\"\"` to clear.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 80
+        },
+        "setPrincipalShared": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PrincipalShareUpdate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shareListeningIntents": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "shareTime": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "PagedResult": {
       "type": "object",
@@ -2754,6 +3321,24 @@
         "title"
       ]
     },
+    "PrincipalShareUpdate": {
+      "type": "object",
+      "properties": {
+        "principal": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        },
+        "shared": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "principal",
+        "shared"
+      ]
+    },
     "QueryError": {
       "type": "object",
       "properties": {
@@ -3355,6 +3940,24 @@
             "deltaType",
             "revision",
             "resource_kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "deltaType": {
+              "type": "string",
+              "const": "momentChanged"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "deltaType",
+            "revision"
           ]
         }
       ]

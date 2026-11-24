@@ -2,6 +2,7 @@
   import { glass } from "../glass/liquid-glass.js";
   import { t, type NavView } from "../i18n/index.svelte.js";
   import Icon, { type IconName } from "./Icon.svelte";
+  import appIcon from "../assets/ytmcp-icon.png";
 
   interface Props {
     activeView: NavView | null;
@@ -77,12 +78,7 @@
     {#if !collapsed}
       <div class="min-w-0 pl-1.5">
         <div class="flex items-center gap-2">
-          <!-- Original neutral mark: two overlapping glass panes drawn with theme tokens. -->
-          <svg class="h-7 w-7 shrink-0" viewBox="0 0 28 28" aria-hidden="true" data-testid="brand-mark">
-            <rect x="0.75" y="0.75" width="26.5" height="26.5" rx="8" fill="var(--bg-subtle)" stroke="var(--border-strong)" />
-            <rect x="6" y="10" width="11" height="11" rx="3" fill="var(--text-primary)" fill-opacity="0.22" />
-            <rect x="11" y="6.5" width="11" height="11" rx="3" fill="none" stroke="var(--text-primary)" stroke-width="1.5" />
-          </svg>
+          <img class="h-7 w-7 shrink-0" src={appIcon} alt="" draggable="false" data-testid="brand-mark" />
           <span class="truncate font-semibold type-base">{t.app.name}</span>
         </div>
         {#if mockMode}

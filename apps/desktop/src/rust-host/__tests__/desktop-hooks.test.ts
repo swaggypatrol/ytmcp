@@ -41,7 +41,7 @@ let seq = 0;
 const out = (env) => process.stdout.write(JSON.stringify({ protocolVersion: 1, coreEpoch: "core-" + process.pid, seq: ++seq, ...env }) + "\\n");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const msg = JSON.parse(line);
-  appendFileSync(logFile, JSON.stringify({ pid: process.pid, kind: msg.kind, network: msg.kind === "host.hello" ? msg.payload.networkState : msg.payload, gpu: msg.kind === "host.hello" ? msg.payload.hostHealth.gpuAccelerated : undefined, tray: msg.kind === "host.hello" ? msg.payload.hostHealth.trayAvailable : undefined }) + "\\n");
+  appendFileSync(logFile, JSON.stringify({ pid: process.pid, kind: msg.kind, network: msg.kind === "host.hello" ? msg.payload.networkState : msg.kind === "host.environmentSnapshot" ? { configRevision: msg.payload.configRevision } : msg.payload, gpu: msg.kind === "host.hello" ? msg.payload.hostHealth.gpuAccelerated : undefined, tray: msg.kind === "host.hello" ? msg.payload.hostHealth.trayAvailable : undefined }) + "\\n");
   if (msg.kind === "host.hello") {
     out({ kind: "core.ready", requestId: msg.requestId, payload: { coreEpoch: "core-" + process.pid, protocolVersion: 1 } });
   } else if (msg.kind === "host.sessionMaterial") {
@@ -56,6 +56,18 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
 });
 `;
+
+function readCompleteJsonl<T>(logFile: string): T[] {
+  if (!existsSync(logFile)) return [];
+  const raw = readFileSync(logFile, "utf8");
+  const lastNewline = raw.lastIndexOf("\n");
+  if (lastNewline <= 0) return [];
+  return raw
+    .slice(0, lastNewline)
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as T);
+}
 
 const material: SessionMaterialPayload = {
   accountEpoch: "acct-test",
@@ -87,9 +99,7 @@ describe("integrated desktop hooks: network state and session material", () => {
       { mode: 0o755 }
     );
     const frames = (): Array<{ pid: number; kind: string; network: unknown }> =>
-      existsSync(logFile)
-        ? readFileSync(logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line))
-        : [];
+      readCompleteJsonl<{ pid: number; kind: string; network: unknown }>(logFile);
 
     const broker = {
       handleDeliveryError: vi.fn(),
@@ -160,9 +170,7 @@ describe("integrated desktop hooks: network state and session material", () => {
       { mode: 0o755 }
     );
     const hellos = (): Array<{ gpu: unknown }> =>
-      existsSync(logFile)
-        ? readFileSync(logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((f) => f.kind === "host.hello")
-        : [];
+      readCompleteJsonl<{ kind: string; gpu: unknown }>(logFile).filter((f) => f.kind === "host.hello");
     const controller = {
       identity: { version: "0.1.0" },
       mockMode: false,
@@ -208,10 +216,9 @@ describe("integrated desktop hooks: network state and session material", () => {
       { mode: 0o755 }
     );
     const trays = (): unknown[] =>
-      existsSync(logFile)
-        ? readFileSync(logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line))
-            .filter((f) => f.kind === "host.hello").map((f) => f.tray)
-        : [];
+      readCompleteJsonl<{ kind: string; tray: unknown }>(logFile)
+        .filter((f) => f.kind === "host.hello")
+        .map((f) => f.tray);
     const controller = {
       identity: { version: "0.1.0" },
       mockMode: false,
@@ -253,10 +260,8 @@ describe("integrated desktop hooks: network state and session material", () => {
       { mode: 0o755 }
     );
     const hellos = (): Array<{ pid: number; tray: unknown }> =>
-      existsSync(logFile)
-        ? readFileSync(logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line))
-            .filter((f) => f.kind === "host.hello")
-        : [];
+      readCompleteJsonl<{ pid: number; kind: string; tray: unknown }>(logFile)
+        .filter((f) => f.kind === "host.hello");
     const controller = {
       identity: { version: "0.1.0" },
       mockMode: false,

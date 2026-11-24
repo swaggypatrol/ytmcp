@@ -12,6 +12,8 @@ pub mod history;
 pub mod journal;
 pub mod lyrics;
 mod membership;
+mod moment;
+pub mod moment_store;
 mod playlist;
 mod playlist_edits;
 mod queue;
@@ -85,6 +87,7 @@ pub struct ControlService {
     lyrics: Option<Arc<dyn lyrics::ControlLyrics>>,
     operations: Option<Arc<dyn OperationStore>>,
     dj_store: Option<Arc<dyn dj_store::DjStore>>,
+    moment_store: Option<Arc<dyn moment_store::MomentStore>>,
     history: Option<Arc<dyn history::LocalHistoryStore>>,
     write_slots: Arc<tokio::sync::Semaphore>,
     catalog_locks: catalog_locks::CatalogLocks,
@@ -105,6 +108,7 @@ impl ControlService {
             lyrics: None,
             operations: None,
             dj_store: None,
+            moment_store: None,
             history: None,
             write_slots: Self::write_semaphore(),
             catalog_locks: catalog_locks::CatalogLocks::default(),
@@ -128,6 +132,11 @@ impl ControlService {
 
     pub fn with_dj_store(mut self, store: Arc<dyn dj_store::DjStore>) -> Self {
         self.dj_store = Some(store);
+        self
+    }
+
+    pub fn with_moment_store(mut self, store: Arc<dyn moment_store::MomentStore>) -> Self {
+        self.moment_store = Some(store);
         self
     }
 
@@ -264,7 +273,7 @@ impl ControlService {
                     .filter(|cap| area.is_none_or(|a| a == cap.area))
                     .collect(),
             )),
-            GetContext(input) => self.make_context(grant, &state, input.preview_limit),
+            GetContext(input) => self.make_context(grant, &state, input.preview_limit).await,
             GetPlayer { include } => Ok(ControlResponse::Player(Box::new(player_view(
                 &state.snapshot,
                 include.unwrap_or_default(),
@@ -394,6 +403,22 @@ impl ControlService {
                     .map(ControlResponse::Operation)
                     .ok_or_else(|| invalid("no operation with this ID for this client and account"))
             }
+            ReplayOperation(replay) => {
+                let key = OperationKey {
+                    principal: grant.principal.clone(),
+                    account_scope: grant.scope.clone(),
+                    operation_id: replay.operation_id.clone(),
+                };
+                let store = self
+                    .operations
+                    .as_ref()
+                    .ok_or_else(|| unavailable("the operation journal is unavailable"))?;
+                store
+                    .check_replay(key, replay)
+                    .await?
+                    .map(ControlResponse::Operation)
+                    .ok_or_else(|| invalid("no operation with this ID for this client and account"))
+            }
             GetDjPreferences(input) => self
                 .read_dj_preferences(grant, input)
                 .await
@@ -460,7 +485,10 @@ impl ControlService {
             .events
             .take()
             .ok_or_else(|| unavailable("no event stream"))?;
-        Ok((self.make_context(grant, &state, preview_limit)?, events))
+        Ok((
+            self.make_context(grant, &state, preview_limit).await?,
+            events,
+        ))
     }
 
     async fn authorized_state(
@@ -507,7 +535,7 @@ impl ControlService {
         self.authorized_state(grant, false).await.is_ok()
     }
 
-    fn make_context(
+    async fn make_context(
         &self,
         grant: &ReadGrant,
         state: &ControlRead,
@@ -533,34 +561,38 @@ impl ControlService {
             queue_revision: snapshot.queue_summary.queue_revision,
         };
         let now = self.core.clock().now_ms();
-        let mut contexts = self
-            .contexts
-            .lock()
-            .map_err(|_| unavailable("context storage is unavailable"))?;
-        contexts.retain(|_, saved| saved.expires_at > now);
-        if contexts.len() == CONTEXT_LIMIT {
-            let oldest = contexts
-                .iter()
-                .min_by_key(|(_, context)| context.expires_at)
-                .map(|(token, _)| token.clone());
-            if let Some(oldest) = oldest {
-                contexts.remove(&oldest);
+        {
+            let mut contexts = self
+                .contexts
+                .lock()
+                .map_err(|_| unavailable("context storage is unavailable"))?;
+            contexts.retain(|_, saved| saved.expires_at > now);
+            if contexts.len() == CONTEXT_LIMIT {
+                let oldest = contexts
+                    .iter()
+                    .min_by_key(|(_, context)| context.expires_at)
+                    .map(|(token, _)| token.clone());
+                if let Some(oldest) = oldest {
+                    contexts.remove(&oldest);
+                }
             }
+            contexts.insert(
+                token.clone(),
+                SavedContext {
+                    grant: grant.clone(),
+                    binding,
+                    expires_at: now.saturating_add(CONTEXT_TTL_MS),
+                },
+            );
         }
-        contexts.insert(
-            token.clone(),
-            SavedContext {
-                grant: grant.clone(),
-                binding,
-                expires_at: now.saturating_add(CONTEXT_TTL_MS),
-            },
-        );
+        let moment = Some(self.project_moment(grant, state).await);
         Ok(ControlResponse::Context(Box::new(context_projection(
             snapshot,
             state.queue.as_ref(),
             state.captured_at_ms,
             token,
             limit,
+            moment,
         ))))
     }
 

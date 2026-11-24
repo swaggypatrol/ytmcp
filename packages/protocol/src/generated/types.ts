@@ -13,6 +13,10 @@ export type AgentActivityRequest =
       action: "read";
     }
   | {
+      action: "readWithOptions";
+      preferencesLimit?: number | null;
+    }
+  | {
       action: "cancel";
       operationId: string;
       principal: string;
@@ -20,6 +24,13 @@ export type AgentActivityRequest =
   | {
       action: "clearDjPreference";
       preferenceId: string;
+    }
+  | {
+      action: "clearListeningIntent";
+      intentKey: string;
+    }
+  | {
+      action: "clearAllListeningIntents";
     };
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
@@ -299,6 +310,7 @@ export type MessageKind =
   | "ui.mutation"
   | "ui.agentActivity"
   | "ui.settingsUpdate"
+  | "ui.momentSettings"
   | "ui.openPlayerWindow"
   | "ui.logout"
   | "ui.clearCache"
@@ -311,6 +323,7 @@ export type MessageKind =
   | "core.mutationResponse"
   | "core.agentActivity"
   | "core.settingsUpdated"
+  | "core.momentSettings"
   | "core.error"
   | "core.pong"
   | "host.hello"
@@ -325,6 +338,8 @@ export type MessageKind =
   | "host.outputGateResult"
   | "core.resolveAsset"
   | "core.assetResolved"
+  | "core.environmentConfig"
+  | "host.environmentSnapshot"
   | "host.shutdown"
   | "bridge.ready"
   | "bridge.playbackObserved"
@@ -339,6 +354,19 @@ export type MessageKind =
  * via the `definition` "LyricsKind".
  */
 export type LyricsKind = "synced" | "plain" | "instrumental" | "notFound" | "unavailable" | "disabled";
+/**
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "MomentDesktopRequest".
+ */
+export type MomentDesktopRequest =
+  | {
+      action: "read";
+      previewPrincipal?: string | null;
+    }
+  | {
+      action: "update";
+      patch: OwnerMomentConfigPatch;
+    };
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "MutationKind".
@@ -416,6 +444,10 @@ export type StateDelta =
       resource_id?: string | null;
       resource_kind: string;
       revision: number;
+    }
+  | {
+      deltaType: "momentChanged";
+      revision: number;
     };
 
 /**
@@ -439,10 +471,14 @@ export interface ProtocolSchemaRoot {
   commandReceipt: CommandReceipt;
   coreReady: CoreReadyPayload;
   envelope: Envelope;
+  environmentConfig: EnvironmentConfigPayload;
+  hostEnvironmentSnapshot: HostEnvironmentSnapshotPayload;
   hostHello: HostHelloPayload;
   hostWindowVisibility: HostWindowVisibilityPayload;
   lyricsQuery: LyricsQueryRequest;
   lyricsResult: LyricsResult;
+  momentDesktopRequest: MomentDesktopRequest;
+  momentDesktopSnapshot: MomentDesktopSnapshot;
   mutationRequest: MutationRequest;
   mutationResult: MutationResult;
   openPlayerWindow: OpenPlayerWindowPayload;
@@ -459,6 +495,10 @@ export interface ProtocolSchemaRoot {
  * via the `definition` "AgentActivitySnapshot".
  */
 export interface AgentActivitySnapshot {
+  /**
+   * Active temporary listening intents for the current account.
+   */
+  listeningIntents?: AgentListeningIntentSummary[];
   operations: AgentOperationSummary[];
   /**
    * Newest first (bounded).
@@ -470,10 +510,44 @@ export interface AgentActivitySnapshot {
   preferencesTotal?: number;
 }
 /**
+ * A temporary listening intent as the desktop activity view displays it.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "AgentListeningIntentSummary".
+ */
+export interface AgentListeningIntentSummary {
+  /**
+   * `ownerInput`, `userRequestReportedByAssistant`, or `assistantInference`.
+   */
+  basis: string;
+  expiresAtMs: number;
+  intentId: string;
+  intentKey: string;
+  /**
+   * `vocals`, `energy`, `activity`, `musicBrief` or `dismissTheme`.
+   */
+  kind: string;
+  reportedBy: string;
+  /**
+   * `today`, `session`, or `until`.
+   */
+  scopeKind: string;
+  /**
+   * The setting (`preferInstrumental`, `steady`, `gaming`, ...), the brief as written, or the
+   * dismissed occasion's id.
+   */
+  value: string;
+}
+/**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "AgentOperationSummary".
  */
 export interface AgentOperationSummary {
+  /**
+   * What the operation did, as a stable key (`play`, `enqueue`, `rememberTaste`, ...) that the
+   * interface words in its own language.
+   */
+  action?: string | null;
   canCancel: boolean;
   operationId: string;
   phase: AgentOperationPhase;
@@ -490,6 +564,7 @@ export interface AgentOperationSummary {
  */
 export interface AgentPreferenceSummary {
   label?: string | null;
+  note?: string | null;
   preferenceId: string;
   recordedBy: string;
   stance: AgentPreferenceStance;
@@ -1026,6 +1101,77 @@ export interface Envelope {
   seq: number;
 }
 /**
+ * Core -> Host: holiday region config sent whenever owner config changes or on host hello.
+ * Never carries `scene_city` or registered principals.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "EnvironmentConfigPayload".
+ */
+export interface EnvironmentConfigPayload {
+  configRevision: number;
+  holidayCountry?: string | null;
+  holidayRegion?: string | null;
+  holidayState?: string | null;
+  holidaysEnabled: boolean;
+  includeCulturalObservances: boolean;
+}
+/**
+ * Host -> Core: local clock & offline holiday snapshot computed in Electron main.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "HostEnvironmentSnapshotPayload".
+ */
+export interface HostEnvironmentSnapshotPayload {
+  calendarOk: boolean;
+  capturedAtMs: number;
+  clockOk: boolean;
+  configRevision: number;
+  countries?: HolidayCountryOption[];
+  dayEndsAtUtcMs?: number | null;
+  dayPart?: string | null;
+  localDate?: string | null;
+  occasions?: HostOccasion[];
+  timeZone?: string | null;
+  validUntilMs: number;
+  weekday?: string | null;
+}
+/**
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "HolidayCountryOption".
+ */
+export interface HolidayCountryOption {
+  code: string;
+  name: string;
+  states?: HolidaySubdivisionOption[];
+}
+/**
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "HolidaySubdivisionOption".
+ */
+export interface HolidaySubdivisionOption {
+  code: string;
+  name: string;
+}
+/**
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "HostOccasion".
+ */
+export interface HostOccasion {
+  actualDate?: string | null;
+  id: string;
+  /**
+   * `public` or `observance`.
+   */
+  kind: string;
+  label: string;
+  localDate: string;
+  /**
+   * `eve`, `day`, or `observed`.
+   */
+  phase: string;
+  providerVersion: string;
+}
+/**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "HostHelloPayload".
  */
@@ -1091,6 +1237,79 @@ export interface LyricsResult {
 export interface LyricsLine {
   text: string;
   timeMs: number;
+}
+/**
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "OwnerMomentConfigPatch".
+ */
+export interface OwnerMomentConfigPatch {
+  /**
+   * ISO code (`"US"`, `"CN"`, ...) or `""` to clear.
+   */
+  holidayCountry?: string | null;
+  /**
+   * Region code or `""` to clear.
+   */
+  holidayRegion?: string | null;
+  /**
+   * Subdivision/state code or `""` to clear.
+   */
+  holidayState?: string | null;
+  holidaysEnabled?: boolean | null;
+  includeCulturalObservances?: boolean | null;
+  previewPrincipal?: string | null;
+  /**
+   * User-entered city mood context (max 80 chars), or `""` to clear.
+   */
+  sceneCity?: string | null;
+  setPrincipalShared?: PrincipalShareUpdate | null;
+  shareListeningIntents?: boolean | null;
+  shareTime?: boolean | null;
+}
+/**
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "PrincipalShareUpdate".
+ */
+export interface PrincipalShareUpdate {
+  principal: string;
+  shared: boolean;
+}
+/**
+ * Core -> Main UI: desktop Moment DJ settings + registered principals + live principal preview.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "MomentDesktopSnapshot".
+ */
+export interface MomentDesktopSnapshot {
+  config: OwnerMomentConfig;
+  currentAccountKey: string;
+  environment?: HostEnvironmentSnapshotPayload | null;
+  previewJson: unknown;
+  previewPrincipal?: string | null;
+  registeredPrincipals?: string[];
+}
+/**
+ * Owner-managed Moment DJ privacy and local context configuration stored strictly on desktop.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "OwnerMomentConfig".
+ */
+export interface OwnerMomentConfig {
+  configRevision?: number;
+  holidayCountry?: string | null;
+  holidayRegion?: string | null;
+  holidayState?: string | null;
+  holidaysEnabled?: boolean;
+  includeCulturalObservances?: boolean;
+  sceneCity?: string | null;
+  shareListeningIntents?: boolean;
+  shareTime?: boolean;
+  /**
+   * Per-account allowlist of registered MCP principal names granted Moment access.
+   */
+  sharedPrincipalsByAccount?: {
+    [k: string]: string[] | undefined;
+  };
 }
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema

@@ -286,6 +286,27 @@ body {
   padding: 0.35rem 0.55rem;
   gap: 0.25rem;
 }
+.app-player-bar .mute-value {
+  display: inline-grid;
+  place-items: center end;
+}
+.app-player-bar .mute-value::before,
+.app-player-bar .mute-value::after {
+  grid-area: 1 / 1;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.app-player-bar .mute-value::before {
+  content: "100%";
+}
+.app-player-bar .mute-value::after {
+  content: attr(data-muted-label);
+}
+.app-player-bar .mute-current {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
 .player-volume {
   width: 5rem;
 }
@@ -302,6 +323,7 @@ body {
    No words; quick confirmations never show it at all. */
 .wait-dot,
 .player-status.is-waiting::before {
+  --wait-delay: 600ms;
   content: "";
   display: inline-block;
   flex: none;
@@ -311,7 +333,12 @@ body {
   border-radius: 50%;
   background: currentColor;
   opacity: 0;
-  animation: status-wait 1.4s var(--ease-standard) 600ms infinite;
+  animation: status-wait 1.4s var(--ease-standard) var(--wait-delay) infinite;
+}
+/* The player bar adds is-waiting only after the 600 ms itself, so the chip's label never shifts
+   for a quick confirmation; its dot then shows at once. */
+.player-status.is-waiting::before {
+  --wait-delay: 0ms;
 }
 @keyframes status-wait {
   0%, 100% { opacity: 0.25; }
@@ -322,12 +349,12 @@ body {
 }
 :root[data-reduce-motion="true"] .wait-dot,
 :root[data-reduce-motion="true"] .player-status.is-waiting::before {
-  animation: status-wait-still 1ms linear 600ms forwards;
+  animation: status-wait-still 1ms linear var(--wait-delay) forwards;
 }
 @media (prefers-reduced-motion: reduce) {
   .wait-dot,
   .player-status.is-waiting::before {
-    animation: status-wait-still 1ms linear 600ms forwards;
+    animation: status-wait-still 1ms linear var(--wait-delay) forwards;
   }
 }
 .player-status-inline {
@@ -944,6 +971,13 @@ select:focus-visible {
   background: transparent;
   color: var(--text-primary);
 }
+/* The search page draws its own clear button; other search fields keep the native one. */
+.search-field input[type="search"]::-webkit-search-decoration,
+.search-field input[type="search"]::-webkit-search-cancel-button,
+.search-field input[type="search"]::-webkit-search-results-button,
+.search-field input[type="search"]::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+}
 .search-field input:focus-visible {
   outline: none;
 }
@@ -969,8 +1003,8 @@ select:focus-visible {
 .track-list-header {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.45rem 0.875rem;
+  gap: 0.5rem;
+  padding: 0.45rem 0.5rem 0.45rem 0;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-muted);
   user-select: none;

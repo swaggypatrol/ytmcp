@@ -3,6 +3,9 @@ import type { CommandReceipt, TrackInstanceId } from "@ytmcp/protocol";
 /** How long a committed seek preview may wait for its receipt before falling back to observed time. */
 export const SEEK_PREVIEW_TIMEOUT_MS = 4_000;
 
+/** How far one arrow key moves a seek bar. */
+export const SEEK_KEY_STEP_MS = 5_000;
+
 /**
  * Local seek-bar preview while dragging and until the seek command settles.
  * It never replaces observed playback state; it is bound to one track instance.

@@ -23,9 +23,10 @@ use ytm_protocol::{
     BridgeHealthPayload, BridgeLifecyclePayload, BridgePlaybackObservedPayload, BridgeReadyPayload,
     CapabilitySet, CapabilitySupport, CatalogQueryRequest, CatalogResponsePayload, CommandId,
     CommandLifecycleStatus, CommandReceipt, CoreEpoch, CredentialRevision, EnqueuePosition,
-    HostHealth, HostHelloPayload, HostWindowVisibilityPayload, LyricsKind, LyricsQueryRequest,
-    LyricsResult, MAX_COMMAND_QUEUE, MutationRequest, MutationResult, NetworkState,
-    OutputGateResultPayload, PROTOCOL_VERSION, PlaybackStatus, PlayerCommandArgs,
+    EnvironmentConfigPayload, HostEnvironmentSnapshotPayload, HostHealth, HostHelloPayload,
+    HostWindowVisibilityPayload, LyricsKind, LyricsQueryRequest, LyricsResult, MAX_COMMAND_QUEUE,
+    MutationRequest, MutationResult, NetworkState, OutputGateResultPayload, OwnerMomentConfig,
+    OwnerMomentConfigPatch, PROTOCOL_VERSION, PlaybackStatus, PlayerCommandArgs,
     PlayerCommandPayload, PlayerConnectionState, PlayerObservedState, PlayerOp, PlayerPendingState,
     QueryError, QueryErrorCode, QueueEntryId, QueueSnapshot, QueueSummary, SessionMaterialPayload,
     StateDelta, TrackInstanceId,
@@ -106,6 +107,8 @@ pub(crate) struct ControlRead {
     pub captured_at_ms: u64,
     pub playback_generation: u64,
     pub settings_revision: u64,
+    pub moment_config: OwnerMomentConfig,
+    pub environment: Option<HostEnvironmentSnapshotPayload>,
     /// Monotonic time of the latest command from the player window, media keys or MPRIS.
     pub last_manual_command_ms: Option<u64>,
     pub events: Option<broadcast::Receiver<StateDelta>>,
@@ -213,6 +216,17 @@ enum CoreMsg {
         settings: Box<AppSettings>,
         reply: oneshot::Sender<Result<AppSettings, QueryError>>,
     },
+    GetEnvironmentConfig {
+        reply: oneshot::Sender<EnvironmentConfigPayload>,
+    },
+    UpdateMomentConfig {
+        config: Box<OwnerMomentConfig>,
+        reply: oneshot::Sender<OwnerMomentConfig>,
+    },
+    HostEnvironmentSnapshot {
+        payload: Box<HostEnvironmentSnapshotPayload>,
+    },
+    NotifyMomentChanged,
     AcquireCatalogContext {
         require_auth: bool,
         reply: oneshot::Sender<Result<CatalogContext, QueryError>>,
@@ -300,6 +314,7 @@ pub struct CoreEngine {
     tx: mpsc::Sender<CoreMsg>,
     mutation_lock: Arc<tokio::sync::Mutex<()>>,
     settings_lock: Arc<tokio::sync::Mutex<()>>,
+    moment_lock: Arc<tokio::sync::Mutex<()>>,
     deps: CoreDeps,
     clock: Arc<dyn Clock>,
     shutdown_token: CancellationToken,
@@ -332,6 +347,7 @@ impl CoreEngine {
             tx,
             mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
             settings_lock: Arc::new(tokio::sync::Mutex::new(())),
+            moment_lock: Arc::new(tokio::sync::Mutex::new(())),
             deps,
             clock,
             shutdown_token,
@@ -718,6 +734,151 @@ impl CoreEngine {
         .map_err(QueryError::from)?;
         rx.await
             .map_err(|_| QueryError::from(CoreError::EngineStopped))?
+    }
+
+    pub async fn restore_moment_config(&self) -> Result<(), QueryError> {
+        let _serialized = self.moment_lock.lock().await;
+        if let Some(storage) = &self.deps.storage {
+            let config = storage.load_moment_config().await?;
+            let (reply, rx) = oneshot::channel();
+            self.send_msg(CoreMsg::UpdateMomentConfig {
+                config: Box::new(config),
+                reply,
+            })
+            .await
+            .map_err(QueryError::from)?;
+            let _ = rx
+                .await
+                .map_err(|_| QueryError::from(CoreError::EngineStopped))?;
+        }
+        Ok(())
+    }
+
+    pub async fn environment_config(&self) -> Result<EnvironmentConfigPayload, CoreError> {
+        let (reply, rx) = oneshot::channel();
+        self.send_msg(CoreMsg::GetEnvironmentConfig { reply })
+            .await?;
+        rx.await.map_err(|_| CoreError::EngineStopped)
+    }
+
+    pub async fn on_host_environment_snapshot(
+        &self,
+        payload: HostEnvironmentSnapshotPayload,
+    ) -> Result<(), CoreError> {
+        self.send_msg(CoreMsg::HostEnvironmentSnapshot {
+            payload: Box::new(payload),
+        })
+        .await
+    }
+
+    pub async fn notify_moment_changed(&self) {
+        let _ = self.send_msg(CoreMsg::NotifyMomentChanged).await;
+    }
+
+    pub async fn patch_moment_config(
+        &self,
+        patch: OwnerMomentConfigPatch,
+        account_key: String,
+    ) -> Result<OwnerMomentConfig, QueryError> {
+        let _serialized = self.moment_lock.lock().await;
+        let state = self.read_control(false).await.map_err(QueryError::from)?;
+        let mut next = state.moment_config;
+        if let Some(share_time) = patch.share_time {
+            next.share_time = share_time;
+        }
+        if let Some(holidays_enabled) = patch.holidays_enabled {
+            next.holidays_enabled = holidays_enabled;
+        }
+        if let Some(country) = patch.holiday_country {
+            let trimmed = country.trim();
+            if trimmed.is_empty() {
+                next.holiday_country = None;
+                next.holiday_state = None;
+                next.holiday_region = None;
+            } else {
+                let code = trimmed.to_ascii_uppercase();
+                if code.len() > 8 || !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                    return Err(CoreError::InvalidPayload(
+                        "holidayCountry must be a valid ISO code".to_string(),
+                    )
+                    .into());
+                }
+                if next.holiday_country.as_deref() != Some(code.as_str()) {
+                    next.holiday_state = None;
+                    next.holiday_region = None;
+                }
+                next.holiday_country = Some(code);
+            }
+        }
+        if let Some(state_code) = patch.holiday_state {
+            let trimmed = state_code.trim();
+            next.holiday_state = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+        }
+        if let Some(region_code) = patch.holiday_region {
+            let trimmed = region_code.trim();
+            next.holiday_region = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+        }
+        if let Some(include_obs) = patch.include_cultural_observances {
+            next.include_cultural_observances = include_obs;
+        }
+        if let Some(city) = patch.scene_city {
+            let trimmed = city.trim();
+            if trimmed.is_empty() {
+                next.scene_city = None;
+            } else {
+                if trimmed.chars().count() > 80 || trimmed.chars().any(char::is_control) {
+                    return Err(CoreError::InvalidPayload(
+                        "sceneCity must be at most 80 characters without control characters"
+                            .to_string(),
+                    )
+                    .into());
+                }
+                next.scene_city = Some(trimmed.to_owned());
+            }
+        }
+        if let Some(share_intents) = patch.share_listening_intents {
+            next.share_listening_intents = share_intents;
+        }
+        if let Some(grant_update) = patch.set_principal_shared {
+            let principal = grant_update.principal.trim().to_owned();
+            if principal.is_empty()
+                || principal.len() > 64
+                || principal.chars().any(char::is_control)
+            {
+                return Err(CoreError::InvalidPayload("invalid principal name".to_string()).into());
+            }
+            let entry = next
+                .shared_principals_by_account
+                .entry(account_key)
+                .or_default();
+            if grant_update.shared {
+                if !entry.iter().any(|existing| existing == &principal) {
+                    if entry.len() >= 32 {
+                        return Err(CoreError::InvalidPayload(
+                            "too many principals enabled for this account".to_string(),
+                        )
+                        .into());
+                    }
+                    entry.push(principal);
+                    entry.sort();
+                }
+            } else {
+                entry.retain(|existing| existing != &principal);
+            }
+        }
+        next.config_revision = next.config_revision.saturating_add(1);
+        if let Some(storage) = &self.deps.storage {
+            storage.save_moment_config(next.clone()).await?;
+        }
+        let (reply, rx) = oneshot::channel();
+        self.send_msg(CoreMsg::UpdateMomentConfig {
+            config: Box::new(next),
+            reply,
+        })
+        .await
+        .map_err(QueryError::from)?;
+        rx.await
+            .map_err(|_| QueryError::from(CoreError::EngineStopped))
     }
 
     /// Executes a catalog query bound to the current `accountEpoch` and cancels/drops
@@ -1200,6 +1361,8 @@ struct CoreActor {
     clock_model: PlaybackClock,
     capabilities: CapabilitySet,
     settings: AppSettings,
+    moment_config: OwnerMomentConfig,
+    environment: Option<HostEnvironmentSnapshotPayload>,
     network_state: NetworkState,
 
     active_bridge_epoch: Option<BridgeEpoch>,
@@ -1318,6 +1481,8 @@ impl CoreActor {
             clock_model,
             capabilities: CapabilitySet::default(),
             settings: AppSettings::default(),
+            moment_config: OwnerMomentConfig::default(),
+            environment: None,
             network_state: NetworkState::Unknown,
             active_bridge_epoch: None,
             retired_bridge_epochs: HashSet::new(),
@@ -1543,6 +1708,8 @@ impl CoreActor {
                     captured_at_ms: self.deps.clock.wall_now_ms(),
                     playback_generation: self.playback_generation,
                     settings_revision: self.settings_revision,
+                    moment_config: self.moment_config.clone(),
+                    environment: self.environment.clone(),
                     last_manual_command_ms: self.last_manual_command_ms,
                     events: subscribe.then(|| self.delta_tx.subscribe()),
                 });
@@ -1590,6 +1757,9 @@ impl CoreActor {
             }
             CoreMsg::HostHello { payload } => {
                 let payload = *payload;
+                if payload.host_health.core_restart_count > 0 {
+                    self.launch_autoplay_handled = true;
+                }
                 self.host_health = payload.host_health;
                 self.network_state = payload.network_state;
                 self.config.mock_mode = payload.mock_mode;
@@ -1714,6 +1884,64 @@ impl CoreActor {
                 });
                 self.refresh_capabilities();
                 let _ = reply.send(Ok(settings));
+            }
+            CoreMsg::GetEnvironmentConfig { reply } => {
+                let _ = reply.send(EnvironmentConfigPayload {
+                    config_revision: self.moment_config.config_revision,
+                    holidays_enabled: self.moment_config.holidays_enabled,
+                    holiday_country: self.moment_config.holiday_country.clone(),
+                    holiday_state: self.moment_config.holiday_state.clone(),
+                    holiday_region: self.moment_config.holiday_region.clone(),
+                    include_cultural_observances: self.moment_config.include_cultural_observances,
+                });
+            }
+            CoreMsg::UpdateMomentConfig { config, reply } => {
+                let config = *config;
+                let keep_env = self.environment.as_ref().is_some_and(|env| {
+                    env.config_revision == config.config_revision
+                        || (config.holidays_enabled == self.moment_config.holidays_enabled
+                            && config.holiday_country == self.moment_config.holiday_country
+                            && config.holiday_state == self.moment_config.holiday_state
+                            && config.holiday_region == self.moment_config.holiday_region
+                            && config.include_cultural_observances
+                                == self.moment_config.include_cultural_observances)
+                });
+                if keep_env && let Some(env) = self.environment.as_mut() {
+                    env.config_revision = config.config_revision;
+                } else {
+                    self.environment = None;
+                }
+                self.moment_config = config.clone();
+                let rev = self.next_revision();
+                self.emit_delta(StateDelta::MomentChanged { revision: rev });
+                let _ = reply.send(config);
+            }
+            CoreMsg::HostEnvironmentSnapshot { payload } => {
+                let mut payload = *payload;
+                if payload.config_revision == self.moment_config.config_revision {
+                    if payload.countries.is_empty()
+                        && let Some(prev) = &self.environment
+                    {
+                        payload.countries = prev.countries.clone();
+                    }
+                    let changed = self.environment.as_ref().is_none_or(|prev| {
+                        prev.time_zone != payload.time_zone
+                            || prev.local_date != payload.local_date
+                            || prev.day_part != payload.day_part
+                            || prev.clock_ok != payload.clock_ok
+                            || prev.calendar_ok != payload.calendar_ok
+                            || prev.occasions != payload.occasions
+                    });
+                    self.environment = Some(payload);
+                    if changed {
+                        let rev = self.next_revision();
+                        self.emit_delta(StateDelta::MomentChanged { revision: rev });
+                    }
+                }
+            }
+            CoreMsg::NotifyMomentChanged => {
+                let rev = self.next_revision();
+                self.emit_delta(StateDelta::MomentChanged { revision: rev });
             }
             CoreMsg::AcquireCatalogContext {
                 require_auth,
@@ -3698,7 +3926,7 @@ impl CoreActor {
             play_command: command_id.clone(),
             video_id: target.video_id.clone(),
             position_ms: last.position_ms,
-            autoplay: self.settings.autoplay_on_launch,
+            autoplay: self.settings.autoplay_on_launch && !self.launch_autoplay_handled,
         });
         let mut args = empty_args();
         args.target = Some(target);

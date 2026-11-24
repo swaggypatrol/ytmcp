@@ -107,11 +107,11 @@ Operations that had not settled are stopped, and a pending interruption resume i
 
 ## Tools
 
-All 39 tools are published to every client; what a call may do still depends on its grants.
+All 40 tools are published to every client; what a call may do still depends on its grants.
 
 | Category | Tools |
 | --- | --- |
-| AI DJ (2) | `ytm_wait_dj_prompt`, `ytm_set_dj_feedback` |
+| AI DJ (3) | `ytm_wait_dj_prompt`, `ytm_set_dj_feedback`, `ytm_set_listening_intent` |
 | Playback and queue (8) | `ytm_control_playback`, `ytm_play_context`, `ytm_enqueue`, `ytm_interrupt_with`, `ytm_edit_queue`, `ytm_seek`, `ytm_set_volume`, `ytm_set_playback_mode` |
 | Player state (8) | `ytm_get_context`, `ytm_get_player`, `ytm_get_queue`, `ytm_get_track`, `ytm_get_account`, `ytm_get_capabilities`, `ytm_get_settings`, `ytm_get_lyrics` |
 | Discovery and catalog (10) | `ytm_search`, `ytm_get_recommendations`, `ytm_get_home`, `ytm_get_album`, `ytm_get_artist`, `ytm_get_playlist`, `ytm_get_library`, `ytm_get_history`, `ytm_get_extended_media`, `ytm_get_share_link` |
@@ -120,12 +120,14 @@ All 39 tools are published to every client; what a call may do still depends on 
 
 Notes on a few tools:
 
-- `ytm_get_context` captures the current song, playback state and queue together; its context token is what the adapter fills into later writes.
+- `ytm_get_context` captures the current song, playback state, queue, and the privacy-gated `moment` snapshot (`notShared` until shared per assistant in Settings); its context token is what the adapter fills into later writes.
+- `ytm_set_listening_intent` records or clears a temporary listening intent (vocals, energy, activity, short music brief, or dismissed theme) under the `dj` grant. Settled preference and brief note texts are scrubbed from the durable operation journal after completion while remaining inspectable in DJ preferences and active intents.
+- `ytm_wait_dj_prompt` only attaches to a running player and never starts one, even with `--allow-background-start`, so a waiting DJ does not bring the player back after the listener quits it; the wait then ends with `UNAVAILABLE`. Cancelling the call (Esc in Claude Code) ends it at once. `tools/mcp/dj-waiter-example.py` is a minimal loop that keeps one wait open and skips repeated prompts by `(coreEpoch, seq)`.
 - `ytm_search` searches one entity kind (song, album, artist or playlist); its suggestions mode returns anonymous public predictions.
 - `ytm_get_recommendations` finds song radio candidates without changing playback.
 - `ytm_get_history` reads local history (observed playback instances with a revision), YouTube history, or both side by side.
 - `ytm_account_handoff` asks the listener to sign in, renew or switch accounts in the player. Nothing opens or takes focus; the request waits in the activity view until the change is observed or 30 minutes pass.
-- `ytm_get_settings` with section `djPreferences` pages the recorded taste notes, newest first.
+- `ytm_get_settings` with section `djPreferences` pages recorded taste notes, newest first (desktop settings show them alongside `Load more` pagination and Moment DJ configuration).
 
 The operation journal tools (`ytm_get_operation`, `ytm_cancel_operation`, `ytm_resume_operation`) exist in the control protocol but are not published to agents. The old `--profile` argument is accepted and ignored.
 

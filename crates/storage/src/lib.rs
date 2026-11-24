@@ -3,6 +3,7 @@ mod dj_store;
 pub mod error;
 mod local_history;
 pub mod migrations;
+mod moment_store;
 mod operation_store;
 pub mod paths;
 pub mod repo;
@@ -32,8 +33,9 @@ use ytm_core::ports::{
 };
 use ytm_protocol::{
     AccountEpoch, AccountScope, AlbumDetail, AlbumId, AppSettings, ArtistDetail, ArtistId, AssetId,
-    AssetResolvedPayload, HomeFeed, LyricsMatchMetadata, LyricsResult, PagedResult, PlaylistDetail,
-    PlaylistId, PlaylistSummary, QueryError, SearchResult, Track, VideoId,
+    AssetResolvedPayload, HomeFeed, LyricsMatchMetadata, LyricsResult, OwnerMomentConfig,
+    PagedResult, PlaylistDetail, PlaylistId, PlaylistSummary, QueryError, SearchResult, Track,
+    VideoId,
 };
 
 pub use cover::{
@@ -860,6 +862,36 @@ impl StoragePort for SqliteStorage {
         Box::pin(async move {
             run_blocking(move || {
                 let json = serde_json::to_vec_pretty(&settings)?;
+                write_atomic_0600(&path, &json)?;
+                Ok(())
+            })
+            .await
+        })
+    }
+
+    fn load_moment_config(&self) -> BoxFuture<'_, Result<OwnerMomentConfig, QueryError>> {
+        let path = self.paths.moment_config_file();
+        Box::pin(async move {
+            run_blocking(move || {
+                if !path.exists() {
+                    return Ok(OwnerMomentConfig::default());
+                }
+                let raw = fs::read_to_string(&path)?;
+                let parsed: OwnerMomentConfig = serde_json::from_str(&raw)?;
+                Ok(parsed)
+            })
+            .await
+        })
+    }
+
+    fn save_moment_config(
+        &self,
+        config: OwnerMomentConfig,
+    ) -> BoxFuture<'_, Result<(), QueryError>> {
+        let path = self.paths.moment_config_file();
+        Box::pin(async move {
+            run_blocking(move || {
+                let json = serde_json::to_vec_pretty(&config)?;
                 write_atomic_0600(&path, &json)?;
                 Ok(())
             })

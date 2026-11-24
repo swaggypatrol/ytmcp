@@ -158,6 +158,14 @@ struct DjFeedbackArguments {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ListeningIntentArguments {
+    operation_id: String,
+    preconditions: Preconditions,
+    change: ytm_control_api::ListeningIntentChange,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SettingsArguments {
     /// `device` (default) returns the settings and revision; `djPreferences` pages the recorded
     /// DJ preferences, newest first.
@@ -398,6 +406,7 @@ enum MusicTool {
     EditQueue,
     Interrupt,
     DjFeedback,
+    SetListeningIntent,
     Player,
     Track,
     PlaybackMode,
@@ -435,7 +444,7 @@ enum MusicTool {
 }
 
 impl MusicTool {
-    const ORDERED: [Self; 39] = [
+    const ORDERED: [Self; 40] = [
         Self::AccountHandoff,
         Self::Append,
         Self::Playback,
@@ -468,6 +477,7 @@ impl MusicTool {
         Self::ArtistSubscription,
         Self::DjFeedback,
         Self::LibraryMembership,
+        Self::SetListeningIntent,
         Self::LyricsOffset,
         Self::PlaybackMode,
         Self::Rating,
@@ -523,6 +533,7 @@ impl MusicTool {
                 | Self::Capabilities
                 | Self::Context
                 | Self::DjFeedback
+                | Self::SetListeningIntent
                 | Self::AccountHandoff
                 | Self::ManageHistory
                 | Self::Player
@@ -553,6 +564,7 @@ impl MusicTool {
             Self::Interrupt => "ytm_interrupt_with",
             Self::AccountHandoff => "ytm_account_handoff",
             Self::DjFeedback => "ytm_set_dj_feedback",
+            Self::SetListeningIntent => "ytm_set_listening_intent",
             Self::EditPlaylist => "ytm_edit_playlist_entries",
             Self::UpdatePlaylist => "ytm_update_playlist",
             Self::Lyrics => "ytm_get_lyrics",
@@ -667,6 +679,10 @@ impl MusicTool {
             Self::DjFeedback => (
                 "Remember or forget what the listener likes or wants to avoid: record prefer or avoid for a video or artist with an optional short note, or clear an entry by preferenceId. Entries are kept for the account until cleared and come with every DJ prompt. YouTube likes are unchanged.",
                 schema::<DjFeedbackArguments>(),
+            ),
+            Self::SetListeningIntent => (
+                "Set or clear a temporary listening intent (vocals, energy, activity, a short music brief, or dismissing an occasion by its id) for today, a 6-hour session, or until a time within 48 hours, when the listener shares intents with this client in Settings. Use basis 'userRequest' when the listener asked and 'inference' for your own guesses; an inference never replaces what the listener asked for. Pass expectedMomentRevision from the latest moment so a change the listener just made is not overwritten.",
+                schema::<ListeningIntentArguments>(),
             ),
             Self::UpdateSettings => (
                 "Apply a narrowly scoped settings patch at a specific revision.",
@@ -966,6 +982,16 @@ impl MusicTool {
                     },
                 })
             }
+            Self::SetListeningIntent => {
+                let input: ListeningIntentArguments = serde_json::from_value(value)?;
+                ControlRequest::Submit(WriteInput {
+                    operation_id: input.operation_id,
+                    preconditions: input.preconditions,
+                    action: WriteAction::SetListeningIntent {
+                        change: input.change,
+                    },
+                })
+            }
             Self::UpdateSettings => {
                 let input: UpdateSettingsArguments = serde_json::from_value(value)?;
                 ControlRequest::Submit(WriteInput {
@@ -1251,7 +1277,12 @@ fn render_tool_content(
                     format!("{} capability records.", items.len())
                 }
                 ControlResponse::Context(snapshot) => {
-                    format!("Playback: {:?}.", snapshot.player.playback)
+                    if let Some(moment) = &snapshot.moment {
+                        let extra = outcome::moment_text_lines(moment).join(" ");
+                        format!("Playback: {:?}. {extra}", snapshot.player.playback)
+                    } else {
+                        format!("Playback: {:?}.", snapshot.player.playback)
+                    }
                 }
                 ControlResponse::Player(player) => match &player.observed {
                     Some(state) => format!("Playback: {:?}.", state.playback),
@@ -1442,16 +1473,55 @@ impl MusicServer {
     async fn write_settled(&self, tool: MusicTool, mut arguments: JsonObject) -> ControlResponse {
         let missing = Missing::of(tool, &arguments);
         // The journal binds an ID to its exact request and filled-in state differs between calls,
-        // so a retried caller-chosen ID returns its existing operation instead of a conflict.
+        // so verify caller-supplied business intent via ReplayOperation hashes before returning an
+        // existing receipt (or returning IDEMPOTENCY_CONFLICT if parameters differ).
         if missing.any()
             && let Some(id) = arguments
                 .get("operationId")
                 .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
         {
-            match self.operation(id).await {
-                Ok(Some(receipt)) => return self.settle(receipt).await,
-                Ok(None) => {}
-                Err(error) => return ControlResponse::Error(error),
+            let mut probe = arguments.clone();
+            if missing.token {
+                probe.insert("contextToken".into(), "".into());
+            }
+            if missing.target_token
+                && let Some(serde_json::Value::Object(target)) = probe.get_mut("target")
+            {
+                target.insert("contextToken".into(), "".into());
+            }
+            if missing.preconditions {
+                probe.insert("preconditions".into(), serde_json::json!({}));
+            }
+            let Ok(ControlRequest::Submit(probe_input)) = tool.request(probe) else {
+                return invalid_parameters();
+            };
+            let (exact_hash, tokenless_hash) =
+                ytm_control_api::compute_action_hashes(&probe_input.action);
+            let token_missing = missing.token || missing.target_token;
+            let replay = ytm_control_api::OperationReplayInput {
+                operation_id: id,
+                action_hash: if token_missing {
+                    tokenless_hash
+                } else {
+                    exact_hash
+                },
+                token_was_missing: token_missing,
+                explicit_preconditions: (!missing.preconditions)
+                    .then_some(probe_input.preconditions),
+            };
+            match self
+                .client
+                .call(ControlRequest::ReplayOperation(replay))
+                .await
+            {
+                Ok(ControlResponse::Operation(receipt)) => return self.settle(receipt).await,
+                Ok(ControlResponse::Error(err)) | Err(err)
+                    if err.code == ErrorCode::InvalidInput => {}
+                Ok(ControlResponse::Error(err)) | Err(err) => {
+                    return ControlResponse::Error(err);
+                }
+                Ok(_) => {}
             }
         }
         if let Err(error) = self.fill_bookkeeping(tool, &missing, &mut arguments).await {
@@ -1662,11 +1732,19 @@ impl MusicServer {
         };
         let (mut last_progress, mut sent) = (Instant::now(), 0_u32);
         loop {
-            let response = self
-                .client
-                .call(ControlRequest::NextDjCue(std::mem::take(&mut report)))
-                .await
-                .unwrap_or_else(ControlResponse::Error);
+            let poll = tokio::select! {
+                biased;
+                () = context.ct.cancelled() => {
+                    return ControlResponse::DjCue(Box::new(ytm_control_api::DjCueReply {
+                        cue: None,
+                        chattiness: ytm_control_api::DjChattiness::default(),
+                    }));
+                }
+                res = self
+                    .client
+                    .call_attach_only(ControlRequest::NextDjCue(std::mem::take(&mut report))) => res,
+            };
+            let response = poll.unwrap_or_else(ControlResponse::Error);
             let empty = matches!(&response, ControlResponse::DjCue(reply) if reply.cue.is_none());
             if !empty || Instant::now() >= deadline {
                 return response;

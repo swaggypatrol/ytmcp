@@ -208,7 +208,7 @@
       {#if playlistsMoreError}
         <div
           class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg type-xs"
-          style="background-color: var(--status-error-bg); color: var(--status-error-fg);"
+          style="background-color: var(--bg-subtle); border: 1px solid var(--border-subtle); color: var(--status-danger);"
           data-testid="playlist-picker-more-error"
         >
           <span>[{playlistsMoreError.code}] {playlistsMoreError.safeMessage}</span>

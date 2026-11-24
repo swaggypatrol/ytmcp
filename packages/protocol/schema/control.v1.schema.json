@@ -77,6 +77,15 @@
         "playerCatalogMatched"
       ]
     },
+    "ActivityKind": {
+      "type": "string",
+      "enum": [
+        "gaming",
+        "focus",
+        "relax",
+        "social"
+      ]
+    },
     "Album": {
       "type": "object",
       "properties": {
@@ -548,6 +557,17 @@
         "freshness": {
           "$ref": "#/definitions/Freshness"
         },
+        "moment": {
+          "description": "Owner-configured Moment DJ context projected for this client (`None` only in legacy fixtures).",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MomentView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "player": {
           "$ref": "#/definitions/PlayerState"
         },
@@ -985,6 +1005,23 @@
             },
             "params": {
               "$ref": "#/definitions/OperationInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "replayOperation"
+            },
+            "params": {
+              "$ref": "#/definitions/OperationReplayInput"
             }
           },
           "additionalProperties": false,
@@ -1943,11 +1980,33 @@
         "chattiness": {
           "$ref": "#/definitions/DjChattiness"
         },
+        "coreEpoch": {
+          "description": "Core epoch of the running daemon so background waiters can scope `(coreEpoch, seq)` safely.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoreEpoch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "kind": {
           "$ref": "#/definitions/DjCueKind"
         },
         "listener": {
           "$ref": "#/definitions/DjListener"
+        },
+        "moment": {
+          "description": "Moment DJ snapshot computed freshly when this prompt is delivered.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MomentView"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "moreQueued": {
           "type": "boolean"
@@ -1963,11 +2022,24 @@
           ]
         },
         "preferences": {
-          "description": "The recorded tastes, sent on this client's first prompt and whenever they changed since\nits previous one; empty when `preferences_unchanged`.",
+          "description": "The recorded tastes, sent on this client's first prompt and whenever they changed since\nits previous one; empty when `preferences_unchanged` or `preferences_unavailable`.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/DjPreference"
           }
+        },
+        "preferencesTotal": {
+          "description": "Total recorded tastes on the account when available (more than `preferences.len()` when paged).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "preferencesUnavailable": {
+          "description": "True when the player could not read stored tastes for this prompt; keep earlier known tastes.",
+          "type": "boolean"
         },
         "preferencesUnchanged": {
           "description": "The tastes are the same as in this client's previous prompt.",
@@ -2476,6 +2548,14 @@
         }
       ]
     },
+    "EnergyLevel": {
+      "type": "string",
+      "enum": [
+        "gentle",
+        "steady",
+        "driving"
+      ]
+    },
     "EntitySearchInput": {
       "type": "object",
       "properties": {
@@ -2510,6 +2590,62 @@
         "album",
         "artist",
         "playlist"
+      ]
+    },
+    "EnvironmentView": {
+      "type": "object",
+      "properties": {
+        "capturedAtMs": {
+          "description": "The instant `time` describes (Unix ms), so an assistant can turn \"tonight\" or \"for two\nhours\" into an absolute `expiresAtMs`. Present only with `time`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "occasions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MomentOccasion"
+          }
+        },
+        "revision": {
+          "type": "string"
+        },
+        "sceneCity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SceneCity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/MomentSectionStatus"
+        },
+        "time": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MomentTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "weatherProvided": {
+          "description": "Always false: the player never fetches weather; an assistant may look it up for `sceneCity`.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "revision"
       ]
     },
     "ErrorCode": {
@@ -3366,6 +3502,296 @@
       },
       "additionalProperties": false
     },
+    "ListeningIntentBasis": {
+      "type": "string",
+      "enum": [
+        "ownerInput",
+        "userRequestReportedByAssistant",
+        "assistantInference"
+      ]
+    },
+    "ListeningIntentChange": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "set"
+            },
+            "basis": {
+              "$ref": "#/definitions/ReportedIntentBasis"
+            },
+            "duration": {
+              "$ref": "#/definitions/ListeningIntentDuration"
+            },
+            "expectedMomentRevision": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "instruction": {
+              "$ref": "#/definitions/ListeningIntentInstruction"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "instruction",
+            "duration",
+            "basis"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "clear"
+            },
+            "basis": {
+              "$ref": "#/definitions/ReportedIntentBasis"
+            },
+            "expectedMomentRevision": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "intentKey": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "intentKey",
+            "basis"
+          ]
+        }
+      ]
+    },
+    "ListeningIntentDuration": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "today"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "session"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expiresAtMs": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "until"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "expiresAtMs"
+          ]
+        }
+      ]
+    },
+    "ListeningIntentInstruction": {
+      "description": "One session-scoped listening intent dimension. Updating a dimension replaces only that dimension.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "dimension": {
+              "type": "string",
+              "const": "vocals"
+            },
+            "mode": {
+              "$ref": "#/definitions/VocalsMode"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "dimension",
+            "mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dimension": {
+              "type": "string",
+              "const": "energy"
+            },
+            "level": {
+              "$ref": "#/definitions/EnergyLevel"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "dimension",
+            "level"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dimension": {
+              "type": "string",
+              "const": "activity"
+            },
+            "kind": {
+              "$ref": "#/definitions/ActivityKind"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "dimension",
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "brief": {
+              "type": "string",
+              "maxLength": 120,
+              "minLength": 1
+            },
+            "dimension": {
+              "type": "string",
+              "const": "musicBrief"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "dimension",
+            "brief"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dimension": {
+              "type": "string",
+              "const": "dismissTheme"
+            },
+            "themeId": {
+              "type": "string",
+              "maxLength": 96,
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "dimension",
+            "themeId"
+          ]
+        }
+      ]
+    },
+    "ListeningIntentScope": {
+      "type": "string",
+      "enum": [
+        "today",
+        "session",
+        "until"
+      ]
+    },
+    "ListeningIntentView": {
+      "type": "object",
+      "properties": {
+        "basis": {
+          "$ref": "#/definitions/ListeningIntentBasis"
+        },
+        "createdAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "expiresAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "instruction": {
+          "$ref": "#/definitions/ListeningIntentInstruction"
+        },
+        "intentId": {
+          "type": "string"
+        },
+        "intentKey": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/definitions/ListeningIntentScope"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "intentKey",
+        "intentId",
+        "instruction",
+        "scope",
+        "createdAtMs",
+        "expiresAtMs",
+        "basis"
+      ]
+    },
+    "ListeningIntentsView": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ListeningIntentView"
+          }
+        },
+        "revision": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/MomentSectionStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "revision",
+        "items"
+      ]
+    },
     "LocalHistoryEdit": {
       "oneOf": [
         {
@@ -3725,6 +4151,127 @@
         "observedAtMs"
       ]
     },
+    "MomentDayPart": {
+      "type": "string",
+      "enum": [
+        "earlyMorning",
+        "morning",
+        "afternoon",
+        "evening",
+        "lateNight"
+      ]
+    },
+    "MomentOccasion": {
+      "type": "object",
+      "properties": {
+        "actualDate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/MomentOccasionKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "localDate": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/definitions/MomentOccasionPhase"
+        },
+        "providerVersion": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "phase",
+        "kind",
+        "localDate",
+        "providerVersion"
+      ]
+    },
+    "MomentOccasionKind": {
+      "type": "string",
+      "enum": [
+        "public",
+        "observance"
+      ]
+    },
+    "MomentOccasionPhase": {
+      "type": "string",
+      "enum": [
+        "eve",
+        "day",
+        "observed"
+      ]
+    },
+    "MomentSectionStatus": {
+      "type": "string",
+      "enum": [
+        "shared",
+        "notShared",
+        "unavailable"
+      ]
+    },
+    "MomentTime": {
+      "type": "object",
+      "properties": {
+        "dayPart": {
+          "$ref": "#/definitions/MomentDayPart"
+        },
+        "localDate": {
+          "description": "Local calendar date (`YYYY-MM-DD`) in `timeZone`.",
+          "type": "string"
+        },
+        "timeZone": {
+          "description": "IANA time zone identifier from the local device clock.",
+          "type": "string"
+        },
+        "weekday": {
+          "description": "Lowercase weekday name (`monday`..`sunday`).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "localDate",
+        "weekday",
+        "dayPart",
+        "timeZone"
+      ]
+    },
+    "MomentView": {
+      "description": "Authoritative Moment DJ context projection delivered to one authorized MCP client.",
+      "type": "object",
+      "properties": {
+        "environment": {
+          "$ref": "#/definitions/EnvironmentView"
+        },
+        "listeningIntents": {
+          "$ref": "#/definitions/ListeningIntentsView"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "environment",
+        "listeningIntents"
+      ]
+    },
     "MoodCategoryInput": {
       "type": "object",
       "properties": {
@@ -3862,6 +4409,40 @@
         "schedulingStopped",
         "settled",
         "retryDisposition"
+      ]
+    },
+    "OperationReplayInput": {
+      "type": "object",
+      "properties": {
+        "actionHash": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64
+        },
+        "explicitPreconditions": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Preconditions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "tokenWasMissing": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "actionHash",
+        "tokenWasMissing"
       ]
     },
     "OperationResource": {
@@ -4078,6 +4659,45 @@
             "kind",
             "id",
             "cleared"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cleared": {
+              "type": "boolean"
+            },
+            "expiresAtMs": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "intentId": {
+              "type": "string"
+            },
+            "intentKey": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "listeningIntent"
+            },
+            "momentRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "intentKey",
+            "intentId",
+            "cleared",
+            "momentRevision"
           ]
         },
         {
@@ -5530,6 +6150,14 @@
         "one"
       ]
     },
+    "ReportedIntentBasis": {
+      "description": "Provenance accepted from external MCP clients (owners set `ownerInput` strictly from desktop UI).",
+      "type": "string",
+      "enum": [
+        "userRequest",
+        "inference"
+      ]
+    },
     "RequestFrame": {
       "type": "object",
       "properties": {
@@ -5571,6 +6199,28 @@
         "new_plan_required",
         "reauth_required",
         "not_retryable"
+      ]
+    },
+    "SceneCity": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/SceneCitySource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "source"
+      ]
+    },
+    "SceneCitySource": {
+      "type": "string",
+      "enum": [
+        "userConfigured"
       ]
     },
     "SearchEntity": {
@@ -6164,6 +6814,13 @@
     "VideoId": {
       "description": "Opaque YouTube Music video identifier.",
       "type": "string"
+    },
+    "VocalsMode": {
+      "type": "string",
+      "enum": [
+        "any",
+        "preferInstrumental"
+      ]
     },
     "WriteAction": {
       "oneOf": [
@@ -6851,6 +7508,23 @@
             "kind": {
               "type": "string",
               "const": "setDjFeedback"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "change"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "change": {
+              "$ref": "#/definitions/ListeningIntentChange"
+            },
+            "kind": {
+              "type": "string",
+              "const": "setListeningIntent"
             }
           },
           "additionalProperties": false,

@@ -662,6 +662,11 @@ pub struct CommandReceipt {
 )]
 pub enum AgentActivityRequest {
     Read,
+    /// Read activity with a caller-chosen bounded preference window (1..=500).
+    ReadWithOptions {
+        #[schemars(range(min = 1, max = 500))]
+        preferences_limit: Option<u16>,
+    },
     Cancel {
         #[schemars(length(min = 1, max = 64))]
         principal: String,
@@ -673,6 +678,13 @@ pub enum AgentActivityRequest {
         #[schemars(length(min = 1, max = 64))]
         preference_id: String,
     },
+    /// The owner clears a temporary listening intent from the desktop.
+    ClearListeningIntent {
+        #[schemars(length(min = 1, max = 128))]
+        intent_key: String,
+    },
+    /// The owner clears all temporary listening intents for the current account.
+    ClearAllListeningIntents,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -695,6 +707,10 @@ pub struct AgentOperationSummary {
     pub operation_id: String,
     pub phase: AgentOperationPhase,
     pub resource: Option<String>,
+    /// What the operation did, as a stable key (`play`, `enqueue`, `rememberTaste`, ...) that the
+    /// interface words in its own language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
     pub verified_items: usize,
     pub total_items: usize,
     pub can_cancel: bool,
@@ -717,7 +733,28 @@ pub struct AgentPreferenceSummary {
     pub subject_id: String,
     pub label: Option<String>,
     pub stance: AgentPreferenceStance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub recorded_by: String,
+}
+
+/// A temporary listening intent as the desktop activity view displays it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentListeningIntentSummary {
+    pub intent_key: String,
+    pub intent_id: String,
+    /// `vocals`, `energy`, `activity`, `musicBrief` or `dismissTheme`.
+    pub kind: String,
+    /// The setting (`preferInstrumental`, `steady`, `gaming`, ...), the brief as written, or the
+    /// dismissed occasion's id.
+    pub value: String,
+    /// `today`, `session`, or `until`.
+    pub scope_kind: String,
+    pub expires_at_ms: u64,
+    /// `ownerInput`, `userRequestReportedByAssistant`, or `assistantInference`.
+    pub basis: String,
+    pub reported_by: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -730,6 +767,184 @@ pub struct AgentActivitySnapshot {
     /// All preferences of the account; more than `preferences` when only the newest are shown.
     #[serde(default)]
     pub preferences_total: u32,
+    /// Active temporary listening intents for the current account.
+    #[serde(default)]
+    pub listening_intents: Vec<AgentListeningIntentSummary>,
+}
+
+/// Owner-managed Moment DJ privacy and local context configuration stored strictly on desktop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OwnerMomentConfig {
+    #[serde(default)]
+    pub config_revision: u64,
+    #[serde(default)]
+    pub share_time: bool,
+    #[serde(default)]
+    pub holidays_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holiday_country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holiday_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holiday_region: Option<String>,
+    #[serde(default)]
+    pub include_cultural_observances: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_city: Option<String>,
+    #[serde(default = "default_true_moment")]
+    pub share_listening_intents: bool,
+    /// Per-account allowlist of registered MCP principal names granted Moment access.
+    #[serde(default)]
+    pub shared_principals_by_account: BTreeMap<String, Vec<String>>,
+}
+
+fn default_true_moment() -> bool {
+    true
+}
+
+impl Default for OwnerMomentConfig {
+    fn default() -> Self {
+        Self {
+            config_revision: 0,
+            share_time: false,
+            holidays_enabled: false,
+            holiday_country: None,
+            holiday_state: None,
+            holiday_region: None,
+            include_cultural_observances: false,
+            scene_city: None,
+            share_listening_intents: true,
+            shared_principals_by_account: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrincipalShareUpdate {
+    #[schemars(length(min = 1, max = 64))]
+    pub principal: String,
+    pub shared: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OwnerMomentConfigPatch {
+    pub share_time: Option<bool>,
+    pub holidays_enabled: Option<bool>,
+    /// ISO code (`"US"`, `"CN"`, ...) or `""` to clear.
+    pub holiday_country: Option<String>,
+    /// Subdivision/state code or `""` to clear.
+    pub holiday_state: Option<String>,
+    /// Region code or `""` to clear.
+    pub holiday_region: Option<String>,
+    pub include_cultural_observances: Option<bool>,
+    /// User-entered city mood context (max 80 chars), or `""` to clear.
+    #[schemars(length(max = 80))]
+    pub scene_city: Option<String>,
+    pub share_listening_intents: Option<bool>,
+    pub set_principal_shared: Option<PrincipalShareUpdate>,
+    pub preview_principal: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum MomentDesktopRequest {
+    Read { preview_principal: Option<String> },
+    Update { patch: OwnerMomentConfigPatch },
+}
+
+/// Core -> Host: holiday region config sent whenever owner config changes or on host hello.
+/// Never carries `scene_city` or registered principals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvironmentConfigPayload {
+    pub config_revision: u64,
+    pub holidays_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holiday_country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holiday_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holiday_region: Option<String>,
+    pub include_cultural_observances: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostOccasion {
+    pub id: String,
+    pub label: String,
+    /// `eve`, `day`, or `observed`.
+    pub phase: String,
+    /// `public` or `observance`.
+    pub kind: String,
+    pub local_date: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_date: Option<String>,
+    pub provider_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HolidaySubdivisionOption {
+    pub code: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HolidayCountryOption {
+    pub code: String,
+    pub name: String,
+    #[serde(default)]
+    pub states: Vec<HolidaySubdivisionOption>,
+}
+
+/// Host -> Core: local clock & offline holiday snapshot computed in Electron main.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostEnvironmentSnapshotPayload {
+    pub config_revision: u64,
+    pub captured_at_ms: u64,
+    pub valid_until_ms: u64,
+    pub clock_ok: bool,
+    pub calendar_ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekday: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub day_part: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub day_ends_at_utc_ms: Option<u64>,
+    #[serde(default)]
+    pub occasions: Vec<HostOccasion>,
+    #[serde(default)]
+    pub countries: Vec<HolidayCountryOption>,
+}
+
+/// Core -> Main UI: desktop Moment DJ settings + registered principals + live principal preview.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MomentDesktopSnapshot {
+    pub config: OwnerMomentConfig,
+    pub current_account_key: String,
+    #[serde(default)]
+    pub registered_principals: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HostEnvironmentSnapshotPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_principal: Option<String>,
+    pub preview_json: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -784,6 +999,9 @@ pub enum StateDelta {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resource_id: Option<String>,
     },
+    MomentChanged {
+        revision: u64,
+    },
 }
 
 impl StateDelta {
@@ -799,7 +1017,8 @@ impl StateDelta {
             | Self::CommandUpdated { revision, .. }
             | Self::ManualTakeover { revision, .. }
             | Self::ControlOperationChanged { revision, .. }
-            | Self::ResourceInvalidated { revision, .. } => *revision,
+            | Self::ResourceInvalidated { revision, .. }
+            | Self::MomentChanged { revision } => *revision,
         }
     }
 }

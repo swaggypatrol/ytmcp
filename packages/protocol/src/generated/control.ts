@@ -59,6 +59,10 @@ export type ControlRequest =
       params: OperationInput;
     }
   | {
+      method: "replayOperation";
+      params: OperationReplayInput;
+    }
+  | {
       method: "getDjPreferences";
       params: DjPreferencesInput;
     }
@@ -201,6 +205,20 @@ export type AlbumId = string;
  * via the `definition` "ArtistId".
  */
 export type ArtistId = string;
+/**
+ * Unique identifier for one authenticated account session epoch.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "AccountEpoch".
+ */
+export type AccountEpoch = string;
+/**
+ * Unique identifier for one authorized page bridge handshake.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "BridgeEpoch".
+ */
+export type BridgeEpoch = string;
 /**
  * How often the heartbeat lets the agent check in with the listener.
  *
@@ -454,6 +472,10 @@ export type WriteAction =
       kind: "setDjFeedback";
     }
   | {
+      change: ListeningIntentChange;
+      kind: "setListeningIntent";
+    }
+  | {
       goal: AccountHandoffGoal;
       kind: "accountHandoff";
     }
@@ -624,6 +646,88 @@ export type DjFeedbackTarget =
       kind: "artist";
     };
 /**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListeningIntentChange".
+ */
+export type ListeningIntentChange =
+  | {
+      action: "set";
+      basis: ReportedIntentBasis;
+      duration: ListeningIntentDuration;
+      expectedMomentRevision?: number | null;
+      instruction: ListeningIntentInstruction;
+    }
+  | {
+      action: "clear";
+      basis: ReportedIntentBasis;
+      expectedMomentRevision?: number | null;
+      intentKey: string;
+    };
+/**
+ * Provenance accepted from external MCP clients (owners set `ownerInput` strictly from desktop UI).
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ReportedIntentBasis".
+ */
+export type ReportedIntentBasis = "userRequest" | "inference";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListeningIntentDuration".
+ */
+export type ListeningIntentDuration =
+  | {
+      kind: "today";
+    }
+  | {
+      kind: "session";
+    }
+  | {
+      expiresAtMs: number;
+      kind: "until";
+    };
+/**
+ * One session-scoped listening intent dimension. Updating a dimension replaces only that dimension.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListeningIntentInstruction".
+ */
+export type ListeningIntentInstruction =
+  | {
+      dimension: "vocals";
+      mode: VocalsMode;
+    }
+  | {
+      dimension: "energy";
+      level: EnergyLevel;
+    }
+  | {
+      dimension: "activity";
+      kind: ActivityKind;
+    }
+  | {
+      brief: string;
+      dimension: "musicBrief";
+    }
+  | {
+      dimension: "dismissTheme";
+      themeId: string;
+    };
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "VocalsMode".
+ */
+export type VocalsMode = "any" | "preferInstrumental";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "EnergyLevel".
+ */
+export type EnergyLevel = "gentle" | "steady" | "driving";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ActivityKind".
+ */
+export type ActivityKind = "gaming" | "focus" | "relax" | "social";
+/**
  * The account change a client asks the user to make in the player.
  *
  * This interface was referenced by `ControlV1`'s JSON-Schema
@@ -635,20 +739,6 @@ export type AccountHandoffGoal = "signIn" | "reauthenticate" | "switchAccount";
  * via the `definition` "ResumeAction".
  */
 export type ResumeAction = "resumeUnsent" | "reconcile";
-/**
- * Unique identifier for one authenticated account session epoch.
- *
- * This interface was referenced by `ControlV1`'s JSON-Schema
- * via the `definition` "AccountEpoch".
- */
-export type AccountEpoch = string;
-/**
- * Unique identifier for one authorized page bridge handshake.
- *
- * This interface was referenced by `ControlV1`'s JSON-Schema
- * via the `definition` "BridgeEpoch".
- */
-export type BridgeEpoch = string;
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "ServerFrame".
@@ -797,6 +887,41 @@ export type CoreEpoch = string;
  * via the `definition` "Freshness".
  */
 export type Freshness = "fresh" | "stale";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "MomentOccasionKind".
+ */
+export type MomentOccasionKind = "public" | "observance";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "MomentOccasionPhase".
+ */
+export type MomentOccasionPhase = "eve" | "day" | "observed";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "SceneCitySource".
+ */
+export type SceneCitySource = "userConfigured";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "MomentSectionStatus".
+ */
+export type MomentSectionStatus = "shared" | "notShared" | "unavailable";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "MomentDayPart".
+ */
+export type MomentDayPart = "earlyMorning" | "morning" | "afternoon" | "evening" | "lateNight";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListeningIntentBasis".
+ */
+export type ListeningIntentBasis = "ownerInput" | "userRequestReportedByAssistant" | "assistantInference";
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListeningIntentScope".
+ */
+export type ListeningIntentScope = "today" | "session" | "until";
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "PlayerOp".
@@ -1122,6 +1247,14 @@ export type OperationResource =
       kind: "djPreference";
     }
   | {
+      cleared: boolean;
+      expiresAtMs?: number | null;
+      intentId: string;
+      intentKey: string;
+      kind: "listeningIntent";
+      momentRevision: number;
+    }
+  | {
       goal: AccountHandoffGoal;
       kind: "accountHandoff";
       state: AccountHandoffState;
@@ -1279,6 +1412,26 @@ export interface OperationInput {
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "OperationReplayInput".
+ */
+export interface OperationReplayInput {
+  actionHash: string;
+  explicitPreconditions?: Preconditions | null;
+  operationId: string;
+  tokenWasMissing: boolean;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "Preconditions".
+ */
+export interface Preconditions {
+  expectedAccountEpoch?: AccountEpoch | null;
+  expectedBridgeEpoch?: BridgeEpoch | null;
+  expectedEntityRevision?: string | null;
+  expectedQueueRevision?: number | null;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "DjPreferencesInput".
  */
 export interface DjPreferencesInput {
@@ -1428,16 +1581,6 @@ export interface SettingsPatch {
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
- * via the `definition` "Preconditions".
- */
-export interface Preconditions {
-  expectedAccountEpoch?: AccountEpoch | null;
-  expectedBridgeEpoch?: BridgeEpoch | null;
-  expectedEntityRevision?: string | null;
-  expectedQueueRevision?: number | null;
-}
-/**
- * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "Capability".
  */
 export interface Capability {
@@ -1460,6 +1603,10 @@ export interface ContextSnapshot {
   contextToken: string;
   cursor: EventCursor;
   freshness: Freshness;
+  /**
+   * Owner-configured Moment DJ context projected for this client (`None` only in legacy fixtures).
+   */
+  moment?: MomentView | null;
   player: PlayerState;
   queue: QueueProjection;
 }
@@ -1479,6 +1626,99 @@ export interface AccountState {
 export interface EventCursor {
   coreEpoch: CoreEpoch;
   revision: number;
+}
+/**
+ * Authoritative Moment DJ context projection delivered to one authorized MCP client.
+ *
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "MomentView".
+ */
+export interface MomentView {
+  environment: EnvironmentView;
+  listeningIntents: ListeningIntentsView;
+  revision: number;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "EnvironmentView".
+ */
+export interface EnvironmentView {
+  /**
+   * The instant `time` describes (Unix ms), so an assistant can turn "tonight" or "for two
+   * hours" into an absolute `expiresAtMs`. Present only with `time`.
+   */
+  capturedAtMs?: number | null;
+  occasions?: MomentOccasion[];
+  revision: string;
+  sceneCity?: SceneCity | null;
+  status: MomentSectionStatus;
+  time?: MomentTime | null;
+  /**
+   * Always false: the player never fetches weather; an assistant may look it up for `sceneCity`.
+   */
+  weatherProvided?: boolean;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "MomentOccasion".
+ */
+export interface MomentOccasion {
+  actualDate?: string | null;
+  id: string;
+  kind: MomentOccasionKind;
+  label: string;
+  localDate: string;
+  phase: MomentOccasionPhase;
+  providerVersion: string;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "SceneCity".
+ */
+export interface SceneCity {
+  label: string;
+  source: SceneCitySource;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "MomentTime".
+ */
+export interface MomentTime {
+  dayPart: MomentDayPart;
+  /**
+   * Local calendar date (`YYYY-MM-DD`) in `timeZone`.
+   */
+  localDate: string;
+  /**
+   * IANA time zone identifier from the local device clock.
+   */
+  timeZone: string;
+  /**
+   * Lowercase weekday name (`monday`..`sunday`).
+   */
+  weekday: string;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListeningIntentsView".
+ */
+export interface ListeningIntentsView {
+  items: ListeningIntentView[];
+  revision: string;
+  status: MomentSectionStatus;
+}
+/**
+ * This interface was referenced by `ControlV1`'s JSON-Schema
+ * via the `definition` "ListeningIntentView".
+ */
+export interface ListeningIntentView {
+  basis: ListeningIntentBasis;
+  createdAtMs: number;
+  expiresAtMs: number;
+  instruction: ListeningIntentInstruction;
+  intentId: string;
+  intentKey: string;
+  scope: ListeningIntentScope;
 }
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
@@ -2068,15 +2308,31 @@ export interface DjCueReply {
 export interface DjCue {
   ageMs: number;
   chattiness: DjChattiness;
+  /**
+   * Core epoch of the running daemon so background waiters can scope `(coreEpoch, seq)` safely.
+   */
+  coreEpoch?: CoreEpoch | null;
   kind: DjCueKind;
   listener: DjListener;
+  /**
+   * Moment DJ snapshot computed freshly when this prompt is delivered.
+   */
+  moment?: MomentView | null;
   moreQueued: boolean;
   nowPlaying?: DjNowPlaying | null;
   /**
    * The recorded tastes, sent on this client's first prompt and whenever they changed since
-   * its previous one; empty when `preferences_unchanged`.
+   * its previous one; empty when `preferences_unchanged` or `preferences_unavailable`.
    */
   preferences: DjPreference[];
+  /**
+   * Total recorded tastes on the account when available (more than `preferences.len()` when paged).
+   */
+  preferencesTotal?: number | null;
+  /**
+   * True when the player could not read stored tastes for this prompt; keep earlier known tastes.
+   */
+  preferencesUnavailable?: boolean;
   /**
    * The tastes are the same as in this client's previous prompt.
    */

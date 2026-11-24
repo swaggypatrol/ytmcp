@@ -30,10 +30,11 @@ use ytm_mpris::{MprisConfig, MprisHostAction, MprisService};
 use ytm_protocol::{
     AgentActivityRequest, AppSettingsPatch, AssetResolvedPayload, BridgeCommandAckPayload,
     BridgeHealthPayload, BridgeLifecyclePayload, BridgePlaybackObservedPayload, BridgeReadyPayload,
-    CatalogQueryRequest, CoreReadyPayload, Envelope, HostHelloPayload, HostWindowVisibilityPayload,
-    LyricsQueryRequest, MAX_COMMAND_QUEUE, MAX_FRAME_BYTES, MAX_PENDING_REQUESTS, MessageKind,
-    MutationRequest, NetworkState, OutputGateResultPayload, PROTOCOL_VERSION, PlayerCommandPayload,
-    QueryError, QueryErrorCode, QueueSnapshot, RequestId, ResolveAssetPayload, SenderRole,
+    CatalogQueryRequest, CoreReadyPayload, Envelope, HostEnvironmentSnapshotPayload,
+    HostHelloPayload, HostWindowVisibilityPayload, LyricsQueryRequest, MAX_COMMAND_QUEUE,
+    MAX_FRAME_BYTES, MAX_PENDING_REQUESTS, MessageKind, MomentDesktopRequest, MutationRequest,
+    NetworkState, OutputGateResultPayload, PROTOCOL_VERSION, PlayerCommandPayload, QueryError,
+    QueryErrorCode, QueueSnapshot, RequestId, ResolveAssetPayload, SenderRole,
     SessionMaterialPayload,
 };
 use ytm_storage::{CoverCacheConfig, SqliteStorage, StoragePaths};
@@ -289,9 +290,12 @@ async fn main() {
     ));
     outbound.set_core_epoch(core.core_epoch().clone());
 
-    // Restore persisted user settings before serving subscriptions.
+    // Restore persisted user settings and Moment DJ config before serving subscriptions.
     if let Err(err) = core.restore_settings().await {
         warn!(code = ?err.code, "could not restore persisted settings");
+    }
+    if let Err(err) = core.restore_moment_config().await {
+        warn!(code = ?err.code, "could not restore persisted Moment DJ config");
     }
 
     use ytm_core::control::journal::OperationStore;
@@ -308,7 +312,8 @@ async fn main() {
                 )))
                 .with_operations(operation_store.clone())
                 .with_local_history(operation_store.clone())
-                .with_dj_store(operation_store),
+                .with_dj_store(operation_store.clone())
+                .with_moment_store(operation_store),
         )),
         Err(err) => {
             warn!(code = ?err.code, "operation journal could not be recovered");
@@ -319,6 +324,7 @@ async fn main() {
     if let Some(service) = &control_service {
         tokio::spawn(service.clone().settle_on_account_bind());
     }
+    let moment_registrations = control_registrations.clone();
     let control_server = control_service.as_ref().and_then(|service| {
         match control_server::ControlServer::start(service.clone(), control_registrations) {
             Ok(server) => server,
@@ -490,6 +496,15 @@ async fn main() {
                                 ready,
                             )
                             .await;
+                            if let Ok(env_cfg) = core.environment_config().await {
+                                send_typed_response(
+                                    &outbound,
+                                    MessageKind::CoreEnvironmentConfig,
+                                    None,
+                                    env_cfg,
+                                )
+                                .await;
+                            }
                         }
                         Err(err) => {
                             send_error(
@@ -1005,6 +1020,114 @@ async fn main() {
                     }
                     MessageKind::HostPowerResume => {
                         let _ = core.on_host_power_resume().await;
+                    }
+                    MessageKind::HostEnvironmentSnapshot => {
+                        if let Some(payload) = decode_or_report::<HostEnvironmentSnapshotPayload>(
+                            &outbound,
+                            &env,
+                            &dropped_frames,
+                        )
+                        .await
+                        {
+                            let _ = core.on_host_environment_snapshot(payload).await;
+                        }
+                    }
+                    MessageKind::UiMomentSettings => {
+                        let Some(service) = control_service.clone() else {
+                            send_error(
+                                &outbound,
+                                env.request_id,
+                                QueryErrorCode::UnsupportedCapability,
+                                "Moment DJ settings are unavailable",
+                                false,
+                            )
+                            .await;
+                            continue;
+                        };
+                        let Some(slot) =
+                            PendingSlot::try_acquire(&pending_requests, MAX_PENDING_REQUESTS)
+                        else {
+                            send_error(
+                                &outbound,
+                                env.request_id,
+                                QueryErrorCode::Busy,
+                                "pending request limit reached",
+                                true,
+                            )
+                            .await;
+                            continue;
+                        };
+                        let request = match env.decode_payload::<MomentDesktopRequest>() {
+                            Ok(req) => req,
+                            Err(err) => {
+                                send_error(
+                                    &outbound,
+                                    env.request_id,
+                                    QueryErrorCode::InvalidPayload,
+                                    err.to_string(),
+                                    false,
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        let is_update = matches!(request, MomentDesktopRequest::Update { .. });
+                        let reg_path = moment_registrations.clone();
+                        let out = outbound.clone();
+                        let core_c = Arc::clone(&core);
+                        tokio::spawn(async move {
+                            let _slot = slot;
+                            let principals = tokio::task::spawn_blocking(move || {
+                                ytm_control_api::local::load_private_json::<
+                                    Vec<ytm_control_api::local::Registration>,
+                                >(&reg_path)
+                                .map(|list| {
+                                    list.into_iter().map(|r| r.principal).collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default()
+                            })
+                            .await
+                            .unwrap_or_default();
+                            match service
+                                .desktop_moment_settings(env.account_epoch, request, principals)
+                                .await
+                            {
+                                Ok(snapshot) => {
+                                    send_typed_response(
+                                        &out,
+                                        MessageKind::CoreMomentSettings,
+                                        env.request_id,
+                                        snapshot,
+                                    )
+                                    .await;
+                                }
+                                Err(error) => {
+                                    let code = match error.code {
+                                        ytm_control_api::ErrorCode::StaleContext
+                                        | ytm_control_api::ErrorCode::Conflict => {
+                                            QueryErrorCode::StaleContext
+                                        }
+                                        ytm_control_api::ErrorCode::InvalidInput => {
+                                            QueryErrorCode::InvalidPayload
+                                        }
+                                        _ => QueryErrorCode::StorageError,
+                                    };
+                                    send_error(&out, env.request_id, code, error.message, false)
+                                        .await;
+                                }
+                            }
+                            // An update can be saved even when its reply fails, so the host
+                            // always gets the current config and never keeps an old revision.
+                            if is_update && let Ok(cfg) = core_c.environment_config().await {
+                                send_typed_response(
+                                    &out,
+                                    MessageKind::CoreEnvironmentConfig,
+                                    None,
+                                    cfg,
+                                )
+                                .await;
+                            }
+                        });
                     }
                     MessageKind::HostNetworkChanged => {
                         if let Some(network_state) =

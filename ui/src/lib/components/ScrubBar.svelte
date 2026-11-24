@@ -12,6 +12,8 @@
     value: number;
     max: number;
     min?: number;
+    /** When set, the arrow keys move the value by this much instead of by 1. */
+    keyStep?: number;
     disabled?: boolean;
     label: string;
     valueText?: string;
@@ -30,6 +32,7 @@
     value,
     max,
     min = 0,
+    keyStep,
     disabled = false,
     label,
     valueText,
@@ -54,6 +57,17 @@
     if (disabled) return;
     pressed = true;
     onpress?.();
+  }
+
+  /** Arrow keys move by `keyStep`; dragging keeps the input's fine resolution. */
+  function keydown(event: KeyboardEvent & { currentTarget: HTMLInputElement }) {
+    if (!keyStep || disabled) return;
+    const direction = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[event.key];
+    if (!direction) return;
+    event.preventDefault();
+    const next = Math.min(max, Math.max(min, Number(event.currentTarget.value) + direction * keyStep));
+    oninput?.(next);
+    onchange?.(next);
   }
 
   function release() {
@@ -88,6 +102,7 @@
     onpointercancel={release}
     onlostpointercapture={release}
     onblur={release}
+    onkeydown={keydown}
     oninput={(e) => oninput?.(Number(e.currentTarget.value))}
     onchange={(e) => onchange?.(Number(e.currentTarget.value))}
     data-testid={testid}

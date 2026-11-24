@@ -53,12 +53,14 @@
       : `${lyrics.userOffsetMs > 0 ? "+" : ""}${lyrics.userOffsetMs} ms`
   );
 
+  // Scrolls only the list, never the page; the list is positioned, so offsetTop is measured from it.
   $effect(() => {
     const idx = activeIndex;
     if (!followActive || idx < 0 || !listEl) return;
     const el = listEl.querySelector<HTMLElement>(`[data-line-index="${idx}"]`);
-    if (el && typeof el.scrollIntoView === "function") {
-      el.scrollIntoView({ block: "center", behavior: smoothScroll ? "smooth" : "auto" });
+    if (el && typeof listEl.scrollTo === "function") {
+      const targetTop = Math.max(0, el.offsetTop - listEl.clientHeight / 2 + el.clientHeight / 2);
+      listEl.scrollTo({ top: targetTop, behavior: smoothScroll ? "smooth" : "auto" });
     }
   });
 </script>
@@ -124,7 +126,7 @@
     </div>
 
     <!-- Plain text only (no {@html}); lines are seek buttons only for synced lyrics. -->
-    <div bind:this={listEl} class="card p-4 sm:p-5 flex flex-col gap-1.5 max-h-[60vh] overflow-y-auto" data-testid="lyrics-synced-list">
+    <div bind:this={listEl} class="card relative p-4 sm:p-5 flex flex-col gap-1.5 max-h-[60vh] overflow-y-auto" data-testid="lyrics-synced-list">
       {#each lyrics.syncedLines ?? [] as line, idx (`${line.timeMs}::${idx}`)}
         {@const isActive = idx === activeIndex}
         {@const at = effectiveLineTimeMs(line, lyrics)}
@@ -142,7 +144,7 @@
             {formatDurationMs(at)}
           </span>
           <span
-            class="break-words {isActive ? 'type-lg font-bold' : 'type-base font-medium'}"
+            class="break-words type-base {isActive ? 'font-bold' : 'font-medium'}"
             lang={lyrics.language ?? undefined}
           >
             {line.text}

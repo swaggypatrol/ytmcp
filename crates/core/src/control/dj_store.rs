@@ -49,4 +49,15 @@ pub trait DjStore: Send + Sync {
         after: Option<PreferenceCursor>,
         limit: usize,
     ) -> BoxFuture<'_, Result<(Vec<DjPreference>, bool), ControlError>>;
+
+    /// Counts all recorded preferences in the account.
+    fn count_preferences(
+        &self,
+        account_scope: AccountScope,
+    ) -> BoxFuture<'_, Result<u32, ControlError>> {
+        Box::pin(async move {
+            let (items, _) = self.list_preferences(account_scope, None, 500).await?;
+            Ok(u32::try_from(items.len()).unwrap_or(u32::MAX))
+        })
+    }
 }

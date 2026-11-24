@@ -44,8 +44,12 @@
   import { createUiClient, type UiClientState, type YtmUiClient } from "../lib/ipc/client.js";
   import { stepUserOffsetMs } from "../lib/lyrics.js";
   import { shouldRunDecorativeAnimation } from "../lib/motion/preferences.js";
+  import { SeekControl } from "../lib/seek-control.svelte.js";
   import { resolveShortcut } from "../lib/shortcuts.js";
   import { accessibleTrackAccent } from "../lib/theme/accent.js";
+
+  /** One seek preview for the player bar and Now Playing, so both follow the same drag. */
+  const seek = new SeekControl();
 
   interface Props {
     client?: YtmUiClient;
@@ -795,8 +799,9 @@
             {canOpenArtist}
             accent={trackAccent}
             {decorativeMotion}
+            {seek}
             onSeekMs={(ms) =>
-              void sendCommand("seek", { positionMs: ms, trackInstanceId: snapshot?.player.trackInstanceId ?? null })}
+              sendCommand("seek", { positionMs: ms, trackInstanceId: snapshot?.player.trackInstanceId ?? null })}
             onToggleLike={() => {
               if (currentTrack) setLike(currentTrack, likedState(currentTrack) !== true);
             }}
@@ -836,7 +841,7 @@
             smoothScroll={!motionReduced}
             accent={trackAccent}
             onSeekMs={(ms) =>
-              void sendCommand("seek", { positionMs: ms, trackInstanceId: snapshot?.player.trackInstanceId ?? null })}
+              sendCommand("seek", { positionMs: ms, trackInstanceId: snapshot?.player.trackInstanceId ?? null })}
             onStepOffset={(delta) => {
               if (currentTrack && lyrics)
                 void requestLyrics(currentTrack, { setUserOffsetMs: stepUserOffsetMs(lyrics.userOffsetMs, delta) });
@@ -857,6 +862,9 @@
           <SettingsView
             {snapshot}
             resnapshotCount={clientState.resnapshotCount}
+            momentClient={client}
+            momentScopeKey={snapshot ? `${snapshot.coreEpoch}:${accountKey}` : null}
+            momentRevision={clientState.momentRevision}
             onUpdateSettings={(patch) => client.updateSettings(patch)}
             onOpenDiagnostics={() => {
               diagnosticsOpen = true;
@@ -875,6 +883,7 @@
     pendingOverlay={clientState.pendingOverlay}
     {interpolatedPositionMs}
     onCommand={sendCommand}
+    {seek}
     onOpenNowPlaying={() => navigate({ view: "now-playing" })}
     onOpenLyrics={() => navigate({ view: "lyrics" })}
     onOpenDiagnostics={() => {

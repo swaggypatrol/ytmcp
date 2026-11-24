@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use ytm_protocol::{AlbumId, ArtistId, PlaylistId, QueueEntryId, RepeatMode, VideoId};
 
 use crate::{
@@ -252,6 +253,9 @@ pub enum WriteAction {
     SetDjFeedback {
         change: crate::DjFeedbackChange,
     },
+    SetListeningIntent {
+        change: crate::ListeningIntentChange,
+    },
     /// Asks the user, without opening or focusing any window, to change the account.
     AccountHandoff {
         goal: AccountHandoffGoal,
@@ -294,6 +298,46 @@ pub struct RecommendationsInput {
 pub struct OperationInput {
     #[schemars(length(min = 1, max = 128))]
     pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OperationReplayInput {
+    #[schemars(length(min = 1, max = 128))]
+    pub operation_id: String,
+    #[schemars(length(min = 64, max = 64))]
+    pub action_hash: String,
+    pub token_was_missing: bool,
+    pub explicit_preconditions: Option<Preconditions>,
+}
+
+/// Computes `(exact_action_sha256, tokenless_action_sha256)` for idempotency-replay validation
+/// when bookkeeping fields (`contextToken` / `preconditions`) were omitted by the MCP caller.
+pub fn compute_action_hashes(action: &WriteAction) -> (String, String) {
+    let hash_value = |act: &WriteAction| -> String {
+        let bytes = serde_json::to_vec(act).unwrap_or_default();
+        hex::encode(Sha256::digest(bytes))
+    };
+    let exact = hash_value(action);
+    let mut stripped = action.clone();
+    match &mut stripped {
+        WriteAction::Play {
+            target: PlayContextTarget::QueueEntry { context_token, .. },
+        }
+        | WriteAction::Seek { context_token, .. }
+        | WriteAction::Enqueue { context_token, .. }
+        | WriteAction::SelectQueueEntry { context_token, .. }
+        | WriteAction::RemoveQueueEntry { context_token, .. }
+        | WriteAction::MoveQueueEntry { context_token, .. }
+        | WriteAction::ClearUpcoming { context_token }
+        | WriteAction::ReplaceUpcoming { context_token, .. }
+        | WriteAction::InterruptWith { context_token, .. } => {
+            context_token.clear();
+        }
+        _ => {}
+    }
+    let tokenless = hash_value(&stripped);
+    (exact, tokenless)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -387,6 +431,7 @@ pub enum ControlRequest {
     GetShareLink(crate::ShareInput),
     Recommend(RecommendationsInput),
     GetOperation(OperationInput),
+    ReplayOperation(OperationReplayInput),
     GetDjPreferences(crate::DjPreferencesInput),
     /// Returns the next prompt for a DJ agent, if any; polled by the MCP adapter while it waits.
     NextDjCue(crate::DjCueInput),

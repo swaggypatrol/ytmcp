@@ -194,3 +194,80 @@ it("prompts for an acknowledged account handoff and opens the player only on cli
   await fireEvent.click(within(prompts[0]!).getByRole("button", { name: "Open the official player" }));
   expect(onOpenOfficialPlayer).toHaveBeenCalledTimes(1);
 });
+
+it("displays listening intents, operation summaries, preference notes, and paginates taste notes", async () => {
+  const initialSnapshot: AgentActivitySnapshot = {
+    operations: [
+      {
+        principal: "agent-a",
+        operationId: "op-summary-1",
+        phase: "verified",
+        resource: "queue",
+        action: "enqueue",
+        verifiedItems: 2,
+        totalItems: 2,
+        canCancel: false,
+      },
+    ],
+    listeningIntents: [
+      {
+        intentId: "intent-1",
+        intentKey: "vocals",
+        kind: "vocals",
+        value: "preferInstrumental",
+        basis: "ownerInput",
+        scopeKind: "today",
+        expiresAtMs: Date.now() + 60_000,
+        reportedBy: "owner",
+      },
+    ],
+    preferences: [
+      {
+        preferenceId: "pref-1",
+        subjectKind: "artist",
+        subjectId: "ar-1",
+        label: "Artist One",
+        stance: "prefer",
+        note: "Great late-night instrumental vibe",
+        recordedBy: "agent-a",
+      },
+    ],
+    preferencesTotal: 25,
+  };
+  const agentActivity = vi.fn<(request: AgentActivityRequest) => Promise<AgentActivitySnapshot>>()
+    .mockResolvedValueOnce(initialSnapshot)
+    .mockResolvedValueOnce({ ...initialSnapshot, listeningIntents: [] })
+    .mockResolvedValueOnce({
+      ...initialSnapshot,
+      listeningIntents: [],
+      preferences: [
+        ...initialSnapshot.preferences!,
+        {
+          preferenceId: "pref-2",
+          subjectKind: "video",
+          subjectId: "vid-2",
+          label: "Second Track",
+          stance: "avoid",
+          note: "Too loud for focus",
+          recordedBy: "agent-a",
+        },
+      ],
+    });
+  view(agentActivity);
+
+  expect(await screen.findByText("Added to the queue")).toBeTruthy();
+  expect(screen.getByText("Fewer vocals")).toBeTruthy();
+  expect(screen.getByTestId("agent-intent-ends").textContent).toMatch(/^until \d/);
+  expect(screen.getByTestId("agent-preference-note").textContent).toBe("Great late-night instrumental vibe");
+
+  await fireEvent.click(screen.getByRole("button", { name: "Clear intent “Fewer vocals”" }));
+  await waitFor(() => expect(screen.getByText("No active listening intents.")).toBeTruthy());
+
+  await fireEvent.click(screen.getByTestId("agent-preferences-load-more"));
+  await waitFor(() => expect(screen.getByText("Second Track")).toBeTruthy());
+  expect(agentActivity.mock.calls.map(([req]) => req)).toEqual([
+    { action: "read" },
+    { action: "clearListeningIntent", intentKey: "vocals" },
+    { action: "readWithOptions", preferencesLimit: 100 },
+  ]);
+});

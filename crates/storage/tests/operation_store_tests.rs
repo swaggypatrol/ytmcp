@@ -175,7 +175,7 @@ async fn latest_schema_migrates_v2_without_losing_offsets_settings_or_cache_inde
     drop(old);
 
     let storage = store(dir.path());
-    assert_eq!(storage.current_schema_version().unwrap(), 7);
+    assert_eq!(storage.current_schema_version().unwrap(), 8);
     assert_eq!(storage.created_backups().len(), 1);
     assert_eq!(
         storage.get_lyrics_user_offset(&video_id).await.unwrap(),

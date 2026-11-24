@@ -13,6 +13,8 @@ import {
   type BridgeLifecyclePayload,
   type CoreReadyPayload,
   type Envelope,
+  type EnvironmentConfigPayload,
+  type HostEnvironmentSnapshotPayload,
   type HostHelloPayload,
   type HostWindowVisibilityPayload,
   type NetworkState,
@@ -45,6 +47,7 @@ export interface RustHostClientOptions {
   readonly onOutputGateControl?: (
     payload: OutputGateControlPayload
   ) => Promise<OutputGateResultPayload> | OutputGateResultPayload;
+  readonly onEnvironmentConfig?: (config: EnvironmentConfigPayload) => void;
   readonly onMprisAction?: (action: MprisUiAction) => void;
   readonly onUnexpectedExit?: (detail: {
     code: number | null;
@@ -431,6 +434,11 @@ export class RustHostClient {
       return;
     }
 
+    if (env.kind === "core.environmentConfig") {
+      this.options.onEnvironmentConfig?.(env.payload as EnvironmentConfigPayload);
+      return;
+    }
+
     if (env.kind === "core.assetResolved") {
       const payload = env.payload as AssetResolvedPayload;
       if (env.requestId && this.pendingAssetRequests.has(env.requestId)) {
@@ -761,6 +769,19 @@ export class RustHostClient {
       requestId: null,
       seq: this.nextSeq(),
       payload: {},
+    });
+  }
+
+  public sendEnvironmentSnapshot(payload: HostEnvironmentSnapshotPayload): boolean {
+    return this.sendEnvelope({
+      protocolVersion: PROTOCOL_VERSION,
+      kind: "host.environmentSnapshot",
+      coreEpoch: this.coreEpoch,
+      accountEpoch: null,
+      bridgeEpoch: null,
+      requestId: null,
+      seq: this.nextSeq(),
+      payload,
     });
   }
 

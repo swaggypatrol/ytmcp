@@ -33,6 +33,11 @@ These are the known limits of the current code. Each describes what happens and,
 | Many MCP clients, Claude Code included, hold a message the user sends during a tool call until the call returns. Conversation-hot waits cap this at about a minute for five minutes after either side speaks; otherwise a wait can last until the next prompt. A shorter `maxWaitSeconds` or interrupting the call (Esc in Claude Code) also helps. |
 | Actions taken directly on the hidden official page are not seen as listener interaction, so they neither reset the check-in heartbeat nor count as the listener's skip. |
 | `ytm_delete_playlist` and an audio quality tool are not implemented, so the edit tier cannot delete playlists yet. The `delete-playlist` grant exists for when it can. |
+| Moment DJ never fetches weather (`weatherProvided` is always `false`). Assistants that need weather can look up the configured `sceneCity` using their own tools when allowed by the user. |
+| Moment DJ: the listener can clear listening intents in the app but not type one in; intents come from assistants. Each `session` intent runs its own 6 hours rather than sharing one listening session. |
+| Moment DJ: `expectedMomentRevision` is optional, so an assistant that skips it can set an intent again right after the listener cleared it. Clearing works by intent key, not by intent id. |
+| Moment DJ: holidays come from `date-holidays` as published, with English names; there is no per-holiday choice, and a substitute day off carries no `actualDate`. A change of the machine's time zone can take up to a minute to show. |
+| Moment DJ shares are kept by assistant name. Registering a new assistant under a name that was shared before inherits that share; an assistant shared and then removed from the registrations stays listed in Settings so it can be switched off. |
 | Confirmed-unsent `Accepted` operations settle on restart to `Cancelled` (`NewPlanRequired`); playback and queue writes that may already have been dispatched cannot be confirmed afterwards and stay unclear (`Unknown`). |
 
 ## Untested

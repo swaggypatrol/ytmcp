@@ -2,8 +2,9 @@ use crate::domain::{
     AgentActivityRequest, AgentActivitySnapshot, AppSettings, AppSettingsPatch, AppSnapshot,
     AssetResolvedPayload, BridgeCommandAckPayload, BridgeHealthPayload, BridgeLifecyclePayload,
     BridgePlaybackObservedPayload, BridgeReadyPayload, CatalogQueryRequest, CatalogResponsePayload,
-    CommandReceipt, CoreReadyPayload, HostHelloPayload, HostWindowVisibilityPayload,
-    LyricsQueryRequest, LyricsResult, MutationRequest, MutationResult, NetworkState,
+    CommandReceipt, CoreReadyPayload, EnvironmentConfigPayload, HostEnvironmentSnapshotPayload,
+    HostHelloPayload, HostWindowVisibilityPayload, LyricsQueryRequest, LyricsResult,
+    MomentDesktopRequest, MomentDesktopSnapshot, MutationRequest, MutationResult, NetworkState,
     OpenPlayerWindowPayload, OutputGateControlPayload, OutputGateResultPayload,
     PlayerCommandPayload, QueryError, QueryErrorCode, QueueSnapshot, ResolveAssetPayload,
     SessionMaterialPayload, StateDelta,
@@ -39,6 +40,8 @@ pub enum MessageKind {
     UiAgentActivity,
     #[serde(rename = "ui.settingsUpdate")]
     UiSettingsUpdate,
+    #[serde(rename = "ui.momentSettings")]
+    UiMomentSettings,
     #[serde(rename = "ui.openPlayerWindow")]
     UiOpenPlayerWindow,
     #[serde(rename = "ui.logout")]
@@ -65,6 +68,8 @@ pub enum MessageKind {
     CoreAgentActivity,
     #[serde(rename = "core.settingsUpdated")]
     CoreSettingsUpdated,
+    #[serde(rename = "core.momentSettings")]
+    CoreMomentSettings,
     #[serde(rename = "core.error")]
     CoreError,
     #[serde(rename = "core.pong")]
@@ -95,6 +100,10 @@ pub enum MessageKind {
     CoreResolveAsset,
     #[serde(rename = "core.assetResolved")]
     CoreAssetResolved,
+    #[serde(rename = "core.environmentConfig")]
+    CoreEnvironmentConfig,
+    #[serde(rename = "host.environmentSnapshot")]
+    HostEnvironmentSnapshot,
     #[serde(rename = "host.shutdown")]
     HostShutdown,
 
@@ -138,6 +147,7 @@ impl MessageKind {
                     | Self::UiMutation
                     | Self::UiAgentActivity
                     | Self::UiSettingsUpdate
+                    | Self::UiMomentSettings
                     | Self::UiOpenPlayerWindow
                     | Self::UiLogout
                     | Self::UiClearCache
@@ -162,6 +172,7 @@ impl MessageKind {
                     | Self::HostSessionCleared
                     | Self::HostBridgeLifecycle
                     | Self::HostOutputGateResult
+                    | Self::HostEnvironmentSnapshot
                     | Self::CoreResolveAsset
                     | Self::HostShutdown
             ),
@@ -176,6 +187,8 @@ impl MessageKind {
                     | Self::CoreMutationResponse
                     | Self::CoreAgentActivity
                     | Self::CoreSettingsUpdated
+                    | Self::CoreMomentSettings
+                    | Self::CoreEnvironmentConfig
                     | Self::CoreError
                     | Self::CorePong
                     | Self::CoreOutputGateControl
@@ -396,6 +409,31 @@ pub fn validate_typed_payload(env: &Envelope) -> Result<(), CodecError> {
         MessageKind::CoreSettingsUpdated => {
             let _: AppSettings = serde_json::from_value(env.payload.clone()).map_err(map_err)?;
         }
+        MessageKind::UiMomentSettings => {
+            let req: MomentDesktopRequest =
+                serde_json::from_value(env.payload.clone()).map_err(map_err)?;
+            if let MomentDesktopRequest::Update { patch } = &req
+                && let Some(city) = &patch.scene_city
+                && city.chars().count() > 80
+            {
+                return Err(CodecError::InvalidPayload {
+                    kind,
+                    reason: "sceneCity exceeds 80 characters".to_string(),
+                });
+            }
+        }
+        MessageKind::CoreMomentSettings => {
+            let _: MomentDesktopSnapshot =
+                serde_json::from_value(env.payload.clone()).map_err(map_err)?;
+        }
+        MessageKind::CoreEnvironmentConfig => {
+            let _: EnvironmentConfigPayload =
+                serde_json::from_value(env.payload.clone()).map_err(map_err)?;
+        }
+        MessageKind::HostEnvironmentSnapshot => {
+            let _: HostEnvironmentSnapshotPayload =
+                serde_json::from_value(env.payload.clone()).map_err(map_err)?;
+        }
         MessageKind::UiOpenPlayerWindow => {
             let _: OpenPlayerWindowPayload =
                 serde_json::from_value(env.payload.clone()).map_err(map_err)?;
@@ -571,6 +609,10 @@ pub struct ProtocolSchemaRoot {
     pub agent_activity_snapshot: AgentActivitySnapshot,
     pub app_settings: AppSettings,
     pub app_settings_patch: AppSettingsPatch,
+    pub moment_desktop_request: MomentDesktopRequest,
+    pub moment_desktop_snapshot: MomentDesktopSnapshot,
+    pub environment_config: EnvironmentConfigPayload,
+    pub host_environment_snapshot: HostEnvironmentSnapshotPayload,
     pub host_hello: HostHelloPayload,
     pub core_ready: CoreReadyPayload,
     pub host_window_visibility: HostWindowVisibilityPayload,

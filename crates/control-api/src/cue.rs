@@ -3,11 +3,9 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ytm_protocol::PlaybackStatus;
+use ytm_protocol::{CoreEpoch, PlaybackStatus, VideoId};
 
-use ytm_protocol::VideoId;
-
-use crate::{DjPreference, Track};
+use crate::{DjPreference, MomentView, Track};
 
 /// How often the heartbeat lets the agent check in with the listener.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -126,6 +124,9 @@ pub struct DjListener {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DjCue {
     pub seq: u64,
+    /// Core epoch of the running daemon so background waiters can scope `(coreEpoch, seq)` safely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_epoch: Option<CoreEpoch>,
     pub kind: DjCueKind,
     pub reasons: Vec<DjCueReason>,
     pub age_ms: u64,
@@ -138,10 +139,19 @@ pub struct DjCue {
     pub listener: DjListener,
     pub chattiness: DjChattiness,
     /// The recorded tastes, sent on this client's first prompt and whenever they changed since
-    /// its previous one; empty when `preferences_unchanged`.
+    /// its previous one; empty when `preferences_unchanged` or `preferences_unavailable`.
     pub preferences: Vec<DjPreference>,
     /// The tastes are the same as in this client's previous prompt.
     pub preferences_unchanged: bool,
+    /// Total recorded tastes on the account when available (more than `preferences.len()` when paged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferences_total: Option<u32>,
+    /// True when the player could not read stored tastes for this prompt; keep earlier known tastes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preferences_unavailable: bool,
+    /// Moment DJ snapshot computed freshly when this prompt is delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moment: Option<MomentView>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

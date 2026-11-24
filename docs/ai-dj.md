@@ -60,13 +60,15 @@ Between track endings, a heartbeat decides when it is a good moment to ask the l
 | Field | Contents |
 | --- | --- |
 | `kind`, `reasons` | `trackEnding` or `checkIn`, and why (`littleQueued` means at most one track is queued) |
+| `coreEpoch` | Current core daemon instance identifier |
 | `prompt` | The instruction for the agent, in English |
 | `nowPlaying` | The current track, playback state, position and time left |
 | `upNext`, `moreQueued` | Up to 5 upcoming tracks, and whether more follow |
 | `recent` | Up to 8 recent tracks, newest first, with how long each played and how it ended: `finished`, `skippedByListener`, `skippedByAgent` or `skipped` |
 | `listener` | How and how long ago the listener last interacted, when the agent last spoke, and how many check-ins went unanswered |
 | `chattiness` | The current level |
-| `preferences`, `preferencesUnchanged` | The recorded taste notes, sent on a client's first prompt and again only after they change |
+| `preferences`, `preferencesUnchanged`, `preferencesTotal`, `preferencesUnavailable` | Recorded taste notes (the newest 50, on a client's first prompt and again after they change), how many are stored in all, and whether reading them failed this time |
+| `moment` | Privacy-gated Moment DJ view (`environment` and active temporary `listeningIntents`) for that client |
 
 Prompts are kept compact so an hour or two of DJing does not fill the agent's context. Tracks carry only video ID, title, artist names, album and length. The text content is a short summary (the instruction, now playing, up to 5 next and 4 recent tracks, the listener's idle time and changed tastes) rather than a copy of the JSON.
 
@@ -76,11 +78,16 @@ Prompts are kept compact so an hour or two of DJing does not fill the agent's co
 
 `ytm_set_dj_feedback` records or clears a `prefer` or `avoid` note for a video or an artist, with an optional note of up to 200 characters. Notes are stored locally in SQLite per account, at most 500 per account; recording the same subject again replaces the old note. They never change likes or dislikes on YouTube and need only the `dj` grant. `ytm_get_settings` with section `djPreferences` pages them, and the activity view in the interface lists and deletes them.
 
-## Voice and environment
+## Voice and Moment DJ
 
-Speech recognition, speech output and the conversation itself belong to the agent. The player has no voice input, hotkeys or recording, and does not pin "this song" to the moment someone spoke; the agent decides what "this one" means from the context. The time, weather, holidays and location are the agent's to find out, or to ask about. The listener is often away from the screen, so the player never relies on pop-ups.
+Speech recognition, speech output and the conversation itself belong to the agent. The player has no voice input, hotkeys or recording, and does not pin "this song" to the moment someone spoke; the agent decides what "this one" means from the context. The listener is often away from the screen, so the player never relies on pop-ups.
 
-**Planned for the next version.** Prompts gain a small `moment` field so the agent can shape a set around the day without being told: local time, weekday, part of the day and time zone from the machine clock; public holidays and their eves for a region the listener picks; and a city the listener types once in Settings (no GPS or IP lookup; empty means the agent is never told). Weather stays with the agent: it can look the forecast up for that city with its own tools, and the player makes no extra outside requests for it. This is not in 1.0.
+**Moment DJ (`moment`).** Both `ytm_get_context` and `ytm_wait_dj_prompt` include a `moment` object with two parts, `environment` and `listeningIntents`. Their text content says the same in a line or two, including "not shared" and "none active", so a client that reads only text gets the same answer:
+
+- **Off until you share it.** Every assistant starts with both parts `notShared`. In **Settings → Moment DJ context** you choose what is shared (the clock, holidays for a region you pick, a mood city) and which assistants of the signed-in account get it. A preview shows, in plain words and as the exact JSON, what the chosen assistant receives.
+- **Offline, no lookups.** The desktop app works out the local date, weekday, part of the day (`earlyMorning` to `lateNight`) and time zone from the machine clock, and holidays from the `date-holidays` calendar built into the app. On the day before a public holiday the holiday is listed with phase `eve`. `capturedAtMs` is the instant `time` describes, so an assistant can turn "tonight" into an `until` time. The mood city is a label the listener typed, not where they are, and the player never fetches weather (`weatherProvided` is always `false`); an assistant that wants a forecast looks it up itself.
+- **Each part fails on its own.** If the holiday calendar fails, the clock is still shared and only `occasions` is missing. `unavailable` means nothing could be read this time, which is not the same as "nothing".
+- **Temporary listening intents (`ytm_set_listening_intent`).** An assistant records what the listener asked for right now: vocals, energy, an activity (`gaming`, `focus`, `relax`, `social`), a short music brief, or a holiday to leave out (`dismissTheme` with the occasion's id). Each lasts `today` (until local midnight, fixed when it is written), a 6-hour `session`, or `until` a time within 48 hours, and is never turned into a permanent taste. An intent the assistant only inferred never replaces one the listener asked for. A holiday dismissed for today stays out of `occasions` even while intents are not shared. The DJ activity view lists every active intent with when it ends, and the listener can clear one or all.
 
 ## Setup example
 

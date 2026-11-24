@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -68,5 +68,83 @@ describe("moving an install from before the rename", () => {
     expect(legacyInstanceRunning(data, "box", (pid) => pid === 4242)).toBe(true);
     expect(legacyInstanceRunning(data, "box", () => false)).toBe(false); // a stale lock
     expect(legacyInstanceRunning(data, "other-host", () => true)).toBe(false); // another machine's
+  });
+
+  it("merges control-clients.json by principal and preserves colliding client credentials paired", () => {
+    const [config] = xdgBases({}, root());
+    mkdirSync(join(config!, "ytmcp", "control-credentials"), { recursive: true });
+    mkdirSync(join(config!, "ytm-glass", "control-credentials"), { recursive: true });
+
+    writeFileSync(
+      join(config!, "ytmcp", "control-clients.json"),
+      JSON.stringify([
+        { principal: "pi", tokenSha256: "new-pi-hash", actions: ["playback"] },
+        { principal: "new-only", tokenSha256: "new-only-hash", actions: ["dj"] },
+      ])
+    );
+    writeFileSync(join(config!, "ytmcp", "control-credentials", "pi.json"), "{\"token\":\"new-pi\"}");
+
+    writeFileSync(
+      join(config!, "ytm-glass", "control-clients.json"),
+      JSON.stringify([
+        { principal: "pi", tokenSha256: "old-pi-hash", actions: ["dj"] },
+        { principal: "claude", tokenSha256: "old-claude-hash", actions: ["dj"] },
+      ])
+    );
+    writeFileSync(join(config!, "ytm-glass", "control-credentials", "pi.json"), "{\"token\":\"old-pi\"}");
+    writeFileSync(join(config!, "ytm-glass", "control-credentials", "claude.json"), "{\"token\":\"old-claude\"}");
+
+    moveLegacyDirectories([config!], "ytmcp");
+
+    const merged = JSON.parse(readFileSync(join(config!, "ytmcp", "control-clients.json"), "utf8")) as Array<{
+      principal: string;
+      tokenSha256: string;
+    }>;
+    expect(merged.map((m) => [m.principal, m.tokenSha256])).toEqual([
+      ["pi", "new-pi-hash"],
+      ["new-only", "new-only-hash"],
+      ["claude", "old-claude-hash"],
+    ]);
+    expect(statSync(join(config!, "ytmcp", "control-clients.json")).mode & 0o777).toBe(0o600);
+    // Non-colliding legacy credential moved; colliding target credential untouched and colliding
+    // legacy pair stayed together in ytm-glass.
+    expect(readFileSync(join(config!, "ytmcp", "control-credentials", "claude.json"), "utf8")).toContain("old-claude");
+    expect(readFileSync(join(config!, "ytmcp", "control-credentials", "pi.json"), "utf8")).toContain("new-pi");
+    expect(readFileSync(join(config!, "ytm-glass", "control-credentials", "pi.json"), "utf8")).toContain("old-pi");
+    const remaining = JSON.parse(readFileSync(join(config!, "ytm-glass", "control-clients.json"), "utf8")) as Array<{
+      principal: string;
+    }>;
+    expect(remaining.map((r) => r.principal)).toEqual(["pi"]);
+  });
+
+  it("keeps a colliding legacy credential behind even when the new name has no credentials yet", () => {
+    const [config] = xdgBases({}, root());
+    mkdirSync(join(config!, "ytmcp"), { recursive: true });
+    writeFileSync(join(config!, "ytmcp", "control-clients.json"), JSON.stringify([{ principal: "pi", tokenSha256: "new" }]));
+    mkdirSync(join(config!, "ytm-glass", "control-credentials"), { recursive: true });
+    writeFileSync(
+      join(config!, "ytm-glass", "control-clients.json"),
+      JSON.stringify([{ principal: "pi", tokenSha256: "old" }, { principal: "claude", tokenSha256: "old" }])
+    );
+    writeFileSync(join(config!, "ytm-glass", "control-credentials", "pi.json"), "old-pi");
+    writeFileSync(join(config!, "ytm-glass", "control-credentials", "claude.json"), "old-claude");
+
+    moveLegacyDirectories([config!], "ytmcp");
+
+    expect(readFileSync(join(config!, "ytmcp", "control-credentials", "claude.json"), "utf8")).toBe("old-claude");
+    expect(existsSync(join(config!, "ytmcp", "control-credentials", "pi.json"))).toBe(false);
+    expect(readFileSync(join(config!, "ytm-glass", "control-credentials", "pi.json"), "utf8")).toBe("old-pi");
+  });
+
+  it("does not crash or corrupt control-clients.json when legacy JSON is malformed", () => {
+    const [config] = xdgBases({}, root());
+    mkdirSync(join(config!, "ytmcp"), { recursive: true });
+    mkdirSync(join(config!, "ytm-glass"), { recursive: true });
+    writeFileSync(join(config!, "ytmcp", "control-clients.json"), JSON.stringify([{ principal: "pi", tokenSha256: "h" }]));
+    writeFileSync(join(config!, "ytm-glass", "control-clients.json"), "{not valid json");
+
+    moveLegacyDirectories([config!], "ytmcp");
+    expect(readFileSync(join(config!, "ytmcp", "control-clients.json"), "utf8")).toContain("pi");
+    expect(readFileSync(join(config!, "ytm-glass", "control-clients.json"), "utf8")).toBe("{not valid json");
   });
 });

@@ -21,6 +21,7 @@ const VISIBLE_LIMIT: usize = 50;
 /// The account's DJ preferences as handed to a DJ agent.
 pub(super) struct AppliedPreferences {
     entries: Vec<DjPreference>,
+    pub(super) total: u32,
 }
 
 impl AppliedPreferences {
@@ -50,16 +51,17 @@ impl ControlService {
             .ok_or_else(|| unavailable("DJ persistence is unavailable"))
     }
 
-    /// The newest preferences of the account.
+    /// The newest preferences of the account plus total recorded count.
     pub(super) async fn applied_preferences(
         &self,
         scope: &AccountScope,
     ) -> Result<AppliedPreferences, ControlError> {
-        let (entries, _) = self
-            .dj_store()?
+        let store = self.dj_store()?;
+        let (entries, _) = store
             .list_preferences(scope.clone(), None, VISIBLE_LIMIT)
             .await?;
-        Ok(AppliedPreferences { entries })
+        let total = store.count_preferences(scope.clone()).await?;
+        Ok(AppliedPreferences { entries, total })
     }
 
     pub(super) async fn read_dj_preferences(

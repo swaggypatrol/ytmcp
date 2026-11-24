@@ -52,4 +52,17 @@ describe("ScrubBar", () => {
     await fireEvent.pointerDown(input, { clientX: 0 });
     expect(host(input).classList.contains("is-pressed")).toBe(false);
   });
+
+  it("moves by keyStep on the arrow keys while dragging keeps the input's own resolution", async () => {
+    const oninput = vi.fn();
+    const onchange = vi.fn();
+    render(ScrubBar, { props: { value: 10_000, max: 200_000, keyStep: 5_000, label: "Seek", oninput, onchange, testid: "s" } });
+    const input = screen.getByTestId("s") as HTMLInputElement;
+    expect(input.step).toBe("");
+    await fireEvent.keyDown(input, { key: "ArrowRight" });
+    expect(oninput).toHaveBeenLastCalledWith(15_000);
+    expect(onchange).toHaveBeenLastCalledWith(15_000);
+    await fireEvent.keyDown(input, { key: "ArrowLeft" });
+    expect(onchange).toHaveBeenLastCalledWith(5_000);
+  });
 });

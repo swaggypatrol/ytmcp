@@ -1,7 +1,9 @@
 <script lang="ts">
-  import type { AppSnapshot } from "@ytmcp/protocol";
+  import type { AppSnapshot, CommandReceipt } from "@ytmcp/protocol";
   import type { Gate } from "../capabilities.js";
   import { t } from "../i18n/index.svelte.js";
+  import { SeekControl } from "../seek-control.svelte.js";
+  import { SEEK_KEY_STEP_MS, SEEK_PREVIEW_TIMEOUT_MS } from "../seek-preview.js";
   import type { TrackAccent } from "../theme/accent.js";
   import Cover from "./Cover.svelte";
   import { detectCjkLangHint, formatDurationMs } from "./format.js";
@@ -21,7 +23,9 @@
     accent: TrackAccent | null;
     /** Decorative ambient motion allowed (playing, visible, motion not reduced). */
     decorativeMotion: boolean;
-    onSeekMs?: (positionMs: number) => void;
+    onSeekMs?: (positionMs: number) => Promise<CommandReceipt | null> | void;
+    /** Shared with the player bar so both seek bars show the same drag. */
+    seek?: SeekControl;
     onToggleLike: () => void;
     onOpenActions: () => void;
     onOpenAlbum: (albumId: string) => void;
@@ -48,14 +52,28 @@
     onOpenArtist,
     onOpenLyrics,
     onOpenQueue,
+    seek = new SeekControl(),
   }: Props = $props();
 
   const player = $derived(snapshot?.player ?? null);
   const track = $derived(player?.currentTrack ?? null);
   const durationMs = $derived(player?.timeAnchor.durationMs ?? track?.durationMs ?? null);
   const seekMax = $derived(Math.max(durationMs ?? 0, 1));
-  const clampedPos = $derived(Math.min(interpolatedPositionMs, seekMax));
+  const displayPositionMs = $derived(seek.preview?.positionMs ?? interpolatedPositionMs);
+  const clampedPos = $derived(Math.min(displayPositionMs, seekMax));
   const albumId = $derived(track?.album?.id ?? track?.album?.browseId ?? null);
+
+  $effect(() => seek.reconcile(player?.trackInstanceId, snapshot?.pending.lastReceipt));
+
+  $effect(() => {
+    if (seek.preview?.committedAtMs == null) return;
+    const timer = setTimeout(
+      () => seek.reconcile(player?.trackInstanceId, snapshot?.pending.lastReceipt),
+      SEEK_PREVIEW_TIMEOUT_MS
+    );
+    return () => clearTimeout(timer);
+  });
+
   const drm = $derived(player?.drmProtected == null ? t.common.unknown : player.drmProtected ? t.common.yes : t.common.no);
   const hasAnyMediaFact = $derived(
     player?.codec != null || player?.audioMode != null || player?.qualityLabel != null || player?.drmProtected != null
@@ -142,16 +160,19 @@
               class="w-full"
               value={clampedPos}
               max={seekMax}
+              keyStep={SEEK_KEY_STEP_MS}
               buffered={player?.bufferedMs ?? null}
               disabled={!canSeek || !durationMs}
               label={t.player.seekLabel}
-              valueText={`${formatDurationMs(interpolatedPositionMs)} / ${formatDurationMs(durationMs)}`}
-              onchange={onSeekMs}
+              valueText={`${formatDurationMs(displayPositionMs)} / ${formatDurationMs(durationMs)}`}
+              oninput={(v) => seek.drag(v, durationMs, player?.trackInstanceId)}
+              onchange={(v) => void seek.commit(v, durationMs, player?.trackInstanceId, (positionMs) => onSeekMs?.(positionMs))}
+              onrelease={() => seek.release()}
               testid="np-seek-slider"
             />
           {/if}
           <div class="flex items-center justify-between type-xs tabular-nums" style="color: var(--text-secondary);">
-            <span>{formatDurationMs(interpolatedPositionMs)}</span>
+            <span class="player-pos" class:is-previewing={seek.preview !== null} data-testid="np-pos-text">{formatDurationMs(displayPositionMs)}</span>
             <span>{formatDurationMs(durationMs)}</span>
           </div>
         </div>

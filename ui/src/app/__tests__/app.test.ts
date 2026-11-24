@@ -11,6 +11,7 @@ import {
   type LyricsResult,
   type MutationRequest,
   type MutationResult,
+  type PlayerCommandPayload,
   type StateDelta,
 } from "@ytmcp/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -69,13 +70,16 @@ function createPreloadBridge(options: BridgeOptions = {}) {
       listener = l;
       return { snapshot: structuredClone(snapshot), unsubscribe: () => (listener = null) };
     },
-    sendPlayerCommand: vi.fn((cmd) => fake.sendPlayerCommand(cmd)),
+    sendPlayerCommand: vi.fn<(cmd: PlayerCommandPayload) => CommandReceipt | Promise<CommandReceipt>>((cmd) =>
+      fake.sendPlayerCommand(cmd)
+    ),
     queryCatalog: vi.fn((req: CatalogQueryRequest) => {
       catalogCalls.push(req);
       return options.queryCatalog ? options.queryCatalog(req) : fake.queryCatalog(req);
     }),
     queryLyrics: options.queryLyrics ?? (() => DISABLED_LYRICS),
     updateSettings: vi.fn(),
+    momentSettings: vi.fn((req) => fake.momentSettings(req)),
     openPlayerWindow: vi.fn(),
     clearCache: vi.fn(),
     sendMutation: options.sendMutation,
@@ -1681,5 +1685,69 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     });
     await fireEvent.click(document.activeElement!);
     expect(onPlayTrack).toHaveBeenCalledWith(tracks[nextIdx], nextIdx, `qe-kb-${nextIdx}`);
+  });
+
+  it("configures Moment DJ sharing in Settings and updates the live principal preview", async () => {
+    const { bridge } = createPreloadBridge({
+      snapshot: (s) => writeReady(s),
+    });
+    renderApp(bridge, "settings");
+
+    const preview = await screen.findByTestId("moment-preview-json");
+    expect(JSON.parse(preview.textContent ?? "{}").environment.status).toBe("notShared");
+
+    const shareTime = screen.getByTestId("moment-share-time") as HTMLInputElement;
+    await fireEvent.click(shareTime);
+    await waitFor(() => expect(shareTime.checked).toBe(true));
+    const principalToggle = screen.getByTestId("moment-principal-mock-dj") as HTMLInputElement;
+    await fireEvent.click(principalToggle);
+
+    await waitFor(() => {
+      const parsed = JSON.parse(screen.getByTestId("moment-preview-json").textContent ?? "{}");
+      expect(parsed.environment.status).toBe("shared");
+      expect(parsed.environment.time.timeZone).toBeTruthy();
+    });
+  });
+
+  it("rolls back Now Playing seek preview on a failed command and throttles rapid volume drags", async () => {
+    const { bridge, snapshot } = createPreloadBridge();
+    bridge.sendPlayerCommand.mockImplementation(async (cmd): Promise<CommandReceipt> => ({
+      commandId: cmd.commandId,
+      op: cmd.op,
+      status: cmd.op === "seek" ? "failed" : "observed",
+      acceptedAtMs: 0,
+      observedAtMs: cmd.op === "seek" ? null : 1,
+      deduplicated: false,
+      error: cmd.op === "seek"
+        ? { code: "TIMEOUT", retriable: true, retryAfterMs: null, safeMessage: "seek timed out", requestId: null }
+        : null,
+    }));
+    renderApp(bridge, "now-playing");
+
+    const npSlider = (await screen.findByTestId("np-seek-slider")) as HTMLInputElement;
+    const beforePos = screen.getByTestId("np-pos-text").textContent;
+    await fireEvent.input(npSlider, { target: { value: "90000" } });
+    expect(screen.getByTestId("np-pos-text").textContent).toBe("1:30");
+    await fireEvent.change(npSlider, { target: { value: "90000" } });
+    await waitFor(() => {
+      expect(screen.getByTestId("np-pos-text").textContent).toBe(beforePos);
+    });
+
+    const volSlider = screen.getByTestId("player-volume-slider") as HTMLInputElement;
+    bridge.sendPlayerCommand.mockClear();
+    await fireEvent.pointerDown(volSlider);
+    await fireEvent.input(volSlider, { target: { value: "40" } });
+    await fireEvent.input(volSlider, { target: { value: "45" } });
+    await fireEvent.input(volSlider, { target: { value: "52" } });
+    // Leading edge sends first drag event immediately; intermediate drags wait for throttle or release.
+    expect(bridge.sendPlayerCommand).toHaveBeenCalledTimes(1);
+    await fireEvent.change(volSlider, { target: { value: "52" } });
+    await waitFor(() => {
+      expect(bridge.sendPlayerCommand).toHaveBeenCalledTimes(2);
+      expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(
+        expect.objectContaining({ op: "setVolume", args: { volume: 0.52 } })
+      );
+    });
+    void snapshot;
   });
 });

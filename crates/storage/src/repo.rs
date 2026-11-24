@@ -234,6 +234,10 @@ pub fn clear_account_data_tx(
         "DELETE FROM recent_playback WHERE account_scope = ?1",
         params![scope],
     )?;
+    let _ = tx.execute(
+        "DELETE FROM control_listening_intents WHERE account_scope = ?1",
+        params![scope],
+    );
     Ok(())
 }
 

@@ -63,6 +63,7 @@
   const removeSupported = $derived(capabilities?.queueRemove === "supported");
   const reorderSupported = $derived(capabilities?.queueReorder === "supported");
   const editSupported = $derived(removeSupported || reorderSupported);
+  const actionSpacerWidth = $derived(reorderSupported && removeSupported ? "w-24" : reorderSupported ? "w-16" : "w-8");
 
   /**
    * Core accepts an edit only on a complete, finite queue at its exact revision, anchored on the
@@ -241,16 +242,21 @@
       }}
       onTrackActions={(track) => onTrackActions(track)}
       rowActions={editSupported ? queueRowActions : undefined}
+      headerActions={editSupported ? queueHeaderActions : undefined}
     />
   {/if}
 </section>
+
+{#snippet queueHeaderActions()}
+  <span class="{actionSpacerWidth} shrink-0"></span>
+{/snippet}
 
 <!-- Only upcoming occurrences get edit controls; the current one and history never do. -->
 {#snippet queueRowActions(index: number, tabindex: number)}
   {@const entry = entries[index]}
   {#if entry && currentIdx >= 0 && index > currentIdx}
     {@const busy = pendingKey !== null && pendingKey.endsWith(`:${entry.entryId}`)}
-    <div class="flex items-center shrink-0" data-testid="queue-row-actions" aria-busy={busy}>
+    <div class="relative flex items-center shrink-0" data-testid="queue-row-actions" aria-busy={busy}>
       {#if reorderSupported}
         <button
           type="button"
@@ -292,8 +298,11 @@
         </button>
       {/if}
       {#if busy}
-        <span class="wait-dot" style="color: var(--text-secondary);" role="img" aria-label={t.player.pending} data-testid="queue-row-pending"></span>
+        <!-- Beside the buttons, not after them, so the row keeps the header's column widths. -->
+        <span class="wait-dot absolute right-full top-1/2 -translate-y-1/2" style="color: var(--text-secondary);" role="img" aria-label={t.player.pending} data-testid="queue-row-pending"></span>
       {/if}
     </div>
+  {:else}
+    <span class="{actionSpacerWidth} shrink-0" aria-hidden="true"></span>
   {/if}
 {/snippet}

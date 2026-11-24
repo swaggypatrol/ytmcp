@@ -4,14 +4,8 @@
   import { glass } from "../glass/liquid-glass.js";
   import { t } from "../i18n/index.svelte.js";
   import type { ClientPendingOverlay } from "../ipc/client.js";
-  import {
-    commitSeekPreview,
-    isTerminalCommandStatus,
-    reconcileSeekPreview,
-    SEEK_PREVIEW_TIMEOUT_MS,
-    startSeekPreview,
-    type SeekPreview,
-  } from "../seek-preview.js";
+  import { SeekControl } from "../seek-control.svelte.js";
+  import { SEEK_KEY_STEP_MS, SEEK_PREVIEW_TIMEOUT_MS } from "../seek-preview.js";
   import Cover from "./Cover.svelte";
   import { detectCjkLangHint, formatArtists, formatDurationMs } from "./format.js";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -25,6 +19,8 @@
     onOpenNowPlaying: () => void;
     onOpenLyrics: () => void;
     onOpenDiagnostics: () => void;
+    /** Shared with Now Playing so both seek bars show the same drag. */
+    seek?: SeekControl;
   }
 
   let {
@@ -35,26 +31,35 @@
     onOpenNowPlaying,
     onOpenLyrics,
     onOpenDiagnostics,
+    seek = new SeekControl(),
   }: Props = $props();
 
   const NEXT_REPEAT: Record<RepeatMode, RepeatMode> = { off: "all", all: "one", one: "off" };
-
-  let seekPreview = $state<SeekPreview | null>(null);
-  let seekSequence = 0;
 
   const player = $derived(snapshot?.player ?? null);
   const connection = $derived(player?.connection ?? null);
   const caps = $derived(snapshot?.capabilities);
   const track = $derived(player?.currentTrack ?? null);
   const durationMs = $derived(player?.timeAnchor.durationMs ?? track?.durationMs ?? 0);
-  const displayPositionMs = $derived(seekPreview?.positionMs ?? interpolatedPositionMs);
+  const displayPositionMs = $derived(seek.preview?.positionMs ?? interpolatedPositionMs);
   const isPlaying = $derived(player?.playback === "playing");
   const activeOp = $derived(pendingOverlay.activeOp ?? snapshot?.pending.activeOp ?? null);
   const isPending = $derived(pendingOverlay.pendingCount > 0 || (snapshot?.pending.pendingCommandCount ?? 0) > 0);
   const VOLUME_DRAFT_TIMEOUT_MS = 2000;
   // Sliders answer under the hand, so their own commands never show as "waiting". A discrete
-  // command that is still unconfirmed after a moment shows as a quiet pulse on the status chip.
+  // command that is still unconfirmed after 600ms shows as a quiet pulse on the status chip.
   const isWaiting = $derived(isPending && activeOp !== "setVolume" && activeOp !== "seek" && activeOp !== "setMuted");
+  let showWaitingDot = $state(false);
+  $effect(() => {
+    if (!isWaiting) {
+      showWaitingDot = false;
+      return;
+    }
+    const timer = setTimeout(() => {
+      showWaitingDot = true;
+    }, 600);
+    return () => clearTimeout(timer);
+  });
 
   const playGate = $derived(playPauseGate(caps?.playPause, connection, player?.playback, track !== null));
   const seekGate = $derived(commandGate(caps?.seek, connection));
@@ -86,6 +91,21 @@
   const repeatLabel = $derived(t.player.repeat[player?.repeat ?? "unknown"]);
   const trackTooltip = $derived(track ? `${track.title} — ${formatArtists(track)}` : t.nav["now-playing"]);
 
+  const VOLUME_THROTTLE_MS = 60;
+  let lastVolumeSentAt = 0;
+  let pendingVolumeValue: number | null = null;
+  let volumeThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flushVolumeCommand(volume: number) {
+    lastVolumeSentAt = Date.now();
+    pendingVolumeValue = null;
+    if (volumeThrottleTimer) {
+      clearTimeout(volumeThrottleTimer);
+      volumeThrottleTimer = null;
+    }
+    void onCommand("setVolume", { volume });
+  }
+
   $effect(() => {
     if (volumeDraft === null || volumeDragging) return;
     if (Math.abs((player?.volume ?? -1) - volumeDraft) < 0.005) {
@@ -97,42 +117,43 @@
   });
 
   function previewVolume(percent: number) {
-    volumeDraft = percent / 100;
-    void onCommand("setVolume", { volume: percent / 100 });
+    const target = percent / 100;
+    volumeDraft = target;
+    const now = Date.now();
+    const elapsed = now - lastVolumeSentAt;
+    if (elapsed >= VOLUME_THROTTLE_MS) {
+      flushVolumeCommand(target);
+      return;
+    }
+    pendingVolumeValue = target;
+    if (!volumeThrottleTimer) {
+      volumeThrottleTimer = setTimeout(() => {
+        volumeThrottleTimer = null;
+        if (pendingVolumeValue !== null) {
+          flushVolumeCommand(pendingVolumeValue);
+        }
+      }, VOLUME_THROTTLE_MS - elapsed);
+    }
+  }
+
+  function commitVolume() {
+    volumeDragging = false;
+    if (pendingVolumeValue !== null) {
+      flushVolumeCommand(pendingVolumeValue);
+    }
   }
 
   // Roll the preview back on track change, on any terminal receipt of its seek, or on timeout.
-  $effect(() => {
-    const next = reconcileSeekPreview(seekPreview, player?.trackInstanceId, snapshot?.pending.lastReceipt, Date.now());
-    if (next !== seekPreview) seekPreview = next;
-  });
+  $effect(() => seek.reconcile(player?.trackInstanceId, snapshot?.pending.lastReceipt));
 
   $effect(() => {
-    const committedAt = seekPreview?.committedAtMs;
-    if (committedAt == null) return;
-    const timer = setTimeout(() => {
-      seekPreview = reconcileSeekPreview(seekPreview, player?.trackInstanceId, snapshot?.pending.lastReceipt, Date.now());
-    }, SEEK_PREVIEW_TIMEOUT_MS);
+    if (seek.preview?.committedAtMs == null) return;
+    const timer = setTimeout(
+      () => seek.reconcile(player?.trackInstanceId, snapshot?.pending.lastReceipt),
+      SEEK_PREVIEW_TIMEOUT_MS
+    );
     return () => clearTimeout(timer);
   });
-
-  async function commitSeek(targetMs: number) {
-    const sequence = ++seekSequence;
-    const trackInstanceId = player?.trackInstanceId ?? null;
-    seekPreview = commitSeekPreview(startSeekPreview(targetMs, durationMs, trackInstanceId), Date.now());
-    const receipt = await onCommand("seek", { positionMs: seekPreview.positionMs, trackInstanceId });
-    if (sequence !== seekSequence || !seekPreview || seekPreview.trackInstanceId !== trackInstanceId) return;
-    if (!receipt || isTerminalCommandStatus(receipt.status)) {
-      seekPreview = null;
-      return;
-    }
-    seekPreview = reconcileSeekPreview(
-      commitSeekPreview(seekPreview, Date.now(), receipt.commandId),
-      player?.trackInstanceId,
-      snapshot?.pending.lastReceipt,
-      Date.now()
-    );
-  }
 </script>
 
 <!-- The dock holds the glass bar. -->
@@ -246,7 +267,7 @@
         <div class="flex items-center gap-1.5 min-w-0 overflow-hidden whitespace-nowrap">
           <span
             class="player-status chip tabular-nums"
-            class:is-waiting={isWaiting}
+            class:is-waiting={showWaitingDot}
             aria-busy={isWaiting}
             data-testid="player-observed-status"
           >{playbackLabel}</span>
@@ -255,8 +276,8 @@
 
       <div class="w-full max-w-xl flex items-center gap-2.5">
         <span
-          class="player-pos w-11 text-right type-xs tabular-nums"
-          class:is-previewing={seekPreview !== null}
+          class="player-pos min-w-11 shrink-0 whitespace-nowrap text-right type-xs tabular-nums"
+          class:is-previewing={seek.preview !== null}
           data-testid="player-pos-text"
         >
           {formatDurationMs(displayPositionMs)}
@@ -265,19 +286,21 @@
           class="flex-1"
           value={seekValue}
           max={seekMax}
+          keyStep={SEEK_KEY_STEP_MS}
           buffered={player?.bufferedMs ?? null}
           disabled={!seekGate.enabled || !track}
           label={t.player.seekLabel}
           valueText={`${formatDurationMs(displayPositionMs)} / ${formatDurationMs(durationMs)}`}
           title={seekGate.reason ?? undefined}
-          oninput={(v) => {
-            seekSequence += 1;
-            seekPreview = startSeekPreview(v, durationMs, player?.trackInstanceId);
-          }}
-          onchange={(v) => void commitSeek(v)}
+          oninput={(v) => seek.drag(v, durationMs, player?.trackInstanceId)}
+          onchange={(v) =>
+            void seek.commit(v, durationMs, player?.trackInstanceId, (positionMs, trackInstanceId) =>
+              onCommand("seek", { positionMs, trackInstanceId })
+            )}
+          onrelease={() => seek.release()}
           testid="player-seek-slider"
         />
-        <span class="w-11 type-xs tabular-nums" style="color: var(--text-secondary);">{formatDurationMs(durationMs)}</span>
+        <span class="min-w-11 shrink-0 whitespace-nowrap type-xs tabular-nums" style="color: var(--text-secondary);">{formatDurationMs(durationMs)}</span>
       </div>
     </div>
 
@@ -292,7 +315,9 @@
         data-testid="btn-mute"
       >
         <Icon name={volumeIcon} />
-        <span>{player?.muted ? t.player.muted : `${volumePercent}%`}</span>
+        <span class="mute-value" data-muted-label={t.player.muted}>
+          <span class="mute-current">{player?.muted ? t.player.muted : `${volumePercent}%`}</span>
+        </span>
       </button>
       <ScrubBar
         class="player-volume"
@@ -304,8 +329,8 @@
         title={volumeGate.reason ?? undefined}
         onpress={() => (volumeDragging = true)}
         oninput={previewVolume}
-        onchange={() => (volumeDragging = false)}
-        onrelease={() => (volumeDragging = false)}
+        onchange={commitVolume}
+        onrelease={commitVolume}
         testid="player-volume-slider"
       />
       <button
