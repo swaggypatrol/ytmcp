@@ -1890,8 +1890,9 @@ export interface PlayerState {
   /**
    * The player is still finding out what it can play (shortly after launch: the page has not
    * reported playback yet, or the saved session is being restored). No track then does not
-   * mean nothing will play: a play sent now is held until this ends, not refused. Absent
-   * means false.
+   * mean nothing will play: a resume (`play`) sent now waits up to 10 seconds for the player
+   * instead of failing at once; starting a track or collection is sent at once as usual.
+   * Absent means false.
    */
   preparing?: boolean;
   repeat?: RepeatMode | null;
