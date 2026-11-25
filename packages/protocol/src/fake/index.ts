@@ -5,8 +5,10 @@ import type {
   AppSnapshot,
   CatalogQueryRequest,
   CatalogResponsePayload,
+  CollectionPlaybackEntry,
   CommandReceipt,
   HostEnvironmentSnapshotPayload,
+  LikedSongsPage,
   LyricsQueryRequest,
   LyricsResult,
   MomentDesktopRequest,
@@ -17,12 +19,23 @@ import type {
   PlayerCommandPayload,
   PlaylistSummary,
   PlayerObservedState,
+  QueryError,
   QueryErrorCode,
   QueueEntry,
+  RecentSearchesRequest,
+  RecentSearchesSnapshot,
   StateDelta,
   Track,
 } from "../generated/types.js";
-import { PROTOCOL_VERSION } from "../validator.js";
+import { MAX_RECENT_SEARCH_CHARS, MAX_RECENT_SEARCHES, PROTOCOL_VERSION } from "../validator.js";
+
+/** A request the mock core refused, carrying the error the real core would send as `core.error`. */
+export class FakeCoreRequestError extends Error {
+  constructor(readonly error: QueryError) {
+    super(error.safeMessage);
+    this.name = "FakeCoreRequestError";
+  }
+}
 
 export type FakeScenario =
   | "normal"
@@ -110,7 +123,14 @@ export class FakeCoreClient {
   private playlists: PlaylistSummary[];
   private tracks10k: Track[];
   private likedVideoIds: Set<string>;
+  /** Each mock playlist's entries in order (`entryId` is the provider occurrence), made on first use. */
+  private playlistEntries = new Map<string, { entryId: string; videoId: string }[]>();
+  /** The core's undo records: token → the one entry an addition created, for five minutes. */
+  private undoRecords = new Map<string, { accountEpoch: AccountEpoch; playlistId: string; videoId: string; entryId: string; atMs: number }>();
+  private nextEntry = 0;
   private injectGapNext = false;
+  /** Recent searches by mock account scope, newest first, as the core keeps them. */
+  private recentSearchesByScope = new Map<string, RecentSearchesSnapshot["items"]>();
   private momentConfig: OwnerMomentConfig = {
     configRevision: 0,
     shareTime: false,
@@ -257,7 +277,7 @@ export class FakeCoreClient {
         likedSongs: "supported",
         personalizedHome: "unsupported",
         likeMutation: scenario === "normal" || scenario === "indeterminateNext" ? "supported" : "unsupported",
-        playlistAddMutation: "unsupported",
+        playlistAddMutation: scenario === "normal" || scenario === "indeterminateNext" ? "supported" : "unsupported",
         lyricsLrclib: "unsupported",
         mpris: "unsupported",
       },
@@ -466,6 +486,12 @@ export class FakeCoreClient {
       return reject("ACCOUNT_MISMATCH", "Mock account does not match");
     }
     if (networkState === "offline") return reject("NETWORK_OFFLINE", "Mock account is offline");
+    if (req.kind === "addToPlaylist" || req.kind === "undoAddToPlaylist") {
+      if (capabilities.playlistAddMutation !== "supported") {
+        return reject("UNSUPPORTED_CAPABILITY", "Mock account does not support this write");
+      }
+      return req.kind === "addToPlaylist" ? this.addToPlaylist(req, accountEpoch) : this.undoAddToPlaylist(req, accountEpoch);
+    }
     if (req.kind !== "setLike" || capabilities.likeMutation !== "supported") {
       return reject("UNSUPPORTED_CAPABILITY", "Mock account does not support this write");
     }
@@ -480,8 +506,85 @@ export class FakeCoreClient {
       const track = { ...this.tracks10k[index]!, isLiked: liked };
       this.tracks10k[index] = track;
       this.publishTrackRating(track);
-      this.emit({ deltaType: "resourceInvalidated", resource_kind: "likedSongs", revision: ++this.snapshot.revision });
+      this.emit({
+        deltaType: "resourceInvalidated",
+        resource_kind: "likedSongs",
+        resource_id: req.videoId,
+        revision: ++this.snapshot.revision,
+      });
     }
+    return { kind: req.kind, outcome: "confirmed", error: null };
+  }
+
+  /** How long the mock core keeps an addition undoable, as the real core does. */
+  static readonly UNDO_LIFETIME_MS = 5 * 60 * 1000;
+
+  /**
+   * Another device removes `videoId`'s entries from a mock playlist, so a later Undo finds its
+   * entry already gone.
+   */
+  public simulateRemovalElsewhere(playlistId: string, videoId: string): void {
+    const entries = this.entriesOf(playlistId);
+    if (entries) this.playlistEntries.set(playlistId, entries.filter((entry) => entry.videoId !== videoId));
+  }
+
+  /** A mock playlist's entries: Favorites holds every synthetic track, Late-Night the first 42. */
+  private entriesOf(playlistId: string): { entryId: string; videoId: string }[] | null {
+    const known = this.playlistEntries.get(playlistId);
+    if (known) return known;
+    const size = playlistId === "mock-pl-favorites" ? this.tracks10k.length : playlistId === "mock-pl-late-night" ? 42 : -1;
+    if (size < 0) return null;
+    const entries = this.tracks10k.slice(0, size).map((track, i) => ({ entryId: `${playlistId}-entry-${i}`, videoId: track.videoId }));
+    this.playlistEntries.set(playlistId, entries);
+    return entries;
+  }
+
+  /** Adds one entry, refusing a song already in the playlist as the provider does; the reply carries an undo token. */
+  private addToPlaylist(req: MutationRequest, accountEpoch: AccountEpoch): MutationResult {
+    const refuse = (code: QueryErrorCode, safeMessage: string): MutationResult => ({
+      kind: req.kind, outcome: "rejected", error: { code, safeMessage, retriable: false },
+    });
+    const playlistId = req.playlistId;
+    const entries = playlistId ? this.entriesOf(playlistId) : null;
+    if (!playlistId || !entries) return refuse("INVALID_PAYLOAD", "Mock playlist does not exist");
+    if (!this.tracks10k.some((track) => track.videoId === req.videoId)) return refuse("UNAVAILABLE_TRACK", "Mock track does not exist");
+    if (entries.some((entry) => entry.videoId === req.videoId)) {
+      return refuse("UNAVAILABLE_TRACK", "Mock playlist already holds this song");
+    }
+    const entryId = `${playlistId}-added-${++this.nextEntry}`;
+    entries.push({ entryId, videoId: req.videoId });
+    const undoToken = `undo-mock-${this.nextEntry}`;
+    this.undoRecords.set(undoToken, { accountEpoch, playlistId, videoId: req.videoId, entryId, atMs: Date.now() });
+    this.emit({ deltaType: "resourceInvalidated", resource_kind: "playlistTracks", resource_id: playlistId, revision: ++this.snapshot.revision });
+    return { kind: req.kind, outcome: "confirmed", error: null, undoToken };
+  }
+
+  /** Removes exactly the entry the token's addition created, with the core's refusals. */
+  private undoAddToPlaylist(req: MutationRequest, accountEpoch: AccountEpoch): MutationResult {
+    const refuse = (code: QueryErrorCode, safeMessage: string): MutationResult => ({
+      kind: req.kind, outcome: "rejected", error: { code, safeMessage, retriable: false },
+    });
+    if (!req.undoToken) return refuse("INVALID_PAYLOAD", "undoAddToPlaylist requires undoToken");
+    const record = this.undoRecords.get(req.undoToken);
+    if (!record || Date.now() - record.atMs >= FakeCoreClient.UNDO_LIFETIME_MS) {
+      this.undoRecords.delete(req.undoToken);
+      return refuse("STALE_CONTEXT", "this addition can no longer be undone");
+    }
+    if (record.accountEpoch !== accountEpoch) {
+      this.undoRecords.delete(req.undoToken);
+      return refuse("STALE_CONTEXT", "the account changed since this song was added");
+    }
+    if (record.videoId !== req.videoId || (req.playlistId != null && req.playlistId !== record.playlistId)) {
+      return refuse("INVALID_PAYLOAD", "the undo token belongs to another addition");
+    }
+    this.undoRecords.delete(req.undoToken);
+    const entries = this.entriesOf(record.playlistId) ?? [];
+    const at = entries.findIndex((entry) => entry.entryId === record.entryId);
+    if (at < 0) {
+      return { ...refuse("STALE_CONTEXT", "the song this addition created is no longer in the playlist"), alreadyRemoved: true };
+    }
+    entries.splice(at, 1);
+    this.emit({ deltaType: "resourceInvalidated", resource_kind: "playlistTracks", resource_id: record.playlistId, revision: ++this.snapshot.revision });
     return { kind: req.kind, outcome: "confirmed", error: null };
   }
 
@@ -507,19 +610,31 @@ export class FakeCoreClient {
     }
   }
 
-  /** The cursor follows fixture order, so liking or unliking earlier songs keeps the next page stable. */
-  private likedPage(offset: number, limit: number): { items: Track[]; nextCursor: string | null } {
+  /**
+   * The cursor follows fixture order, so liking or unliking earlier songs keeps the next page stable.
+   * Each row's native entry in "Liked music" (`LM`) is its position among the liked songs, as
+   * the core's `playback` gives it; the unsupported scenario leaves it out (single tracks only).
+   */
+  private likedPage(offset: number, limit: number): Pick<LikedSongsPage, "items" | "nextCursor" | "playback"> {
     const items: Track[] = [];
+    const entries: CollectionPlaybackEntry[] = [];
     let resumeAt = offset;
     if (this.scenario === "empty") return { items, nextCursor: null };
+    let position = this.tracks10k.slice(0, offset).filter((track) => this.likedVideoIds.has(track.videoId)).length;
+    const page = (nextCursor: string | null) => ({
+      items,
+      nextCursor,
+      ...(this.scenario === "unsupported" ? {} : { playback: { playlistId: "LM", entries } }),
+    });
     for (let index = offset; index < this.tracks10k.length; index++) {
       const track = this.tracks10k[index]!;
       if (!this.likedVideoIds.has(track.videoId)) continue;
-      if (items.length === limit) return { items, nextCursor: String(resumeAt) };
+      if (items.length === limit) return page(String(resumeAt));
       items.push(track);
+      entries.push({ startIndex: position++, playlistEntryId: null });
       resumeAt = index + 1;
     }
-    return { items, nextCursor: null };
+    return page(null);
   }
 
   public queryCatalog(req: CatalogQueryRequest): CatalogResponsePayload {
@@ -661,6 +776,42 @@ export class FakeCoreClient {
     };
   }
 
+  /**
+   * The mock account's recent searches, with the core's rules: the account is the signed-in
+   * one, the request must carry its epoch, blank or overlong queries are refused, a query that
+   * differs only in case or spacing moves to the front, and at most eight are kept.
+   * Refusals throw `FakeCoreRequestError`.
+   */
+  public recentSearches(req: RecentSearchesRequest, accountEpoch: AccountEpoch | null): RecentSearchesSnapshot {
+    const refuse = (code: QueryErrorCode, safeMessage: string): never => {
+      throw new FakeCoreRequestError({ code, safeMessage, retriable: false });
+    };
+    if (req.action === "record") {
+      if (req.query.trim() === "") refuse("INVALID_PAYLOAD", "recent search query is empty");
+      if ([...req.query].length > MAX_RECENT_SEARCH_CHARS) {
+        refuse("INVALID_PAYLOAD", `recent search query exceeds ${MAX_RECENT_SEARCH_CHARS} characters`);
+      }
+    }
+    if (accountEpoch === null) refuse("INVALID_PAYLOAD", "ui.recentSearches requires the envelope accountEpoch");
+    const { authState } = this.snapshot;
+    if (authState.state !== "authenticated" || !authState.accountEpoch || !authState.accountScope) {
+      return refuse("AUTH_REQUIRED", "no active account session");
+    }
+    if (accountEpoch !== authState.accountEpoch) refuse("ACCOUNT_MISMATCH", "request accountEpoch does not match active session");
+    const scope = authState.accountScope;
+    let items = this.recentSearchesByScope.get(scope) ?? [];
+    if (req.action === "record") {
+      const query = req.query.trim();
+      const folded = foldRecentSearch(query);
+      items = [{ query, recordedAtMs: Date.now() }, ...items.filter((item) => foldRecentSearch(item.query) !== folded)]
+        .slice(0, MAX_RECENT_SEARCHES);
+    } else if (req.action === "clear") {
+      items = [];
+    }
+    this.recentSearchesByScope.set(scope, items);
+    return { items: structuredClone(items) };
+  }
+
   public momentSettings(req: MomentDesktopRequest): MomentDesktopSnapshot {
     const accountKey = this.snapshot.authState.accountScope ?? "__signed_out__";
     const principals = ["mock-dj"];
@@ -788,4 +939,9 @@ export class FakeCoreClient {
       previewJson,
     };
   }
+}
+
+/** The core's de-duplication key for a recent search: spacing collapsed, lower case. */
+function foldRecentSearch(query: string): string {
+  return query.trim().split(/\s+/).join(" ").toLowerCase();
 }

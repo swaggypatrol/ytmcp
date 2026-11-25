@@ -1,8 +1,19 @@
+<script lang="ts" module>
+  /** Play and Shuffle for a collection with its own playback context; see the `collection` prop. */
+  export interface CollectionStart {
+    readonly pending: "play" | "shuffle" | null;
+    readonly canShuffle: boolean;
+    readonly onPlay: () => void;
+    readonly onShuffle: () => void;
+  }
+</script>
+
 <script lang="ts">
   import type { CoverRef, QueryError, Track } from "@ytmcp/protocol";
   import type { Snippet } from "svelte";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";
+  import { coverSrc } from "../cover.js";
   import Cover from "./Cover.svelte";
   import { isPlayable } from "./format.js";
   import HeroWash from "./HeroWash.svelte";
@@ -35,6 +46,12 @@
      * with the collection as context, so Play really plays the collection.
      */
     playAll?: boolean;
+    /**
+     * Play and Shuffle for a collection the core gave its own playback context (Liked songs): the
+     * header and the strip call these instead of starting a row. Pass it only while they can work;
+     * `pending` marks the pressed one until its start settles.
+     */
+    collection?: CollectionStart | null;
     /** A heading over the list (e.g. an artist's "Top songs"); replaces the song count line. */
     listHeading?: string | null;
     like?: TrackRowLike;
@@ -68,6 +85,7 @@
     currentVideoId,
     mockMode,
     playAll = false,
+    collection = null,
     listHeading = null,
     like,
     nowPlaying,
@@ -89,17 +107,32 @@
   );
 
   const ready = $derived(view.kind === "ready");
+  /** Still loading, with no cached cover known for the page: its light waits for the real art. */
+  const artPending = $derived(view.kind === "loading" && !(coverSeed && coverSrc(cover)));
   const firstPlayable = $derived(tracks.findIndex((track) => isPlayable(track)));
-  const canPlay = $derived(playAll && ready && firstPlayable >= 0);
-  /** The song total: the known `total` while pages remain, the loaded count once every page is in; else nothing. */
+  const canPlay = $derived(collection !== null || (playAll && ready && firstPlayable >= 0));
+  /**
+   * The song total: while the rows load, the `total` a summary already named; then that total
+   * while pages remain, and the loaded count once every page is in; else nothing.
+   */
   const countLine = $derived.by(() => {
-    if (!ready || listHeading || tracks.length === 0) return null;
-    const count = !hasMore ? tracks.length : typeof total === "number" && total > 0 ? Math.max(total, tracks.length) : null;
+    if (listHeading) return null;
+    const known = typeof total === "number" && total > 0 ? total : null;
+    const count = view.kind === "loading"
+      ? known
+      : !ready || tracks.length === 0
+        ? null
+        : !hasMore
+          ? tracks.length
+          : known !== null
+            ? Math.max(known, tracks.length)
+            : null;
     if (count === null) return null;
     return count === 1 ? t.common.songCountOne : t.common.songCount.replace("{count}", count.toLocaleString());
   });
 
   function play() {
+    if (collection) return collection.onPlay();
     const track = tracks[firstPlayable];
     if (canPlay && track) onPlayTrack(track, firstPlayable);
   }
@@ -147,6 +180,8 @@
           class="btn-primary collection-strip-play"
           aria-label={t.track.playTitle.replace("{title}", title)}
           onclick={play}
+          aria-busy={collection?.pending === "play" || undefined}
+          data-pending={collection?.pending === "play" || undefined}
           data-testid={`${name}-strip-play`}
         >
           <Icon name="play" filled />
@@ -157,7 +192,7 @@
   </div>
 
   <div class="page-hero collection-hero" bind:this={heroEl}>
-    <HeroWash art={heroArt} {mockMode} />
+    <HeroWash art={heroArt} {mockMode} hold={artPending} />
     {#if coverSeed}
       <Cover {cover} seed={coverSeed} label={title} {mockMode} class="collection-tile{roundCover ? ' is-round' : ''}" />
     {:else if icon}
@@ -172,7 +207,8 @@
         </button>
       {/if}
       <h1 id={`${name}-heading`} class="collection-title">{title}</h1>
-      {#if subtitle || countLine}
+      <!-- Reserved while the count is still unknown, so its arrival never pushes the list down. -->
+      {#if subtitle || !listHeading}
         <p class="collection-count" data-testid={`${name}-count`}>
           {[subtitle, countLine].filter(Boolean).join(" · ")}
         </p>
@@ -181,10 +217,30 @@
     </div>
     {#if canPlay}
       <div class="collection-actions">
-        <button type="button" class="btn-primary" onclick={play} data-testid={`${name}-play`}>
+        <button
+          type="button"
+          class="btn-primary"
+          onclick={play}
+          aria-busy={collection?.pending === "play" || undefined}
+          data-pending={collection?.pending === "play" || undefined}
+          data-testid={`${name}-play`}
+        >
           <Icon name="play" filled />
           <span>{t.track.play}</span>
         </button>
+        {#if collection?.canShuffle}
+          <button
+            type="button"
+            class="btn-secondary"
+            onclick={collection.onShuffle}
+            aria-busy={collection.pending === "shuffle" || undefined}
+            data-pending={collection.pending === "shuffle" || undefined}
+            data-testid={`${name}-shuffle`}
+          >
+            <Icon name="shuffle" />
+            <span>{t.player.shuffle}</span>
+          </button>
+        {/if}
       </div>
     {/if}
   </div>

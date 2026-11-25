@@ -636,9 +636,9 @@ impl CatalogPort for ProfileCatalog {
                             }
                         })
                         .collect();
-                    Ok(CatalogResponsePayload::LikedSongs(paged(
-                        items, next, &scope,
-                    )))
+                    Ok(CatalogResponsePayload::LikedSongs(
+                        paged(items, next, &scope).into(),
+                    ))
                 }
                 ytm_protocol::CatalogQueryKind::LibraryPlaylists => {
                     let (range, next) = window(if other { 2 } else { 35 });
@@ -3900,11 +3900,11 @@ impl CatalogPort for GatedCatalog {
         Box::pin(async move {
             self.started.notify_one();
             self.release.notified().await;
-            Ok(MutationResult {
-                kind: request.kind,
-                outcome: *self.outcome.lock().unwrap(),
-                error: None,
-            })
+            Ok(MutationResult::new(
+                request.kind,
+                *self.outcome.lock().unwrap(),
+                None,
+            ))
         })
     }
 
@@ -4028,6 +4028,7 @@ impl Harness {
             video_id: VideoId::new(video).unwrap(),
             liked: Some(true),
             playlist_id: None,
+            undo_token: None,
             confirmed_by_user: true,
         };
         let running = tokio::spawn(async move {

@@ -172,6 +172,8 @@ struct MockBackendState {
     typed_search_pages:
         std::collections::HashMap<Option<String>, BackendPage<ProviderTypedSearchItem>>,
     artist_subscriptions: std::collections::HashMap<(String, ArtistId), bool>,
+    /// Replaces the first playlist page's playback context, which the recorded rows lack.
+    first_page_playback: Option<ytm_protocol::CollectionPlayback>,
 }
 
 struct MockCatalogBackend {
@@ -398,7 +400,15 @@ impl CatalogBackend for MockCatalogBackend {
                     let (title, description, author, cover) = normalize_playlist_metadata(details);
                     let json =
                         serde_json::from_str(&read_fixture("playlist_tracks_page1.json")).unwrap();
-                    let (tracks, next_continuation) = parse_playlist_tracks_page(&q, json, false)?;
+                    let (tracks, next_continuation, parsed) =
+                        parse_playlist_tracks_page(&q, json, false)?;
+                    let playback = self
+                        .state
+                        .lock()
+                        .unwrap()
+                        .first_page_playback
+                        .clone()
+                        .or(parsed);
                     Ok(BackendPlaylistPage {
                         title,
                         description,
@@ -406,12 +416,14 @@ impl CatalogBackend for MockCatalogBackend {
                         cover,
                         tracks,
                         next_continuation,
+                        playback,
                     })
                 }
                 Some(_) => {
                     let json =
                         serde_json::from_str(&read_fixture("playlist_tracks_page2.json")).unwrap();
-                    let (tracks, next_continuation) = parse_playlist_tracks_page(&q, json, true)?;
+                    let (tracks, next_continuation, playback) =
+                        parse_playlist_tracks_page(&q, json, true)?;
                     Ok(BackendPlaylistPage {
                         title: playlist_id.as_str().to_string(),
                         description: None,
@@ -419,6 +431,7 @@ impl CatalogBackend for MockCatalogBackend {
                         cover: None,
                         tracks,
                         next_continuation,
+                        playback,
                     })
                 }
             }
@@ -511,14 +524,15 @@ impl CatalogBackend for MockCatalogBackend {
         _session: &'a Arc<dyn CatalogSession>,
         playlist_id: &'a PlaylistId,
         video_id: &'a VideoId,
-    ) -> BoxFuture<'a, Result<(), QueryError>> {
+    ) -> BoxFuture<'a, Result<Option<String>, QueryError>> {
         Box::pin(async move {
             self.maybe_err()?;
-            self.state.lock().unwrap().mutations.push((
+            let mut state = self.state.lock().unwrap();
+            state.mutations.push((
                 "addToPlaylist".to_string(),
                 format!("{}:{}", playlist_id.as_str(), video_id.as_str()),
             ));
-            Ok(())
+            Ok(Some(format!("created-{}", state.mutations.len())))
         })
     }
 
@@ -1819,6 +1833,76 @@ async fn limit_below_upstream_page_size_pages_without_gaps_or_duplicates() {
 }
 
 #[tokio::test]
+async fn liked_pages_keep_each_row_with_its_native_entry_through_windows_and_cache() {
+    let clock = Arc::new(MockClock::new(5_000));
+    let (_dir, storage) = make_storage(clock.clone());
+    let backend = Arc::new(MockCatalogBackend::new());
+    backend.set_identity(Some("Probe Channel"));
+    let entry = |index, id: &str| ytm_protocol::CollectionPlaybackEntry {
+        start_index: index,
+        playlist_entry_id: Some(id.to_string()),
+    };
+    // The fixture's two playable rows; the second plays from native index 2 (a greyed row
+    // sits between them upstream).
+    backend.state.lock().unwrap().first_page_playback = Some(ytm_protocol::CollectionPlayback {
+        playlist_id: PlaylistId::new("LM").unwrap(),
+        entries: vec![entry(0, "set-a"), entry(2, "set-b")],
+    });
+    let adapter = YtmCatalogAdapter::with_backend(
+        storage,
+        backend.clone(),
+        YtmCatalogConfig::default(),
+        clock,
+    );
+    let material =
+        make_session_material("ep-liked", "cred-1", "sapisid_liked", Some("Probe Channel"));
+    let epoch = material.account_epoch.clone();
+    let scope = adapter
+        .apply_session_material(material, CancellationToken::new())
+        .await
+        .unwrap()
+        .account_scope;
+    let read = |cursor: Option<String>| {
+        adapter.query(
+            Some(epoch.clone()),
+            Some(scope.clone()),
+            CatalogQueryRequest {
+                kind: CatalogQueryKind::LikedSongs,
+                query: None,
+                playlist_id: None,
+                album_id: None,
+                artist_id: None,
+                cursor,
+                limit: Some(1),
+            },
+            CancellationToken::new(),
+        )
+    };
+    let liked = |payload| match payload {
+        CatalogResponsePayload::LikedSongs(page) => page,
+        other => panic!("unexpected: {other:?}"),
+    };
+
+    let first = liked(read(None).await.unwrap());
+    assert_eq!(first.page.items[0].video_id.as_str(), "probePlVid1");
+    assert_eq!(
+        first.playback.as_ref().unwrap().entries,
+        [entry(0, "set-a")]
+    );
+    let second = liked(read(first.page.next_cursor.clone()).await.unwrap());
+    assert_eq!(second.page.items[0].video_id.as_str(), "probePlVid2");
+    let playback = second.playback.unwrap();
+    assert_eq!(playback.playlist_id.as_str(), "LM");
+    assert_eq!(playback.entries, [entry(2, "set-b")]);
+
+    // The cached page keeps its context and is served stale when offline.
+    adapter.set_network_offline(true);
+    let cached = liked(read(None).await.unwrap());
+    assert_eq!(cached.page.freshness, Freshness::Stale);
+    assert_eq!(cached.playback, first.playback);
+}
+
+#[tokio::test]
 async fn album_artist_liked_and_history_normalize_without_leaking_provider_types() {
     let clock = Arc::new(MockClock::new(5_000));
     let (_dir, storage) = make_storage(clock.clone());
@@ -1924,8 +2008,10 @@ async fn album_artist_liked_and_history_normalize_without_leaking_provider_types
             .map(String::as_str),
         Some("VLLM")
     );
-    assert!(!liked.items.is_empty());
-    assert!(liked.items.iter().all(|t| t.is_liked == Some(true)));
+    assert!(!liked.page.items.is_empty());
+    assert!(liked.page.items.iter().all(|t| t.is_liked == Some(true)));
+    // The recorded rows' play buttons name only a video, so no playback context is invented.
+    assert!(liked.playback.is_none());
 
     let hist = match adapter
         .query(
@@ -2421,6 +2507,7 @@ async fn session_scope_is_stable_per_account_and_mutation_outcomes_are_honest() 
         video_id: VideoId::new("probeVid001").unwrap(),
         liked: Some(true),
         playlist_id: None,
+        undo_token: None,
         confirmed_by_user: true,
     };
     let mutate = |err: Option<QueryError>| {
@@ -2452,6 +2539,32 @@ async fn session_scope_is_stable_per_account_and_mutation_outcomes_are_honest() 
         QueryErrorCode::AuthExpired
     );
     assert_eq!(backend.mutations().len(), 1, "no automatic retries");
+
+    // The app's add names the one entry it created; a refused duplicate (the provider's
+    // STATUS_FAILED) is still rejected and names none.
+    let add = MutationRequest {
+        kind: MutationKind::AddToPlaylist,
+        liked: None,
+        playlist_id: Some(PlaylistId::new("PL_fixture_target").unwrap()),
+        ..like.clone()
+    };
+    let add_once = |err: Option<QueryError>| {
+        backend.set_forced_error(err);
+        adapter.add_to_playlist(
+            epoch.clone(),
+            scope.clone(),
+            add.clone(),
+            CancellationToken::new(),
+        )
+    };
+    let added = add_once(None).await.unwrap();
+    assert_eq!(added.result.outcome, MutationOutcome::Confirmed);
+    assert_eq!(added.created_entry_id.as_deref(), Some("created-2"));
+    let duplicate = make_query_error(QueryErrorCode::UnavailableTrack, false, None, "failed");
+    let refused = add_once(Some(duplicate)).await.unwrap();
+    assert_eq!(refused.result.outcome, MutationOutcome::Rejected);
+    assert_eq!(refused.created_entry_id, None);
+    backend.set_forced_error(None);
 
     // A failed identity read fails the apply without pinning the epoch to a fallback scope,
     // so the next material for that epoch still becomes verified.
@@ -3279,7 +3392,7 @@ fn playlist_pages_keep_videos_with_unlinked_creator_text_and_preserve_the_cursor
                 }
             }),
         ];
-        let (tracks, next) =
+        let (tracks, next, _) =
             parse_playlist_tracks_page(&query, serde_json::from_value(page).unwrap(), continuation)
                 .unwrap();
 

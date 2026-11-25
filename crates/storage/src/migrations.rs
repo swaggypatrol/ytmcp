@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use ytm_control_api::{DjFeedbackChange, WriteAction, WriteInput, compute_action_hashes};
 use ytm_core::ports::Clock;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 8;
+pub const LATEST_SCHEMA_VERSION: u32 = 9;
 
 struct Migration {
     version: u32,
@@ -236,6 +236,20 @@ CREATE INDEX IF NOT EXISTS idx_control_listening_intents_scope_exp
 CREATE TABLE IF NOT EXISTS control_moment_revisions (
     account_scope TEXT PRIMARY KEY,
     revision INTEGER NOT NULL
+);
+"#,
+    },
+    Migration {
+        version: 9,
+        description: "keep the Search page's recent searches per account",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS recent_searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_scope TEXT NOT NULL,
+    folded TEXT NOT NULL,
+    query TEXT NOT NULL,
+    recorded_at_ms INTEGER NOT NULL,
+    UNIQUE (account_scope, folded)
 );
 "#,
     },

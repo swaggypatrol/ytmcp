@@ -100,6 +100,12 @@
     "queryError": {
       "$ref": "#/definitions/QueryError"
     },
+    "recentSearchesRequest": {
+      "$ref": "#/definitions/RecentSearchesRequest"
+    },
+    "recentSearchesSnapshot": {
+      "$ref": "#/definitions/RecentSearchesSnapshot"
+    },
     "resolveAsset": {
       "$ref": "#/definitions/ResolveAssetPayload"
     },
@@ -128,6 +134,8 @@
     "appSettingsPatch",
     "momentDesktopRequest",
     "momentDesktopSnapshot",
+    "recentSearchesRequest",
+    "recentSearchesSnapshot",
     "environmentConfig",
     "hostEnvironmentSnapshot",
     "hostHello",
@@ -1587,7 +1595,7 @@
           },
           "allOf": [
             {
-              "$ref": "#/definitions/PagedResult"
+              "$ref": "#/definitions/LikedSongsPage"
             }
           ],
           "required": [
@@ -1628,6 +1636,45 @@
             "resultType"
           ]
         }
+      ]
+    },
+    "CollectionPlayback": {
+      "description": "The native playback context of a page of collection rows, read from each row's own play\nbutton: the playlist the provider plays them in and, aligned 1:1 with the page's items, each\nrow's watch index (never the row number) and entry id.",
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CollectionPlaybackEntry"
+          }
+        },
+        "playlistId": {
+          "$ref": "#/definitions/PlaylistId"
+        }
+      },
+      "required": [
+        "playlistId",
+        "entries"
+      ]
+    },
+    "CollectionPlaybackEntry": {
+      "description": "One row of a `CollectionPlayback`, as `playCollection` takes it (`startIndex`, and\n`playlistEntryId` when the provider named the occurrence).",
+      "type": "object",
+      "properties": {
+        "playlistEntryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startIndex": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "startIndex"
       ]
     },
     "CommandId": {
@@ -2160,6 +2207,55 @@
         "playerVisible"
       ]
     },
+    "LikedSongsPage": {
+      "description": "A page of the account's liked songs. `playback` is present only when every row on the page\ncarried a native play endpoint, all in the same playlist, with no index repeated; without\nit the page offers single tracks only.",
+      "type": "object",
+      "properties": {
+        "accountScope": {
+          "$ref": "#/definitions/AccountScope"
+        },
+        "fetchedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "freshness": {
+          "$ref": "#/definitions/Freshness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Track"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "playback": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CollectionPlayback"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "providerVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "items",
+        "freshness",
+        "fetchedAtMs",
+        "accountScope",
+        "providerVersion"
+      ]
+    },
     "LyricsKind": {
       "type": "string",
       "enum": [
@@ -2331,6 +2427,7 @@
         "ui.agentActivity",
         "ui.settingsUpdate",
         "ui.momentSettings",
+        "ui.recentSearches",
         "ui.openPlayerWindow",
         "ui.logout",
         "ui.clearCache",
@@ -2344,6 +2441,7 @@
         "core.agentActivity",
         "core.settingsUpdated",
         "core.momentSettings",
+        "core.recentSearches",
         "core.error",
         "core.pong",
         "host.hello",
@@ -2457,7 +2555,8 @@
       "type": "string",
       "enum": [
         "setLike",
-        "addToPlaylist"
+        "addToPlaylist",
+        "undoAddToPlaylist"
       ]
     },
     "MutationOutcome": {
@@ -2493,6 +2592,13 @@
             }
           ]
         },
+        "undoToken": {
+          "description": "`undoAddToPlaylist` only: the token of the addition to take back.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "videoId": {
           "$ref": "#/definitions/VideoId"
         }
@@ -2506,6 +2612,10 @@
     "MutationResult": {
       "type": "object",
       "properties": {
+        "alreadyRemoved": {
+          "description": "`undoAddToPlaylist` only, with a `rejected` outcome: a fresh read showed the entry the\naddition created no longer in the playlist, so nothing was sent.",
+          "type": "boolean"
+        },
         "error": {
           "anyOf": [
             {
@@ -2521,6 +2631,13 @@
         },
         "outcome": {
           "$ref": "#/definitions/MutationOutcome"
+        },
+        "undoToken": {
+          "description": "A confirmed `addToPlaylist` whose provider reply named the one entry it created: an\nopaque, single-use token for `undoAddToPlaylist`, valid for a few minutes in this account\nsession.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -3238,6 +3355,10 @@
             }
           ]
         },
+        "preparing": {
+          "description": "The core is still finding out what this player can play: the page has not reported\nplayback since its bridge became ready, the saved session or a launch restore is still\npending, or the restore (with a play it carries) is running. A play or a toggle that\nwould start playback is held meanwhile instead of refused. Absent means false.",
+          "type": "boolean"
+        },
         "qualityLabel": {
           "type": [
             "string",
@@ -3821,6 +3942,91 @@
       "required": [
         "items",
         "freshness"
+      ]
+    },
+    "RecentSearch": {
+      "description": "One recorded search: the query as the listener typed it (trimmed) and when it was run.",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "recordedAtMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query",
+        "recordedAtMs"
+      ]
+    },
+    "RecentSearchesRequest": {
+      "description": "Main UI -> Core: the Search page's recent searches for the signed-in account. The core\npicks the account from its own session; every action replies with the resulting list.\n`record` is sent only for a query the listener ran (submitted, picked from the list, or\nacted on a result of), never for text still being typed.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "list"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "record"
+            },
+            "query": {
+              "type": "string",
+              "maxLength": 200,
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "clear"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ]
+        }
+      ]
+    },
+    "RecentSearchesSnapshot": {
+      "description": "Core -> Main UI: the account's recent searches after the requested action, newest first,\nat most `MAX_RECENT_SEARCHES`.",
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RecentSearch"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "items"
       ]
     },
     "RepeatMode": {

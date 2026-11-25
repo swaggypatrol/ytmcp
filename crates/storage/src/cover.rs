@@ -107,6 +107,10 @@ pub struct CoverCache {
     /// The now-playing cover. Capacity eviction skips it, so a long-paused track keeps the file
     /// that media controls already publish.
     pinned: Arc<Mutex<Option<String>>>,
+    /// Asset id -> accent of every row in `cover_assets`, so a cached cover can be named without
+    /// touching the database. Changed only while the connection lock is held, after the row
+    /// change commits.
+    index: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl CoverCache {
@@ -118,6 +122,12 @@ impl CoverCache {
     ) -> Result<Self, StorageError> {
         ensure_dir_0700(&covers_dir)?;
         let client = build_ssrf_safe_client(&config)?;
+        let index = {
+            let guard = conn
+                .lock()
+                .map_err(|_| StorageError::Storage("sqlite mutex poisoned".to_string()))?;
+            load_index(&guard)
+        };
         Ok(Self {
             covers_dir,
             conn,
@@ -125,7 +135,17 @@ impl CoverCache {
             config,
             client,
             pinned: Arc::new(Mutex::new(None)),
+            index: Arc::new(Mutex::new(index)),
         })
+    }
+
+    /// The cover behind `raw_url` when it is in the cache, from memory only (no disk or network
+    /// IO), so a caller on a latency-sensitive path can use it at once. `None` for a cover that
+    /// is not cached, was evicted or cleared, or whose URL is not allowed.
+    pub fn cached(&self, raw_url: &str) -> Option<(AssetId, String)> {
+        let (asset_id, _) = self.asset_id_for_url(raw_url).ok()?;
+        let accent = self.index.lock().ok()?.get(asset_id.as_str())?.clone();
+        Some((asset_id, accent))
     }
 
     /// Marks the now-playing cover so capacity eviction keeps it; `None` releases the pin.
@@ -325,6 +345,7 @@ impl CoverCache {
         let accent_oklch = decoded.accent_oklch.clone();
         let width = decoded.width;
         let height = decoded.height;
+        let index = self.index.clone();
 
         tokio::task::spawn_blocking(move || -> Result<(), StorageError> {
             let now_ms = i64::try_from(clock.wall_now_ms()).unwrap_or(i64::MAX);
@@ -372,7 +393,7 @@ ON CONFLICT(source_url) DO UPDATE SET
                 params![source_url_owned, &asset_id_str, now_ms],
             )?;
 
-            evict_lru_in_tx(
+            let evicted = evict_lru_in_tx(
                 &tx,
                 &covers_dir,
                 max_cache_bytes,
@@ -380,6 +401,12 @@ ON CONFLICT(source_url) DO UPDATE SET
                 pinned.as_deref(),
             )?;
             tx.commit()?;
+            if let Ok(mut index) = index.lock() {
+                for id in &evicted {
+                    index.remove(id);
+                }
+                index.insert(asset_id_str, accent_oklch);
+            }
             Ok(())
         })
         .await
@@ -406,6 +433,7 @@ ON CONFLICT(source_url) DO UPDATE SET
         let clock = self.clock.clone();
         let covers_dir = self.covers_dir.clone();
         let id_owned = asset_id.clone();
+        let index = self.index.clone();
 
         tokio::task::spawn_blocking(move || -> Result<Option<CachedCoverInfo>, StorageError> {
             let mut guard = conn
@@ -446,6 +474,9 @@ ON CONFLICT(source_url) DO UPDATE SET
                         params![id_owned.as_str()],
                     )?;
                     tx.commit()?;
+                    if let Ok(mut index) = index.lock() {
+                        index.remove(id_owned.as_str());
+                    }
                     return Ok(None);
                 }
             };
@@ -530,6 +561,7 @@ ON CONFLICT(source_url) DO UPDATE SET
     pub async fn clear_all(&self) -> Result<(), StorageError> {
         let conn = self.conn.clone();
         let covers_dir = self.covers_dir.clone();
+        let index = self.index.clone();
 
         tokio::task::spawn_blocking(move || -> Result<(), StorageError> {
             {
@@ -540,6 +572,9 @@ ON CONFLICT(source_url) DO UPDATE SET
                 tx.execute("DELETE FROM cover_url_map", [])?;
                 tx.execute("DELETE FROM cover_assets", [])?;
                 tx.commit()?;
+                if let Ok(mut index) = index.lock() {
+                    index.clear();
+                }
             }
 
             if covers_dir.exists() {
@@ -579,13 +614,15 @@ ON CONFLICT(source_url) DO UPDATE SET
     }
 }
 
+/// Deletes least recently used covers until the cache fits its quota; returns the evicted ids.
 fn evict_lru_in_tx(
     tx: &rusqlite::Transaction<'_>,
     covers_dir: &Path,
     max_cache_bytes: u64,
     keep_asset_id: &str,
     pinned_asset_id: Option<&str>,
-) -> Result<(), StorageError> {
+) -> Result<Vec<String>, StorageError> {
+    let mut evicted = Vec::new();
     let mut total: i64 = tx.query_row(
         "SELECT COALESCE(SUM(byte_size), 0) FROM cover_assets",
         [],
@@ -593,7 +630,7 @@ fn evict_lru_in_tx(
     )?;
     let max_bytes_i64 = i64::try_from(max_cache_bytes).unwrap_or(i64::MAX);
     if total <= max_bytes_i64 {
-        return Ok(());
+        return Ok(evicted);
     }
 
     let mut stmt = tx.prepare(
@@ -623,9 +660,25 @@ fn evict_lru_in_tx(
             }
         }
         total = total.saturating_sub(byte_size);
+        evicted.push(asset_id);
     }
 
-    Ok(())
+    Ok(evicted)
+}
+
+/// Reads the cached covers' ids and accents; a database without the covers table (opened at an
+/// early schema version) has none.
+fn load_index(conn: &Connection) -> HashMap<String, String> {
+    let rows = conn
+        .prepare("SELECT asset_id, accent_oklch FROM cover_assets")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<Result<HashMap<_, _>, _>>()
+        });
+    rows.unwrap_or_else(|err| {
+        debug!("cover index starts empty: {err}");
+        HashMap::new()
+    })
 }
 
 fn verify_asset_path(

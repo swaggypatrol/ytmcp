@@ -172,7 +172,16 @@ describe("Track list on the page scroller", () => {
     const liked = within(await screen.findByTestId("view-liked"));
     const inCollection = await liked.findByRole("button", { name: `Remove like from ${song.title}` });
     await fireEvent.click(inCollection);
-    await waitFor(() => expect(liked.queryByText(song.title)).toBeNull());
+    // The unliked row stays where it is, its heart empty: the list is not rebuilt under the
+    // listener. It is read again the next time the page opens, and the song is gone then.
+    await waitFor(() => expect(liked.getByRole("button", { name: `Like ${song.title}` }).getAttribute("aria-pressed")).toBe("false"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(liked.getByText(song.title)).toBeTruthy();
+    await fireEvent.click(screen.getByTestId("nav-home"));
+    await screen.findByTestId("view-home");
+    await fireEvent.click(screen.getByTestId("nav-liked"));
+    const reopened = within(await screen.findByTestId("view-liked"));
+    await waitFor(() => expect(reopened.queryByText(song.title)).toBeNull());
   });
 
   it("marks the current row with the playback indicator and a Rose title, keeping the number while idle", async () => {
@@ -241,6 +250,33 @@ describe("Collection header", () => {
     await view.rerender({ playAll: true });
     await fireEvent.click(screen.getByTestId("playlist-play"));
     expect(onPlayTrack).toHaveBeenCalledWith(tracks[1], 1);
+  });
+
+  it("plays a collection with its own context from the header and the strip, Shuffle only when it can work", async () => {
+    const onPlay = vi.fn();
+    const onShuffle = vi.fn();
+    const onPlayTrack = vi.fn();
+    const collection = { pending: null, canShuffle: true, onPlay, onShuffle };
+    const view = renderCollection({ name: "liked", collection, onPlayTrack });
+    await fireEvent.click(screen.getByTestId("liked-play"));
+    await fireEvent.click(screen.getByTestId("liked-strip-play"));
+    await fireEvent.click(screen.getByTestId("liked-shuffle"));
+    expect(onPlay).toHaveBeenCalledTimes(2);
+    expect(onShuffle).toHaveBeenCalledTimes(1);
+    expect(onPlayTrack).not.toHaveBeenCalled();
+
+    await view.rerender({ collection: { ...collection, pending: "shuffle" } });
+    expect(screen.getByTestId("liked-shuffle").getAttribute("data-pending")).toBe("true");
+    expect(screen.getByTestId("liked-shuffle").getAttribute("aria-busy")).toBe("true");
+    expect(screen.getByTestId("liked-play").getAttribute("data-pending")).toBeNull();
+
+    await view.rerender({ collection: { ...collection, canShuffle: false } });
+    expect(screen.getByTestId("liked-play")).toBeTruthy();
+    expect(screen.queryByTestId("liked-shuffle")).toBeNull();
+
+    await view.rerender({ collection: null });
+    expect(screen.queryByTestId("liked-play")).toBeNull();
+    expect(screen.queryByTestId("liked-strip-play")).toBeNull();
   });
 
   it("condenses into the strip once the title scrolls behind it, without taking any space", async () => {

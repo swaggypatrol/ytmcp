@@ -247,8 +247,8 @@ pub(crate) fn command_draft(
     Some(draft)
 }
 
-/// A rating or playlist addition the listener made in the app, drafted at the click and
-/// recorded once the account confirms it.
+/// A rating, playlist addition or undo of one that the listener made in the app, drafted at the
+/// click and recorded once the account confirms it.
 pub(crate) fn mutation_draft(
     request: &MutationRequest,
     player: &PlayerObservedState,
@@ -266,6 +266,12 @@ pub(crate) fn mutation_draft(
             }),
         MutationKind::AddToPlaylist => Draft::new(
             ListenerActionKind::AddToPlaylist,
+            player,
+            at_ms,
+            position_ms,
+        ),
+        MutationKind::UndoAddToPlaylist => Draft::new(
+            ListenerActionKind::UndoAddToPlaylist,
             player,
             at_ms,
             position_ms,
@@ -487,6 +493,7 @@ mod tests {
                 video_id: VideoId::new(video).unwrap(),
                 liked: Some(true),
                 playlist_id: None,
+                undo_token: None,
                 confirmed_by_user: true,
             };
             log.record(

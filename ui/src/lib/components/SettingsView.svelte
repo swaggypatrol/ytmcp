@@ -14,6 +14,8 @@
     momentRevision?: number;
     onUpdateSettings: (patch: AppSettingsPatch) => Promise<SettingsUpdateOutcome>;
     onOpenDiagnostics: () => void;
+    /** Recent problems listed in Diagnostics, and whether any is a failure (else they are unclear outcomes or warnings). */
+    problems?: { readonly count: number; readonly failed: boolean } | null;
     onOpenOfficialPlayer?: () => void;
     /** Resolves once core confirms, rejects or fails to confirm the clear. */
     onClearCache: () => Promise<CacheClearOutcome>;
@@ -37,6 +39,7 @@
     momentRevision = 0,
     onUpdateSettings,
     onOpenDiagnostics,
+    problems = null,
     onOpenOfficialPlayer,
     onClearCache,
     onLogout,
@@ -44,6 +47,15 @@
     mockScenario = null,
     onUseMockPreview = null,
   }: Props = $props();
+
+  /** "3 recent problems", or null when Diagnostics lists none. */
+  const problemText = $derived(
+    problems?.count
+      ? problems.count === 1
+        ? t.settings.problemCount.one
+        : t.settings.problemCount.other.replace("{count}", String(problems.count))
+      : null
+  );
 
   let logoutConfirmOpen = $state(false);
   type CacheClearState = { readonly status: "idle" | "pending" } | CacheClearOutcome;
@@ -351,8 +363,26 @@
           {/if}
         </div>
         <div class="flex flex-wrap gap-2">
-          <button type="button" class="btn-primary" onclick={onOpenDiagnostics} data-testid="settings-open-diagnostics">
+          <!-- The count sits on the button's corner, out of the flow, so Clear cache never moves when it appears. -->
+          <button
+            type="button"
+            class="btn-primary settings-diagnostics"
+            aria-label={problemText ? `${t.settings.openDiagnosticsDialog}${t.common.colon}${problemText}` : undefined}
+            onclick={onOpenDiagnostics}
+            data-testid="settings-open-diagnostics"
+          >
             {t.settings.openDiagnosticsDialog}
+            {#if problems?.count}
+              <span
+                class="settings-problem-count"
+                data-tone={problems.failed ? "danger" : "warning"}
+                title={problemText}
+                aria-hidden="true"
+                data-testid="settings-problem-count"
+              >
+                <span class="settings-problem-mark"></span>{problems.count}
+              </span>
+            {/if}
           </button>
           <button
             type="button"
@@ -389,3 +419,38 @@
     </div>
   </div>
 </AccessibleDialog>
+
+<style>
+  .settings-diagnostics {
+    position: relative;
+  }
+  /* A small pill on the button's top-right corner with the toast's mark: Peach when any problem
+     is a failure, Lemon when all are unclear outcomes or warnings. */
+  .settings-problem-count {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+  .settings-problem-mark {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background-color: var(--status-warning);
+  }
+  .settings-problem-count[data-tone="danger"] .settings-problem-mark {
+    background-color: var(--status-danger);
+  }
+</style>

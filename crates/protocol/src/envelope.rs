@@ -6,8 +6,8 @@ use crate::domain::{
     HostHelloPayload, HostWindowVisibilityPayload, LyricsQueryRequest, LyricsResult,
     MomentDesktopRequest, MomentDesktopSnapshot, MutationRequest, MutationResult, NetworkState,
     OpenPlayerWindowPayload, OutputGateControlPayload, OutputGateResultPayload,
-    PlayerCommandPayload, QueryError, QueryErrorCode, QueueSnapshot, ResolveAssetPayload,
-    SessionMaterialPayload, StateDelta,
+    PlayerCommandPayload, QueryError, QueryErrorCode, QueueSnapshot, RecentSearchesRequest,
+    RecentSearchesSnapshot, ResolveAssetPayload, SessionMaterialPayload, StateDelta,
 };
 use crate::ids::{AccountEpoch, BridgeEpoch, CoreEpoch, RequestId};
 use schemars::JsonSchema;
@@ -42,6 +42,8 @@ pub enum MessageKind {
     UiSettingsUpdate,
     #[serde(rename = "ui.momentSettings")]
     UiMomentSettings,
+    #[serde(rename = "ui.recentSearches")]
+    UiRecentSearches,
     #[serde(rename = "ui.openPlayerWindow")]
     UiOpenPlayerWindow,
     #[serde(rename = "ui.logout")]
@@ -70,6 +72,8 @@ pub enum MessageKind {
     CoreSettingsUpdated,
     #[serde(rename = "core.momentSettings")]
     CoreMomentSettings,
+    #[serde(rename = "core.recentSearches")]
+    CoreRecentSearches,
     #[serde(rename = "core.error")]
     CoreError,
     #[serde(rename = "core.pong")]
@@ -148,6 +152,7 @@ impl MessageKind {
                     | Self::UiAgentActivity
                     | Self::UiSettingsUpdate
                     | Self::UiMomentSettings
+                    | Self::UiRecentSearches
                     | Self::UiOpenPlayerWindow
                     | Self::UiLogout
                     | Self::UiClearCache
@@ -188,6 +193,7 @@ impl MessageKind {
                     | Self::CoreAgentActivity
                     | Self::CoreSettingsUpdated
                     | Self::CoreMomentSettings
+                    | Self::CoreRecentSearches
                     | Self::CoreEnvironmentConfig
                     | Self::CoreError
                     | Self::CorePong
@@ -426,6 +432,16 @@ pub fn validate_typed_payload(env: &Envelope) -> Result<(), CodecError> {
             let _: MomentDesktopSnapshot =
                 serde_json::from_value(env.payload.clone()).map_err(map_err)?;
         }
+        MessageKind::UiRecentSearches => {
+            let req: RecentSearchesRequest =
+                serde_json::from_value(env.payload.clone()).map_err(map_err)?;
+            req.validate()
+                .map_err(|reason| CodecError::InvalidPayload { kind, reason })?;
+        }
+        MessageKind::CoreRecentSearches => {
+            let _: RecentSearchesSnapshot =
+                serde_json::from_value(env.payload.clone()).map_err(map_err)?;
+        }
         MessageKind::CoreEnvironmentConfig => {
             let _: EnvironmentConfigPayload =
                 serde_json::from_value(env.payload.clone()).map_err(map_err)?;
@@ -611,6 +627,8 @@ pub struct ProtocolSchemaRoot {
     pub app_settings_patch: AppSettingsPatch,
     pub moment_desktop_request: MomentDesktopRequest,
     pub moment_desktop_snapshot: MomentDesktopSnapshot,
+    pub recent_searches_request: RecentSearchesRequest,
+    pub recent_searches_snapshot: RecentSearchesSnapshot,
     pub environment_config: EnvironmentConfigPayload,
     pub host_environment_snapshot: HostEnvironmentSnapshotPayload,
     pub host_hello: HostHelloPayload,

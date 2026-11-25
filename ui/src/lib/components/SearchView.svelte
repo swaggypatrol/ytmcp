@@ -1,19 +1,32 @@
+<script module lang="ts">
+  /** Songs shown before the tile groups; the rest are behind "All songs". */
+  export const SONGS_PREVIEW_COUNT = 6;
+
+  /**
+   * The search (account and query) whose results were last switched to the full songs list, and
+   * where the grouped view was scrolled to then. Kept outside the component so the page left for
+   * lyrics and shown again comes back to the same list.
+   */
+  let allSongsFor: { readonly key: string; readonly groupedScrollTop: number } | null = null;
+</script>
+
 <script lang="ts">
   import type { AlbumRef, ArtistRef, PlaylistSummary, QueryError, Track } from "@ytmcp/protocol";
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import type { PageView } from "../catalog/page-state.js";
   import { t } from "../i18n/index.svelte.js";
-  import { recentSearches } from "../recent-searches.svelte.js";
   import CoverShelf from "./CoverShelf.svelte";
   import { detectCjkLangHint, formatArtists, isPlayable } from "./format.js";
   import Icon from "./Icon.svelte";
   import PageState from "./PageState.svelte";
   import TileGrid, { type Tile } from "./TileGrid.svelte";
-  import VirtualizedTrackList, { type TrackRowLike, type TrackRowPlayback } from "./VirtualizedTrackList.svelte";
+  import VirtualizedTrackList, { pageScroller, type TrackRowLike, type TrackRowPlayback } from "./VirtualizedTrackList.svelte";
 
   interface Props {
     /** The query of the current results (store key); empty when none. */
     query: string;
+    /** The results shown are an earlier query's, kept on screen until this query's reply arrives. */
+    replacing?: boolean;
     view: PageView;
     songs: readonly Track[];
     albums: readonly AlbumRef[];
@@ -30,8 +43,13 @@
     mockMode: boolean;
     /** Search cannot be requested (unsupported or sign-in required): input off, state shown. */
     blocked: boolean;
-    /** The catalog account key; recent searches belong to it. */
+    /** The catalog account key; a new one starts a new search and asks for the start data again. */
     accountKey: string;
+    /** The account's recent searches, newest first (the core's list). */
+    recentQueries?: readonly string[];
+    /** Records a query the listener actually ran: submitted, picked from the list, or acted on. */
+    onRememberQuery?: (query: string) => void;
+    onClearRecent?: () => void;
     /** What was really played lately, for "Jump back in". */
     recentTracks?: readonly Track[];
     /** The account's playlists, for "From your library". */
@@ -54,6 +72,7 @@
 
   let {
     query,
+    replacing = false,
     view,
     songs,
     albums,
@@ -68,6 +87,9 @@
     mockMode,
     blocked,
     accountKey,
+    recentQueries = [],
+    onRememberQuery,
+    onClearRecent,
     recentTracks = [],
     libraryPlaylists = [],
     smoothScroll = true,
@@ -103,12 +125,6 @@
     if (debounceTimer) clearTimeout(debounceTimer);
   });
 
-  // A list made by another account (or before a sign-out) is dropped, never shown.
-  $effect(() => {
-    const key = accountKey;
-    untrack(() => recentSearches.sync(key));
-  });
-
   // The start blocks need Home's data: asked again whenever the account changes or the data is
   // dropped. Sent after this update settles, so an account change has already cleared the old
   // account's pages when the request goes out.
@@ -122,7 +138,6 @@
 
   /** Before typing: recent searches, recent plays and the library. Typing swaps in results. */
   const showStart = $derived(!blocked && inputValue.trim() === "");
-  const recentQueries = $derived(recentSearches.itemsFor(accountKey));
 
   function scheduleSearch(next: string) {
     if (debounceTimer) clearTimeout(debounceTimer);
@@ -140,7 +155,7 @@
   function runNow(text: string) {
     if (debounceTimer) clearTimeout(debounceTimer);
     onSearch(text);
-    if (!blocked) recentSearches.record(accountKey, text);
+    if (!blocked) onRememberQuery?.(text);
   }
 
   /** A chip runs its query again; focus goes to the field, as the chips give way to results. */
@@ -151,13 +166,13 @@
   }
 
   function clearRecent() {
-    recentSearches.clear();
+    onClearRecent?.();
     inputEl?.focus();
   }
 
   /** Acting on a result means the query that found it was worth keeping. */
   function rememberQuery() {
-    recentSearches.record(accountKey, query);
+    onRememberQuery?.(query);
   }
 
   function openAlbum(id: string) {
@@ -178,6 +193,44 @@
   function playResult(track: Track) {
     rememberQuery();
     onPlayTrack(track);
+  }
+
+  /** The full songs list exists only when there are more songs than the short block shows. */
+  const hasAllSongs = $derived(songs.length > SONGS_PREVIEW_COUNT || hasMore);
+  const searchKey = $derived(`${accountKey}\n${query}`);
+  let allSongsOpen = $state(untrack(() => allSongsFor?.key === searchKey));
+  /** Shown instead of the grouped results; a new search (or one with fewer songs) is grouped again. */
+  const showAllSongs = $derived(allSongsOpen && allSongsFor?.key === searchKey && hasAllSongs);
+  let resultsEl = $state<HTMLElement | null>(null);
+
+  // A different search starts on the grouped view.
+  $effect(() => {
+    const key = searchKey;
+    if (allSongsFor && allSongsFor.key !== key) {
+      allSongsFor = null;
+      allSongsOpen = false;
+    }
+  });
+
+  /** Opens the full list at the top of the results, remembering where the grouped view was. */
+  async function openAllSongs() {
+    const root = resultsEl ? pageScroller(resultsEl) : null;
+    allSongsFor = { key: searchKey, groupedScrollTop: root?.scrollTop ?? 0 };
+    allSongsOpen = true;
+    await tick();
+    if (root) root.scrollTop = 0;
+    resultsEl?.querySelector<HTMLElement>('[data-testid="search-songs-back"]')?.focus({ preventScroll: true });
+  }
+
+  /** Back to the grouped results where they were left, with focus on the control that left them. */
+  async function closeAllSongs() {
+    const scrollTop = allSongsFor?.groupedScrollTop ?? 0;
+    allSongsFor = null;
+    allSongsOpen = false;
+    await tick();
+    const root = resultsEl ? pageScroller(resultsEl) : null;
+    if (root) root.scrollTop = scrollTop;
+    resultsEl?.querySelector<HTMLElement>('[data-testid="search-all-songs"]')?.focus({ preventScroll: true });
   }
 
   const albumTiles = $derived(
@@ -234,6 +287,22 @@
       onOpen: () => onOpenPlaylist(pl.playlistId),
     }))
   );
+
+  /**
+   * The chips on screen. The list comes from the core and can arrive after the blocks below it
+   * are already showing; a list that would then push them down waits until the start blocks
+   * are out of view (typing, or leaving the page). Emptying (another account, Clear), a change
+   * to chips already shown, and a list that moves nothing are shown at once.
+   */
+  let shownQueries = $state.raw<readonly string[]>(untrack(() => recentQueries));
+  $effect(() => {
+    const next = recentQueries;
+    const visible = showStart;
+    const belowShown = jumpTiles.length > 0 || libraryTiles.length > 0;
+    untrack(() => {
+      if (!visible || !belowShown || next.length === 0 || shownQueries.length > 0) shownQueries = next;
+    });
+  });
 </script>
 
 <section class="browse-page" aria-labelledby="search-heading" data-testid="view-search">
@@ -294,7 +363,7 @@
 
   <div class="search-stage">
     <div class="search-pane browse-page" class:is-active={showStart} inert={!showStart} data-testid="search-start">
-      {#if recentQueries.length > 0}
+      {#if shownQueries.length > 0}
         <div class="browse-block" data-testid="search-recent">
           <div class="browse-block-head">
             <h2 class="type-lg font-semibold">{t.search.recentSearches}</h2>
@@ -309,7 +378,7 @@
             </button>
           </div>
           <div class="recent-search-chips">
-            {#each recentQueries as text (text)}
+            {#each shownQueries as text (text)}
               <button
                 type="button"
                 class="chip"
@@ -327,17 +396,25 @@
       <CoverShelf heading={t.search.fromLibrary} tiles={libraryTiles} {mockMode} {smoothScroll} />
     </div>
 
-    <div class="search-pane browse-page" class:is-active={!showStart} inert={showStart} data-testid="search-results">
+    <div
+      class="search-pane browse-page"
+      class:is-active={!showStart}
+      class:is-replacing={replacing}
+      inert={showStart}
+      aria-busy={replacing || undefined}
+      bind:this={resultsEl}
+      data-testid="search-results"
+    >
       {#if query || blocked}
         <PageState {view} name="search" emptyText={t.search.noResults} {onRetry} {onOpenOfficialPlayer}>
-          <TileGrid heading={t.search.artists} tiles={artistTiles} {mockMode} round />
-          <TileGrid heading={t.search.albums} tiles={albumTiles} {mockMode} />
-          <TileGrid heading={t.search.playlists} tiles={playlistTiles} {mockMode} />
-
-          {#if songs.length > 0}
-            <div class="browse-block">
+          {#if showAllSongs}
+            <!-- The full list pages itself as its end comes near, so nothing is placed below it. -->
+            <div class="browse-block" data-testid="search-all-songs-list">
               <div class="browse-block-head">
                 <h2 class="type-lg font-semibold">{t.search.songs}</h2>
+                <button type="button" class="btn-ghost" onclick={() => void closeAllSongs()} data-testid="search-songs-back">
+                  <Icon name="chevronLeft" />{t.search.backToResults}
+                </button>
               </div>
               <VirtualizedTrackList
                 tracks={songs}
@@ -355,9 +432,48 @@
                 {onLoadMore}
               />
             </div>
+          {:else}
+            <!-- Songs first, a short block that never pages, so the groups below stay reachable. -->
+            {#if songs.length > 0}
+              <div class="browse-block" data-testid="search-songs">
+                <div class="browse-block-head">
+                  <h2 class="type-lg font-semibold">{t.search.songs}</h2>
+                </div>
+                <VirtualizedTrackList
+                  tracks={songs.slice(0, SONGS_PREVIEW_COUNT)}
+                  {currentVideoId}
+                  {mockMode}
+                  showHeader
+                  ariaLabel={t.search.songs}
+                  onPlayTrack={(track) => playResult(track)}
+                  onTrackActions={(track) => onTrackActions(track)}
+                  {like}
+                  {nowPlaying}
+                />
+              </div>
+            {/if}
+            <TileGrid heading={t.search.artists} tiles={artistTiles} {mockMode} round />
+            <TileGrid heading={t.search.albums} tiles={albumTiles} {mockMode} />
+            <TileGrid heading={t.search.playlists} tiles={playlistTiles} {mockMode} />
+            {#if hasAllSongs}
+              <div class="browse-block">
+                <button type="button" class="btn-ghost self-start" onclick={() => void openAllSongs()} data-testid="search-all-songs">
+                  {t.search.allSongs}<Icon name="chevronRight" />
+                </button>
+              </div>
+            {/if}
           {/if}
         </PageState>
       {/if}
     </div>
   </div>
 </section>
+
+<style>
+  /* Earlier results waiting for the new query's: dimmed only once the wait lasts (600 ms, as
+     the player's buffering cue), so a quick reply just replaces them. */
+  .search-pane.is-active.is-replacing {
+    opacity: 0.6;
+    transition-delay: 600ms, 0s, 0s;
+  }
+</style>

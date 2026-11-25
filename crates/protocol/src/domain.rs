@@ -300,6 +300,12 @@ pub struct PlayerObservedState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drm_protected: Option<bool>,
     pub stopped_confirmed: bool,
+    /// The core is still finding out what this player can play: the page has not reported
+    /// playback since its bridge became ready, the saved session or a launch restore is still
+    /// pending, or the restore (with a play it carries) is running. A play or a toggle that
+    /// would start playback is held meanwhile instead of refused. Absent means false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preparing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -966,6 +972,64 @@ pub enum MomentDesktopRequest {
     Update { patch: OwnerMomentConfigPatch },
 }
 
+/// Most recent searches kept per account, newest first.
+pub const MAX_RECENT_SEARCHES: usize = 8;
+/// Longest query (Unicode scalar values, as sent) that can be recorded as a recent search.
+pub const MAX_RECENT_SEARCH_CHARS: usize = 200;
+
+/// Main UI -> Core: the Search page's recent searches for the signed-in account. The core
+/// picks the account from its own session; every action replies with the resulting list.
+/// `record` is sent only for a query the listener ran (submitted, picked from the list, or
+/// acted on a result of), never for text still being typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RecentSearchesRequest {
+    List,
+    Record {
+        #[schemars(length(min = 1, max = 200))]
+        query: String,
+    },
+    Clear,
+}
+
+impl RecentSearchesRequest {
+    /// Rejects a `record` whose query is blank or longer than `MAX_RECENT_SEARCH_CHARS`.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Self::Record { query } = self {
+            if query.trim().is_empty() {
+                return Err("recent search query is empty".to_string());
+            }
+            if query.chars().count() > MAX_RECENT_SEARCH_CHARS {
+                return Err(format!(
+                    "recent search query exceeds {MAX_RECENT_SEARCH_CHARS} characters"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One recorded search: the query as the listener typed it (trimmed) and when it was run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecentSearch {
+    pub query: String,
+    pub recorded_at_ms: u64,
+}
+
+/// Core -> Main UI: the account's recent searches after the requested action, newest first,
+/// at most `MAX_RECENT_SEARCHES`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecentSearchesSnapshot {
+    pub items: Vec<RecentSearch>,
+}
+
 /// Core -> Host: holiday region config sent whenever owner config changes or on host hello.
 /// Never carries `scene_city` or registered principals.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1141,6 +1205,48 @@ pub struct PagedResult<T> {
     pub provider_version: String,
 }
 
+/// The native playback context of a page of collection rows, read from each row's own play
+/// button: the playlist the provider plays them in and, aligned 1:1 with the page's items, each
+/// row's watch index (never the row number) and entry id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionPlayback {
+    pub playlist_id: PlaylistId,
+    pub entries: Vec<CollectionPlaybackEntry>,
+}
+
+/// One row of a `CollectionPlayback`, as `playCollection` takes it (`startIndex`, and
+/// `playlistEntryId` when the provider named the occurrence).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionPlaybackEntry {
+    pub start_index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_entry_id: Option<String>,
+}
+
+/// A page of the account's liked songs. `playback` is present only when every row on the page
+/// carried a native play endpoint, all in the same playlist, with no index repeated; without
+/// it the page offers single tracks only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LikedSongsPage {
+    #[serde(flatten)]
+    pub page: PagedResult<Track>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback: Option<CollectionPlayback>,
+}
+
+impl From<PagedResult<Track>> for LikedSongsPage {
+    /// A page that offers single tracks only.
+    fn from(page: PagedResult<Track>) -> Self {
+        Self {
+            page,
+            playback: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistSummary {
@@ -1281,7 +1387,7 @@ pub enum CatalogResponsePayload {
     PlaylistTracks(PlaylistDetail),
     AlbumDetail(AlbumDetail),
     ArtistDetail(ArtistDetail),
-    LikedSongs(PagedResult<Track>),
+    LikedSongs(LikedSongsPage),
     RecentHistory(RecentHistoryResult),
     Error(QueryError),
 }
@@ -1342,6 +1448,9 @@ pub struct LyricsQueryRequest {
 pub enum MutationKind {
     SetLike,
     AddToPlaylist,
+    // Removes exactly the entry one earlier `addToPlaylist` created, named by its `undoToken`.
+    // (A plain comment: a doc comment would split the generated string union.)
+    UndoAddToPlaylist,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1353,6 +1462,9 @@ pub struct MutationRequest {
     pub liked: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playlist_id: Option<PlaylistId>,
+    /// `undoAddToPlaylist` only: the token of the addition to take back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_token: Option<String>,
     pub confirmed_by_user: bool,
 }
 
@@ -1363,6 +1475,28 @@ pub struct MutationResult {
     pub outcome: MutationOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<QueryError>,
+    /// A confirmed `addToPlaylist` whose provider reply named the one entry it created: an
+    /// opaque, single-use token for `undoAddToPlaylist`, valid for a few minutes in this account
+    /// session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_token: Option<String>,
+    /// `undoAddToPlaylist` only, with a `rejected` outcome: a fresh read showed the entry the
+    /// addition created no longer in the playlist, so nothing was sent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already_removed: bool,
+}
+
+impl MutationResult {
+    /// A result with no undo token.
+    pub fn new(kind: MutationKind, outcome: MutationOutcome, error: Option<QueryError>) -> Self {
+        Self {
+            kind,
+            outcome,
+            error,
+            undo_token: None,
+            already_removed: false,
+        }
+    }
 }
 
 /// Host -> Core secret session material. NEVER logged, serialized to disk, or forwarded to UI.

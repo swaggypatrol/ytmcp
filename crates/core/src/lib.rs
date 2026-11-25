@@ -3,6 +3,7 @@ pub mod commands;
 pub mod control;
 pub mod engine;
 pub mod error;
+pub mod playlist_undo;
 pub mod ports;
 pub mod queue_window;
 

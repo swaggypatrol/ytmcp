@@ -28,7 +28,8 @@ const LYRICS: LyricsResult = {
   error: null,
 };
 
-function renderLyrics(smoothScroll = true, followActive = true) {
+// The view no longer takes `followActive`: it keeps the current line placed while paused too.
+function renderLyrics(smoothScroll = true) {
   const scrollTo = vi.fn();
   // jsdom has no layout: give the list a scroll method and a height it can overflow.
   Object.defineProperty(HTMLElement.prototype, "scrollTo", { value: scrollTo, configurable: true, writable: true });
@@ -39,7 +40,6 @@ function renderLyrics(smoothScroll = true, followActive = true) {
     interpolatedPositionMs: 500,
     canSeek: true,
     mockMode: true,
-    followActive,
     smoothScroll,
     accent: null,
     onSeekMs: vi.fn(),
@@ -99,8 +99,8 @@ describe("Lyrics manual browsing", () => {
     expect(scrollTo).toHaveBeenCalled();
   });
 
-  it("returns to the current line while paused, when the follow effect stays still", async () => {
-    const { list, scrollTo, at } = renderLyrics(false, false);
+  it("returns to the current line with one scroll, and jumps under reduced motion", async () => {
+    const { list, scrollTo, at } = renderLyrics(false);
     await at(4500);
     await fireEvent.wheel(list, { deltaY: 120 });
     scrollTo.mockClear();

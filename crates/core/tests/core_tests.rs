@@ -17,8 +17,9 @@ use ytm_protocol::{
     MutationKind, MutationOutcome, MutationRequest, MutationResult, NetworkState,
     OutputGateResultPayload, PlaybackRef, PlaybackStatus, PlayerCommandArgs, PlayerCommandPayload,
     PlayerConnectionState, PlayerOp, QueryError, QueryErrorCode, QueueCompleteness, QueueEntry,
-    QueueEntryId, QueueRange, QueueSnapshot, RecentHistoryResult, SessionMaterialPayload,
-    StateDelta, Track, TrackAvailability, TrackInstanceId, VideoId, decode_ndjson_str,
+    QueueEntryId, QueueRange, QueueSnapshot, RecentHistoryResult, RecentSearch,
+    RecentSearchesRequest, RecentSearchesSnapshot, SessionMaterialPayload, StateDelta, Track,
+    TrackAvailability, TrackInstanceId, VideoId, decode_ndjson_str,
 };
 
 #[derive(Default)]
@@ -192,11 +193,11 @@ impl CatalogPort for SlowCatalogPort {
         _cancel: CancellationToken,
     ) -> BoxFuture<'_, Result<MutationResult, QueryError>> {
         Box::pin(async {
-            Ok(MutationResult {
-                kind: MutationKind::SetLike,
-                outcome: MutationOutcome::Confirmed,
-                error: None,
-            })
+            Ok(MutationResult::new(
+                MutationKind::SetLike,
+                MutationOutcome::Confirmed,
+                None,
+            ))
         })
     }
 
@@ -2579,6 +2580,149 @@ async fn collection_playback_requires_exact_playlist_and_occurrence_even_for_the
     engine.shutdown().await.unwrap();
 }
 
+/// A sample of `vid-liked` playing with the page's selected native context, if any.
+fn liked_observation(context: Option<(&str, u32)>) -> BridgePlaybackObservedPayload {
+    let mut sample = make_obs(
+        "bridge-1",
+        PlaybackStatus::Playing,
+        "ti-1",
+        "vid-liked",
+        "qe-1",
+        0,
+        Some(200_000),
+    );
+    sample.playback_context = context.map(|(playlist, index)| ytm_protocol::PlaybackContext {
+        playlist_id: ytm_protocol::PlaylistId::new(playlist).unwrap(),
+        start_index: index,
+        playlist_entry_id: None,
+    });
+    sample
+}
+
+/// The Liked page's Play: the first row's native entry in "Liked music" (`LM`), as the
+/// catalog's `CollectionPlayback` gives it.
+fn liked_collection_command(id: &str, start_index: u32) -> PlayerCommandPayload {
+    let mut args = make_args();
+    args.target = Some(PlaybackRef {
+        video_id: VideoId::new("vid-liked").unwrap(),
+        playlist_id: Some(ytm_protocol::PlaylistId::new("LM").unwrap()),
+        playlist_entry_id: None,
+        browse_id: None,
+        queue_entry_id: None,
+        start_index: Some(start_index),
+    });
+    make_cmd(id, PlayerOp::PlayCollection, Some(args))
+}
+
+async fn sign_in_as(engine: &CoreEngine, epoch: &str) {
+    engine
+        .on_session_material(SessionMaterialPayload {
+            account_epoch: AccountEpoch::new(epoch).unwrap(),
+            credential_revision: CredentialRevision::new("cred-1").unwrap(),
+            auth_user_index: None,
+            cookie_pairs: BTreeMap::new(),
+            channel_label: None,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn liked_collection_playback_settles_only_on_the_liked_context() {
+    let (engine, _clock, bridge, _gate) = setup_engine().await;
+    init_ready_bridge(&engine, "bridge-1", 1).await;
+    sign_in_as(&engine, "acct-liked").await;
+    let receipt = engine
+        .submit_player_command(liked_collection_command("liked-play", 3))
+        .await
+        .unwrap();
+    assert_eq!(receipt.status, CommandLifecycleStatus::Dispatched);
+    assert_eq!(bridge.sent_ops(), [PlayerOp::PlayCollection]);
+
+    // The same song alone, or from another playlist or native position, is not the collection.
+    for (seq, context) in [None, Some(("PL-other", 3)), Some(("LM", 2))]
+        .into_iter()
+        .enumerate()
+    {
+        engine
+            .on_bridge_playback_observed(2 + seq as u64, liked_observation(context))
+            .await
+            .unwrap();
+        let status = engine
+            .command_receipt(receipt.command_id.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .status;
+        assert_eq!(status, CommandLifecycleStatus::Dispatched, "{context:?}");
+    }
+    engine
+        .on_bridge_playback_observed(5, liked_observation(Some(("LM", 3))))
+        .await
+        .unwrap();
+    let status = engine
+        .command_receipt(receipt.command_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .status;
+    assert_eq!(status, CommandLifecycleStatus::Observed);
+    engine.shutdown().await.unwrap();
+}
+
+/// "Liked music" names a different collection in every account, so a collection play still
+/// pending when the account changes is never confirmed by what the page plays afterwards. An
+/// expired session of the same account that signs in again keeps it.
+#[tokio::test]
+async fn account_change_ends_a_pending_collection_play() {
+    let (engine, _clock, bridge, _gate) = setup_engine().await;
+    init_ready_bridge(&engine, "bridge-1", 1).await;
+    sign_in_as(&engine, "acct-first").await;
+    let kept = engine
+        .submit_player_command(liked_collection_command("liked-across-expiry", 3))
+        .await
+        .unwrap();
+    engine
+        .on_auth_expired(Some(AccountEpoch::new("acct-first").unwrap()), None)
+        .await
+        .unwrap();
+    sign_in_as(&engine, "acct-first").await;
+    engine
+        .on_bridge_playback_observed(2, liked_observation(Some(("LM", 3))))
+        .await
+        .unwrap();
+    let status = engine
+        .command_receipt(kept.command_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .status;
+    assert_eq!(status, CommandLifecycleStatus::Observed);
+
+    let receipt = engine
+        .submit_player_command(liked_collection_command("liked-before-switch", 5))
+        .await
+        .unwrap();
+    assert_eq!(receipt.status, CommandLifecycleStatus::Dispatched);
+    sign_in_as(&engine, "acct-second").await;
+    let mut sample = liked_observation(Some(("LM", 5)));
+    sample.track_instance_id = Some(TrackInstanceId::new("ti-2").unwrap());
+    engine.on_bridge_playback_observed(3, sample).await.unwrap();
+    let ended = engine
+        .command_receipt(receipt.command_id)
+        .await
+        .unwrap()
+        .unwrap();
+    // It may have reached the page, so it is unknown rather than failed, and never confirmed.
+    assert_eq!(ended.status, CommandLifecycleStatus::Indeterminate);
+    assert_eq!(ended.error.unwrap().code, QueryErrorCode::StaleContext);
+    assert_eq!(
+        bridge.sent_ops(),
+        [PlayerOp::PlayCollection, PlayerOp::PlayCollection]
+    );
+    engine.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn play_target_authorized_successor_handoff_vs_unexpected_rebuild() {
     let (engine, _clock, bridge, _gate) = setup_engine().await;
@@ -3293,13 +3437,9 @@ impl CatalogPort for ScriptedCatalog {
     ) -> BoxFuture<'_, Result<MutationResult, QueryError>> {
         *self.mutate_calls.lock().unwrap() += 1;
         let outcome = self.mutate_outcome.lock().unwrap().clone();
-        Box::pin(async move {
-            outcome.map(|outcome| MutationResult {
-                kind: request.kind,
-                outcome,
-                error: None,
-            })
-        })
+        Box::pin(
+            async move { outcome.map(|outcome| MutationResult::new(request.kind, outcome, None)) },
+        )
     }
 
     fn official_lyrics(
@@ -3383,6 +3523,7 @@ fn like_request() -> MutationRequest {
         video_id: VideoId::new("vid-like").unwrap(),
         liked: Some(true),
         playlist_id: None,
+        undo_token: None,
         confirmed_by_user: true,
     }
 }
@@ -3467,7 +3608,8 @@ async fn indeterminate_like_is_settled_by_liked_music_readback() {
             fetched_at_ms: 1,
             account_scope: AccountScope::new("scope-stable").unwrap(),
             provider_version: "test".to_string(),
-        },
+        }
+        .into(),
     ));
     let engine = engine_with_catalog(catalog.clone()).await;
     announce_bridge(&engine, 1, "acct:aaaa").await;
@@ -3486,11 +3628,71 @@ async fn indeterminate_like_is_settled_by_liked_music_readback() {
             fetched_at_ms: 1,
             account_scope: AccountScope::new("scope-stable").unwrap(),
             provider_version: "test".to_string(),
-        },
+        }
+        .into(),
     ));
     let res = engine.mutate(like_request(), epoch).await.unwrap();
     assert_eq!(res.outcome, MutationOutcome::Indeterminate);
     assert_eq!(*catalog.mutate_calls.lock().unwrap(), 2);
+    engine.shutdown().await.unwrap();
+}
+
+/// Resource invalidations the engine published since the last call, as `(kind, id)`.
+async fn invalidations(
+    engine: &CoreEngine,
+    events: &mut broadcast::Receiver<StateDelta>,
+) -> Vec<(String, Option<String>)> {
+    engine.snapshot().await.unwrap();
+    let mut seen = Vec::new();
+    while let Ok(delta) = events.try_recv() {
+        if let StateDelta::ResourceInvalidated {
+            resource_kind,
+            resource_id,
+            ..
+        } = delta
+        {
+            seen.push((resource_kind, resource_id));
+        }
+    }
+    seen
+}
+
+/// A confirmed write invalidates the entity it wrote, so a client can leave other lists alone.
+#[tokio::test]
+async fn confirmed_writes_name_the_playlist_or_song_they_changed() {
+    let catalog = Arc::new(ScriptedCatalog::new("acct:aaaa"));
+    let engine = engine_with_catalog(catalog.clone()).await;
+    announce_bridge(&engine, 1, "acct:aaaa").await;
+    sign_in(&engine).await;
+    let epoch = Some(AccountEpoch::new("acct-1").unwrap());
+    let (_, mut events) = engine.subscribe_snapshot().await.unwrap();
+
+    let add = MutationRequest {
+        kind: MutationKind::AddToPlaylist,
+        video_id: VideoId::new("vid-add").unwrap(),
+        liked: None,
+        playlist_id: Some(ytm_protocol::PlaylistId::new("PL-target").unwrap()),
+        undo_token: None,
+        confirmed_by_user: true,
+    };
+    let res = engine.mutate(add, epoch.clone()).await.unwrap();
+    assert_eq!(res.outcome, MutationOutcome::Confirmed);
+    assert_eq!(
+        invalidations(&engine, &mut events).await,
+        vec![("playlistTracks".to_string(), Some("PL-target".to_string()))]
+    );
+
+    let res = engine.mutate(like_request(), epoch.clone()).await.unwrap();
+    assert_eq!(res.outcome, MutationOutcome::Confirmed);
+    assert_eq!(
+        invalidations(&engine, &mut events).await,
+        vec![("likedSongs".to_string(), Some("vid-like".to_string()))]
+    );
+
+    // A rejected write changed nothing, so nothing is invalidated.
+    *catalog.mutate_outcome.lock().unwrap() = Ok(MutationOutcome::Rejected);
+    engine.mutate(like_request(), epoch).await.unwrap();
+    assert!(invalidations(&engine, &mut events).await.is_empty());
     engine.shutdown().await.unwrap();
 }
 
@@ -3561,9 +3763,23 @@ struct RecordingStorage {
     recorded: Mutex<Vec<(AccountScope, LastPlayed)>>,
     positions: Mutex<Vec<(VideoId, u64)>>,
     cover_requests: Mutex<u32>,
+    /// Remote URLs answered from memory by `cached_cover`; `clear_cache` empties it.
+    cached_cover_urls: Mutex<Vec<String>>,
+    /// Makes `cache_cover` fail, as an offline fetch of an evicted or new cover would.
+    fail_cover_cache: Mutex<bool>,
+    /// Recent searches by account scope, newest first, and every scope a call was made for.
+    recent_searches: Mutex<BTreeMap<String, Vec<String>>>,
+    recent_search_scopes: Mutex<Vec<AccountScope>>,
 }
 
 const SYNTHETIC_ASSET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn synthetic_cached_cover() -> CachedCover {
+    CachedCover {
+        asset_id: ytm_protocol::AssetId::new(SYNTHETIC_ASSET).unwrap(),
+        accent_oklch: "oklch(0.600 0.100 250.0)".to_string(),
+    }
+}
 
 impl StoragePort for RecordingStorage {
     fn load_settings(
@@ -3590,6 +3806,7 @@ impl StoragePort for RecordingStorage {
         Box::pin(async { Ok(()) })
     }
     fn clear_cache(&self, _scope: Option<AccountScope>) -> BoxFuture<'_, Result<(), QueryError>> {
+        self.cached_cover_urls.lock().unwrap().clear();
         Box::pin(async { Ok(()) })
     }
     fn resolve_asset(
@@ -3607,12 +3824,25 @@ impl StoragePort for RecordingStorage {
     }
     fn cache_cover(&self, _remote_url: String) -> BoxFuture<'_, Result<CachedCover, QueryError>> {
         *self.cover_requests.lock().unwrap() += 1;
-        Box::pin(async {
-            Ok(CachedCover {
-                asset_id: ytm_protocol::AssetId::new(SYNTHETIC_ASSET).unwrap(),
-                accent_oklch: "oklch(0.600 0.100 250.0)".to_string(),
-            })
+        let fail = *self.fail_cover_cache.lock().unwrap();
+        Box::pin(async move {
+            if fail {
+                return Err(QueryError {
+                    code: QueryErrorCode::NetworkOffline,
+                    retriable: true,
+                    retry_after_ms: None,
+                    safe_message: "synthetic cover fetch failure".to_owned(),
+                    request_id: None,
+                });
+            }
+            Ok(synthetic_cached_cover())
         })
+    }
+    fn cached_cover(&self, remote_url: &str) -> Option<CachedCover> {
+        let urls = self.cached_cover_urls.lock().unwrap();
+        urls.iter()
+            .any(|url| url == remote_url)
+            .then(synthetic_cached_cover)
     }
     fn clear_account_data(
         &self,
@@ -3665,6 +3895,32 @@ impl StoragePort for RecordingStorage {
     ) -> BoxFuture<'_, Result<(), QueryError>> {
         self.positions.lock().unwrap().push((video_id, position_ms));
         Box::pin(async { Ok(()) })
+    }
+    fn recent_searches(
+        &self,
+        scope: AccountScope,
+        _epoch: AccountEpoch,
+        request: RecentSearchesRequest,
+    ) -> BoxFuture<'_, Result<RecentSearchesSnapshot, QueryError>> {
+        self.recent_search_scopes
+            .lock()
+            .unwrap()
+            .push(scope.clone());
+        let mut lists = self.recent_searches.lock().unwrap();
+        let list = lists.entry(scope.as_str().to_string()).or_default();
+        match request {
+            RecentSearchesRequest::List => {}
+            RecentSearchesRequest::Record { query } => list.insert(0, query),
+            RecentSearchesRequest::Clear => list.clear(),
+        }
+        let items = list
+            .iter()
+            .map(|query| RecentSearch {
+                query: query.clone(),
+                recorded_at_ms: 0,
+            })
+            .collect();
+        Box::pin(async move { Ok(RecentSearchesSnapshot { items }) })
     }
 }
 
@@ -4096,6 +4352,126 @@ async fn an_outside_play_or_enqueue_before_the_launch_restore_replaces_the_resto
     }
 }
 
+async fn receipt_status(engine: &CoreEngine, id: &str) -> CommandLifecycleStatus {
+    engine
+        .command_receipt(CommandId::new(id).unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .status
+}
+
+/// The launch harness with the saved track, `autoplayOnLaunch` as given.
+async fn engine_with_saved_track(autoplay_on_launch: bool) -> StorageHarness {
+    let storage = RecordingStorage::default();
+    *storage.last_session.lock().unwrap() = Some(LastSession {
+        account_scope: AccountScope::new("scope-acct-1").unwrap(),
+        last_played: Some(LastPlayed {
+            track: make_track("vid-last", "Last", Some(200_000)),
+            playback_ref: None,
+            position_ms: 42_000,
+        }),
+    });
+    engine_with_storage(storage, autoplay_on_launch).await
+}
+
+/// Signs in and readies the bridge without any playback report yet, then submits `op`.
+async fn press_before_first_report(
+    h: &StorageHarness,
+    id: &str,
+    op: PlayerOp,
+) -> Result<ytm_protocol::CommandReceipt, QueryError> {
+    sign_in(&h.engine).await;
+    init_ready_bridge(&h.engine, "bridge-1", 1).await;
+    settle(&h.engine).await;
+    let receipt = h.engine.submit_player_command(make_cmd(id, op, None)).await;
+    settle(&h.engine).await;
+    receipt
+}
+
+/// Plays the launch restore through to its paused settle at the saved position.
+async fn settle_launch_restore(h: &StorageHarness, first_seq: u64) {
+    observe_restore(&h.engine, first_seq, PlaybackStatus::Playing, 0).await;
+    observe_restore(&h.engine, first_seq + 1, PlaybackStatus::Playing, 42_200).await;
+    observe_restore(&h.engine, first_seq + 2, PlaybackStatus::Paused, 42_200).await;
+}
+
+fn sent_ids(h: &StorageHarness) -> Vec<String> {
+    h.bridge
+        .sent_commands()
+        .into_iter()
+        .map(|(_, command)| command.command_id.as_str().to_owned())
+        .collect()
+}
+
+/// A media key, the tray or an agent can press Play after bridge.ready and before the page's
+/// first playback report. The play is held, and the launch restore carries it: the saved track
+/// comes back at its saved position and playing, the page receives exactly one play (the
+/// restore's own), and the held command settles with that play.
+#[tokio::test]
+async fn a_play_before_the_first_playback_report_is_carried_by_the_launch_restore() {
+    for autoplay_on_launch in [false, true] {
+        for op in [PlayerOp::Toggle, PlayerOp::Play] {
+            let case = format!("{op:?}, autoplayOnLaunch {autoplay_on_launch}");
+            let h = engine_with_saved_track(autoplay_on_launch).await;
+            let held = press_before_first_report(&h, "early-play", op)
+                .await
+                .unwrap_or_else(|err| panic!("{case}: refused: {err:?}"));
+            assert_eq!(held.status, CommandLifecycleStatus::Accepted, "{case}");
+            let snap = h.engine.snapshot().await.unwrap();
+            assert!(
+                snap.player.preparing,
+                "{case}: clients can show getting ready"
+            );
+            assert_eq!(snap.pending.desired_playback, Some(PlaybackStatus::Playing));
+            assert!(h.bridge.sent_ops().is_empty(), "{case}: nothing sent yet");
+
+            observe_empty_page(&h.engine, 2).await;
+            assert_eq!(h.bridge.sent_ops(), vec![PlayerOp::PlayTarget], "{case}");
+            observe_restore(&h.engine, 3, PlaybackStatus::Playing, 0).await;
+            // The held play does not cut the restore short: it seeks to the saved position.
+            assert_eq!(
+                h.bridge.sent_ops(),
+                vec![PlayerOp::PlayTarget, PlayerOp::Seek],
+                "{case}"
+            );
+            observe_restore(&h.engine, 4, PlaybackStatus::Playing, 42_200).await;
+            observe_restore(&h.engine, 5, PlaybackStatus::Paused, 42_200).await;
+            assert_eq!(
+                receipt_status(&h.engine, "early-play").await,
+                CommandLifecycleStatus::Accepted,
+                "{case}: the silent restore is not the play"
+            );
+            assert_eq!(
+                h.bridge.sent_ops(),
+                vec![
+                    PlayerOp::PlayTarget,
+                    PlayerOp::Seek,
+                    PlayerOp::Pause,
+                    PlayerOp::Play
+                ],
+                "{case}: exactly one play"
+            );
+            assert!(
+                !sent_ids(&h).iter().any(|id| id == "early-play"),
+                "{case}: the held command is never sent itself"
+            );
+            observe_restore(&h.engine, 6, PlaybackStatus::Playing, 42_300).await;
+            assert_eq!(
+                receipt_status(&h.engine, "early-play").await,
+                CommandLifecycleStatus::Observed,
+                "{case}"
+            );
+            let snap = h.engine.snapshot().await.unwrap();
+            assert_eq!(snap.player.playback, PlaybackStatus::Playing);
+            assert!(!snap.player.preparing, "{case}");
+            assert_eq!(snap.pending.pending_command_count, 0, "{case}");
+            assert_eq!(h.bridge.sent_ops().len(), 4, "{case}: nothing more");
+            h.engine.shutdown().await.unwrap();
+        }
+    }
+}
+
 #[tokio::test]
 async fn now_playing_cover_gets_local_asset_and_accent() {
     let h = engine_with_storage(RecordingStorage::default(), false).await;
@@ -4142,6 +4518,238 @@ async fn now_playing_cover_gets_local_asset_and_accent() {
     h.engine.clear_cache().await.unwrap();
     settle(&h.engine).await;
     assert_eq!(*h.storage.cover_requests.lock().unwrap(), 2);
+    h.engine.shutdown().await.unwrap();
+}
+
+/// Observes `video` (a new track instance) with a cover that has only its remote URL.
+async fn observe_track_with_cover(engine: &CoreEngine, seq: u64, video: &str, cover_url: &str) {
+    let mut obs = make_obs(
+        "bridge-1",
+        PlaybackStatus::Playing,
+        &format!("ti-{video}"),
+        video,
+        &format!("qe-{video}"),
+        0,
+        Some(200_000),
+    );
+    obs.current_track.as_mut().unwrap().cover = Some(ytm_protocol::CoverRef {
+        asset_id: None,
+        remote_url: Some(cover_url.to_string()),
+        accent_oklch: None,
+    });
+    engine.on_bridge_playback_observed(seq, obs).await.unwrap();
+}
+
+/// Covers of the `playerChanged` deltas received so far, in order.
+fn published_covers(
+    events: &mut broadcast::Receiver<StateDelta>,
+) -> Vec<Option<ytm_protocol::CoverRef>> {
+    let mut covers = Vec::new();
+    while let Ok(delta) = events.try_recv() {
+        if let StateDelta::PlayerChanged { player, .. } = delta {
+            covers.push(player.current_track.and_then(|track| track.cover));
+        }
+    }
+    covers
+}
+
+#[tokio::test]
+async fn a_cached_cover_is_in_the_first_state_of_a_new_track_and_a_miss_follows_later() {
+    let h = engine_with_storage(RecordingStorage::default(), false).await;
+    init_ready_bridge(&h.engine, "bridge-1", 1).await;
+    let (_, mut events) = h.engine.subscribe_snapshot().await.unwrap();
+    let cached_url = "https://lh3.googleusercontent.com/cached=w544-h544";
+    let new_url = "https://lh3.googleusercontent.com/new=w544-h544";
+    h.storage
+        .cached_cover_urls
+        .lock()
+        .unwrap()
+        .push(cached_url.to_string());
+
+    observe_track_with_cover(&h.engine, 2, "vid-cached", cached_url).await;
+    settle(&h.engine).await;
+    let covers = published_covers(&mut events);
+    let first = covers[0].clone().unwrap();
+    assert_eq!(first.asset_id.unwrap().as_str(), SYNTHETIC_ASSET);
+    assert_eq!(first.remote_url.as_deref(), Some(cached_url));
+    assert_eq!(
+        first.accent_oklch.as_deref(),
+        Some("oklch(0.600 0.100 250.0)")
+    );
+    // Storage confirming the hit changes nothing, so no second state is published.
+    assert_eq!(covers.len(), 1, "{covers:?}");
+    assert_eq!(*h.storage.cover_requests.lock().unwrap(), 1);
+
+    observe_track_with_cover(&h.engine, 3, "vid-new", new_url).await;
+    settle(&h.engine).await;
+    let covers = published_covers(&mut events);
+    assert_eq!(covers.len(), 2, "{covers:?}");
+    let first = covers[0].clone().unwrap();
+    assert_eq!(first.asset_id, None);
+    assert_eq!(first.remote_url.as_deref(), Some(new_url));
+    let cached = covers[1].clone().unwrap();
+    assert_eq!(cached.asset_id.unwrap().as_str(), SYNTHETIC_ASSET);
+    h.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_cover_that_cannot_be_cached_is_never_named_by_an_asset_id() {
+    let h = engine_with_storage(RecordingStorage::default(), false).await;
+    init_ready_bridge(&h.engine, "bridge-1", 1).await;
+    let (_, mut events) = h.engine.subscribe_snapshot().await.unwrap();
+    let url = "https://lh3.googleusercontent.com/gone=w544-h544";
+    h.storage
+        .cached_cover_urls
+        .lock()
+        .unwrap()
+        .push(url.to_string());
+    *h.storage.fail_cover_cache.lock().unwrap() = true;
+
+    // The index named the cover, but storage could not confirm it: the asset is withdrawn.
+    observe_track_with_cover(&h.engine, 2, "vid-gone", url).await;
+    settle(&h.engine).await;
+    let covers = published_covers(&mut events);
+    assert_eq!(covers.len(), 2, "{covers:?}");
+    assert!(covers[0].as_ref().unwrap().asset_id.is_some());
+    let withdrawn = covers[1].clone().unwrap();
+    assert_eq!(withdrawn.asset_id, None);
+    assert_eq!(withdrawn.accent_oklch, None);
+    assert_eq!(withdrawn.remote_url.as_deref(), Some(url));
+
+    // Once cached, a cache clear drops the id: until the cover is cached again (here it cannot
+    // be), the state names only the remote URL.
+    *h.storage.fail_cover_cache.lock().unwrap() = false;
+    observe_track_with_cover(
+        &h.engine,
+        3,
+        "vid-other",
+        "https://lh3.googleusercontent.com/o",
+    )
+    .await;
+    settle(&h.engine).await;
+    assert!(
+        published_covers(&mut events)
+            .last()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .asset_id
+            .is_some()
+    );
+    *h.storage.fail_cover_cache.lock().unwrap() = true;
+    h.engine.clear_cache().await.unwrap();
+    settle(&h.engine).await;
+    let covers = published_covers(&mut events);
+    assert_eq!(covers.len(), 1, "{covers:?}");
+    assert_eq!(covers[0].as_ref().unwrap().asset_id, None);
+    let cover = h
+        .engine
+        .snapshot()
+        .await
+        .unwrap()
+        .player
+        .current_track
+        .unwrap()
+        .cover
+        .unwrap();
+    assert_eq!(cover.asset_id, None);
+    h.engine.shutdown().await.unwrap();
+}
+
+fn recorded_queries(snapshot: &RecentSearchesSnapshot) -> Vec<&str> {
+    snapshot
+        .items
+        .iter()
+        .map(|item| item.query.as_str())
+        .collect()
+}
+
+/// Recent searches belong to the session's account: the core picks the scope itself, refuses
+/// a request for another epoch or without a session, and never stores a blank or overlong query.
+#[tokio::test]
+async fn recent_searches_follow_the_signed_in_account_only() {
+    let h = engine_with_storage(RecordingStorage::default(), false).await;
+    let record = |query: &str| RecentSearchesRequest::Record {
+        query: query.to_string(),
+    };
+    let first = AccountEpoch::new("acct-1").unwrap();
+    let code = async |request, epoch: Option<&AccountEpoch>| {
+        h.engine
+            .recent_searches(request, epoch.cloned())
+            .await
+            .unwrap_err()
+            .code
+    };
+
+    // Nobody signed in.
+    assert_eq!(
+        code(RecentSearchesRequest::List, Some(&first)).await,
+        QueryErrorCode::AuthRequired
+    );
+
+    h.engine
+        .on_session_material(SessionMaterialPayload {
+            account_epoch: first.clone(),
+            credential_revision: CredentialRevision::new("cred-1").unwrap(),
+            cookie_pairs: BTreeMap::new(),
+            auth_user_index: None,
+            channel_label: None,
+        })
+        .await
+        .unwrap();
+    let scope = h.engine.snapshot().await.unwrap().auth_state.account_scope;
+
+    assert_eq!(
+        code(record("lofi"), None).await,
+        QueryErrorCode::InvalidPayload
+    );
+    assert_eq!(
+        code(record("   "), Some(&first)).await,
+        QueryErrorCode::InvalidPayload
+    );
+    assert_eq!(
+        code(record(&"a".repeat(201)), Some(&first)).await,
+        QueryErrorCode::InvalidPayload
+    );
+    assert_eq!(
+        code(
+            record("lofi"),
+            Some(&AccountEpoch::new("acct-other").unwrap())
+        )
+        .await,
+        QueryErrorCode::AccountMismatch
+    );
+    assert!(h.storage.recent_search_scopes.lock().unwrap().is_empty());
+
+    let saved = h
+        .engine
+        .recent_searches(record("lofi"), Some(first.clone()))
+        .await
+        .unwrap();
+    assert_eq!(recorded_queries(&saved), ["lofi"]);
+    let listed = h
+        .engine
+        .recent_searches(RecentSearchesRequest::List, Some(first.clone()))
+        .await
+        .unwrap();
+    assert_eq!(listed, saved);
+    assert_eq!(
+        h.storage
+            .recent_search_scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| Some(s.clone()))
+            .collect::<Vec<_>>(),
+        [scope.clone(), scope]
+    );
+
+    // Signed out, even the epoch that was current is refused.
+    h.engine.on_logout().await.unwrap();
+    assert_eq!(
+        code(RecentSearchesRequest::List, Some(&first)).await,
+        QueryErrorCode::AuthRequired
+    );
     h.engine.shutdown().await.unwrap();
 }
 
@@ -4408,27 +5016,308 @@ async fn leaving_the_music_origin_or_a_renderer_crash_marks_the_bridge_lost_unti
     engine.shutdown().await.unwrap();
 }
 
+/// Before the page's first playback report a play is held; when that report shows nothing and
+/// there is nothing to restore (no storage, or no saved track), it fails as nothing to play,
+/// and later plays fail at once.
 #[tokio::test]
-async fn play_before_the_page_loaded_any_track_fails_at_once_instead_of_going_indeterminate() {
+async fn a_held_play_fails_as_nothing_to_play_after_the_first_empty_report() {
+    for with_storage in [false, true] {
+        let (engine, bridge) = if with_storage {
+            let h = engine_with_storage(RecordingStorage::default(), true).await;
+            sign_in(&h.engine).await;
+            (h.engine, h.bridge)
+        } else {
+            let (engine, _clock, bridge, _gate) = setup_engine().await;
+            (engine, bridge)
+        };
+        init_ready_bridge(&engine, "bridge-1", 1).await;
+        settle(&engine).await;
+        let held = engine
+            .submit_player_command(make_cmd("cmd-early", PlayerOp::Toggle, None))
+            .await
+            .expect("held, not refused");
+        assert_eq!(held.status, CommandLifecycleStatus::Accepted);
+        assert!(engine.snapshot().await.unwrap().player.preparing);
+
+        observe_empty_page(&engine, 2).await;
+        let receipt = engine
+            .command_receipt(CommandId::new("cmd-early").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.status,
+            CommandLifecycleStatus::Failed,
+            "storage {with_storage}"
+        );
+        let err = receipt.error.unwrap();
+        assert_eq!(err.code, QueryErrorCode::UnavailableTrack);
+        assert!(err.retriable);
+        let snap = engine.snapshot().await.unwrap();
+        assert!(!snap.player.preparing);
+        assert_eq!(snap.pending.pending_command_count, 0);
+
+        let later = engine
+            .submit_player_command(make_cmd("cmd-later", PlayerOp::Play, None))
+            .await
+            .expect_err("nothing to play is known now");
+        assert_eq!(later.code, QueryErrorCode::UnavailableTrack);
+        assert!(bridge.sent_ops().is_empty(), "storage {with_storage}");
+        engine.shutdown().await.unwrap();
+    }
+}
+
+/// The official page can bring back its own queue. A play held until then is sent once, as a
+/// play of that track, and is the launch's only play even with `autoplayOnLaunch`.
+#[tokio::test]
+async fn a_held_play_is_sent_once_when_the_page_restores_its_own_queue() {
+    for autoplay_on_launch in [false, true] {
+        let h = engine_with_saved_track(autoplay_on_launch).await;
+        press_before_first_report(&h, "early-toggle", PlayerOp::Toggle)
+            .await
+            .unwrap();
+        observe_restore(&h.engine, 2, PlaybackStatus::Paused, 5_000).await;
+        assert_eq!(
+            h.bridge.sent_ops(),
+            vec![PlayerOp::Play],
+            "{autoplay_on_launch}"
+        );
+        assert_eq!(sent_ids(&h), vec!["early-toggle".to_owned()]);
+        observe_restore(&h.engine, 3, PlaybackStatus::Playing, 5_100).await;
+        assert_eq!(
+            receipt_status(&h.engine, "early-toggle").await,
+            CommandLifecycleStatus::Observed
+        );
+        assert_eq!(
+            h.bridge.sent_ops(),
+            vec![PlayerOp::Play],
+            "{autoplay_on_launch}"
+        );
+        assert!(!h.engine.snapshot().await.unwrap().player.preparing);
+        h.engine.shutdown().await.unwrap();
+    }
+}
+
+/// The saved session is read asynchronously. An empty first report that arrives before it does
+/// not yet mean "nothing to play": the held play waits, and the restore then carries it.
+#[tokio::test]
+async fn a_held_play_waits_for_the_saved_session_before_deciding_there_is_nothing() {
+    let hold = Arc::new(Notify::new());
+    let storage = RecordingStorage {
+        last_session: Mutex::new(Some(LastSession {
+            account_scope: AccountScope::new("scope-acct-1").unwrap(),
+            last_played: Some(LastPlayed {
+                track: make_track("vid-last", "Last", Some(200_000)),
+                playback_ref: None,
+                position_ms: 42_000,
+            }),
+        })),
+        pending_session: Some(hold.clone()),
+        ..RecordingStorage::default()
+    };
+    let h = engine_with_storage(storage, false).await;
+    press_before_first_report(&h, "early-play", PlayerOp::Play)
+        .await
+        .unwrap();
+    observe_empty_page(&h.engine, 2).await;
+    assert_eq!(
+        receipt_status(&h.engine, "early-play").await,
+        CommandLifecycleStatus::Accepted
+    );
+    assert!(h.engine.snapshot().await.unwrap().player.preparing);
+    assert!(h.bridge.sent_ops().is_empty());
+    hold.notify_one();
+    settle(&h.engine).await;
+    assert_eq!(h.bridge.sent_ops(), vec![PlayerOp::PlayTarget]);
+    settle_launch_restore(&h, 3).await;
+    observe_restore(&h.engine, 6, PlaybackStatus::Playing, 42_300).await;
+    assert_eq!(
+        receipt_status(&h.engine, "early-play").await,
+        CommandLifecycleStatus::Observed
+    );
+    assert_eq!(
+        h.bridge
+            .sent_ops()
+            .iter()
+            .filter(|op| **op == PlayerOp::Play)
+            .count(),
+        1
+    );
+    h.engine.shutdown().await.unwrap();
+}
+
+/// A later Pause, before the first report or while the restore runs, is the listener's last
+/// intent: the held play is cancelled and the saved track stays paused, with no play sent.
+#[tokio::test]
+async fn a_pause_cancels_the_held_play_and_the_restore_stays_paused() {
+    for autoplay_on_launch in [false, true] {
+        for pause_during_restore in [false, true] {
+            let case =
+                format!("autoplay {autoplay_on_launch}, during restore {pause_during_restore}");
+            let h = engine_with_saved_track(autoplay_on_launch).await;
+            press_before_first_report(&h, "early-play", PlayerOp::Play)
+                .await
+                .unwrap();
+            if pause_during_restore {
+                observe_empty_page(&h.engine, 2).await;
+                observe_restore(&h.engine, 3, PlaybackStatus::Playing, 0).await;
+            }
+            h.engine
+                .submit_player_command(make_cmd("pause", PlayerOp::Pause, None))
+                .await
+                .unwrap();
+            settle(&h.engine).await;
+            assert_eq!(
+                receipt_status(&h.engine, "early-play").await,
+                CommandLifecycleStatus::Cancelled,
+                "{case}"
+            );
+            if pause_during_restore {
+                observe_restore(&h.engine, 4, PlaybackStatus::Playing, 42_200).await;
+                observe_restore(&h.engine, 5, PlaybackStatus::Paused, 42_200).await;
+            } else {
+                observe_empty_page(&h.engine, 2).await;
+                settle_launch_restore(&h, 3).await;
+            }
+            settle(&h.engine).await;
+            assert!(
+                !h.bridge.sent_ops().contains(&PlayerOp::Play),
+                "{case}: {:?}",
+                h.bridge.sent_ops()
+            );
+            let snap = h.engine.snapshot().await.unwrap();
+            assert_eq!(snap.player.playback, PlaybackStatus::Paused, "{case}");
+            assert!(!snap.player.preparing, "{case}");
+            assert_eq!(snap.pending.pending_command_count, 0, "{case}");
+            h.engine.shutdown().await.unwrap();
+        }
+    }
+}
+
+/// A held Toggle followed by another Toggle means "do not play": the first is cancelled, the
+/// second is a pause, and the restore comes back paused without a play.
+#[tokio::test]
+async fn a_second_toggle_cancels_the_held_play() {
+    let h = engine_with_saved_track(true).await;
+    press_before_first_report(&h, "toggle-1", PlayerOp::Toggle)
+        .await
+        .unwrap();
+    h.engine
+        .submit_player_command(make_cmd("toggle-2", PlayerOp::Toggle, None))
+        .await
+        .unwrap();
+    settle(&h.engine).await;
+    assert_eq!(
+        receipt_status(&h.engine, "toggle-1").await,
+        CommandLifecycleStatus::Cancelled
+    );
+    assert_eq!(
+        h.bridge.sent_ops(),
+        vec![PlayerOp::Pause],
+        "the second toggle pauses"
+    );
+    assert_eq!(
+        h.engine.snapshot().await.unwrap().pending.desired_playback,
+        None
+    );
+    observe_empty_page(&h.engine, 2).await;
+    settle_launch_restore(&h, 3).await;
+    assert!(!h.bridge.sent_ops().contains(&PlayerOp::Play));
+    assert_eq!(
+        h.engine.snapshot().await.unwrap().player.playback,
+        PlaybackStatus::Paused
+    );
+    h.engine.shutdown().await.unwrap();
+}
+
+/// A held play waits a bounded time: a page that never reports fails it as nothing to play.
+#[tokio::test]
+async fn a_held_play_fails_at_its_deadline() {
+    let h = engine_with_saved_track(false).await;
+    press_before_first_report(&h, "early-play", PlayerOp::Play)
+        .await
+        .unwrap();
+    h.clock.advance(9_000);
+    settle(&h.engine).await;
+    assert_eq!(
+        receipt_status(&h.engine, "early-play").await,
+        CommandLifecycleStatus::Accepted
+    );
+    h.clock.advance(1_100);
+    // No explicit tick: an idle core must wake for the hold deadline on its own.
+    let receipt = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let receipt = h
+                .engine
+                .command_receipt(CommandId::new("early-play").unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            if receipt.status != CommandLifecycleStatus::Accepted {
+                break receipt;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the hold deadline fires without a manual tick");
+    assert_eq!(receipt.status, CommandLifecycleStatus::Failed);
+    assert_eq!(
+        receipt.error.unwrap().code,
+        QueryErrorCode::UnavailableTrack
+    );
+    assert!(h.bridge.sent_ops().is_empty());
+    assert_eq!(
+        h.engine
+            .snapshot()
+            .await
+            .unwrap()
+            .pending
+            .pending_command_count,
+        0
+    );
+    h.engine.shutdown().await.unwrap();
+}
+
+/// A playTarget chosen before the first report replaces both the launch restore and the held
+/// play: only the chosen track is sent.
+#[tokio::test]
+async fn a_play_target_replaces_the_restore_and_the_held_play() {
+    let h = engine_with_saved_track(true).await;
+    press_before_first_report(&h, "early-toggle", PlayerOp::Toggle)
+        .await
+        .unwrap();
+    let mut args = make_args();
+    args.target = Some(PlaybackRef {
+        video_id: VideoId::new("vid-caller").unwrap(),
+        playlist_id: None,
+        playlist_entry_id: None,
+        browse_id: None,
+        queue_entry_id: None,
+        start_index: None,
+    });
+    h.engine
+        .submit_player_command(make_cmd("chosen", PlayerOp::PlayTarget, Some(args)))
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt_status(&h.engine, "early-toggle").await,
+        CommandLifecycleStatus::Cancelled
+    );
+    observe_empty_page(&h.engine, 2).await;
+    assert_eq!(h.bridge.sent_ops(), vec![PlayerOp::PlayTarget]);
+    assert_eq!(sent_ids(&h), vec!["chosen".to_owned()]);
+    assert!(h.gate.calls().is_empty(), "no silent restore");
+    h.engine.shutdown().await.unwrap();
+}
+
+/// A row click whose playTarget navigates to a successor page keeps the usual order: a toggle
+/// pressed before that page reports queues behind the playTarget and pauses the new track. It
+/// is not held as a play, and the player does not show itself as preparing.
+#[tokio::test]
+async fn a_toggle_during_a_navigating_play_target_still_pauses_the_new_track() {
     let (engine, _clock, bridge, _gate) = setup_engine().await;
     init_ready_bridge(&engine, "bridge-1", 1).await;
-
-    // Right after start-up the page has not restored its queue: nothing to play yet.
-    let early = engine
-        .submit_player_command(make_cmd("cmd-early", PlayerOp::Toggle, None))
-        .await;
-    let err = early.expect_err("rejected without dispatch");
-    assert_eq!(err.code, QueryErrorCode::UnavailableTrack);
-    assert!(err.retriable);
-    let receipt = engine
-        .command_receipt(CommandId::new("cmd-early").unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(receipt.status, CommandLifecycleStatus::Failed);
-    assert!(bridge.sent_ops().is_empty());
-
-    // Once the page reports its (paused) track, the next click plays it.
     engine
         .on_bridge_playback_observed(
             2,
@@ -4444,12 +5333,208 @@ async fn play_before_the_page_loaded_any_track_fails_at_once_instead_of_going_in
         )
         .await
         .unwrap();
+    let mut args = make_args();
+    args.target = Some(PlaybackRef {
+        video_id: VideoId::new("vid-target").unwrap(),
+        playlist_id: None,
+        playlist_entry_id: None,
+        browse_id: None,
+        queue_entry_id: None,
+        start_index: None,
+    });
     engine
-        .submit_player_command(make_cmd("cmd-later", PlayerOp::Toggle, None))
+        .submit_player_command(make_cmd("row-click", PlayerOp::PlayTarget, Some(args)))
         .await
         .unwrap();
-    assert_eq!(bridge.sent_ops(), vec![PlayerOp::Play]);
+    engine
+        .on_host_bridge_lifecycle(BridgeLifecyclePayload {
+            event: "successorAuthorized".to_string(),
+            bridge_epoch: Some(BridgeEpoch::new("bridge-2").unwrap()),
+            is_music_origin: Some(true),
+        })
+        .await
+        .unwrap();
+    init_ready_bridge(&engine, "bridge-2", 1).await;
+    engine
+        .submit_player_command(make_cmd("toggle", PlayerOp::Toggle, None))
+        .await
+        .unwrap();
+    assert!(!engine.snapshot().await.unwrap().player.preparing);
+    engine
+        .on_bridge_playback_observed(
+            2,
+            make_obs(
+                "bridge-2",
+                PlaybackStatus::Playing,
+                "ti-new",
+                "vid-target",
+                "qe-new",
+                0,
+                Some(200_000),
+            ),
+        )
+        .await
+        .unwrap();
+    settle(&engine).await;
+    assert_eq!(
+        bridge.sent_ops(),
+        vec![PlayerOp::PlayTarget, PlayerOp::Pause]
+    );
     engine.shutdown().await.unwrap();
+}
+
+/// The launch restore's playTarget may navigate to a successor page. A play held before it
+/// stays held across that handoff and is carried by the restore on the new page.
+#[tokio::test]
+async fn a_held_play_survives_a_restore_that_navigates() {
+    let h = engine_with_saved_track(false).await;
+    press_before_first_report(&h, "early-play", PlayerOp::Play)
+        .await
+        .unwrap();
+    observe_empty_page(&h.engine, 2).await;
+    assert_eq!(h.bridge.sent_ops(), vec![PlayerOp::PlayTarget]);
+    h.engine
+        .on_host_bridge_lifecycle(BridgeLifecyclePayload {
+            event: "playTargetAuthorized".to_string(),
+            bridge_epoch: Some(BridgeEpoch::new("bridge-2").unwrap()),
+            is_music_origin: Some(true),
+        })
+        .await
+        .unwrap();
+    init_ready_bridge(&h.engine, "bridge-2", 1).await;
+    settle(&h.engine).await;
+    assert_eq!(
+        receipt_status(&h.engine, "early-play").await,
+        CommandLifecycleStatus::Accepted
+    );
+    let observe = |seq: u64, playback: PlaybackStatus, position_ms: u64| {
+        let engine = &h.engine;
+        async move {
+            assert!(
+                engine
+                    .on_bridge_playback_observed(
+                        seq,
+                        make_obs(
+                            "bridge-2",
+                            playback,
+                            "ti-r",
+                            "vid-last",
+                            "qe-r",
+                            position_ms,
+                            Some(200_000)
+                        ),
+                    )
+                    .await
+                    .unwrap()
+            );
+            settle(engine).await;
+        }
+    };
+    observe(2, PlaybackStatus::Playing, 0).await;
+    observe(3, PlaybackStatus::Playing, 42_200).await;
+    observe(4, PlaybackStatus::Paused, 42_200).await;
+    assert_eq!(
+        h.bridge.sent_ops(),
+        vec![
+            PlayerOp::PlayTarget,
+            PlayerOp::Seek,
+            PlayerOp::Pause,
+            PlayerOp::Play
+        ]
+    );
+    observe(5, PlaybackStatus::Playing, 42_300).await;
+    assert_eq!(
+        receipt_status(&h.engine, "early-play").await,
+        CommandLifecycleStatus::Observed
+    );
+    assert!(!sent_ids(&h).iter().any(|id| id == "early-play"));
+    h.engine.shutdown().await.unwrap();
+}
+
+/// A fence for an agent's command before the page has reported a track. The first sign-in
+/// makes the generation 1, and each manual takeover adds one.
+fn agent_fence(clock: &MockClock, generation: u64) -> PlaybackFence {
+    PlaybackFence {
+        track_instance_id: None,
+        generation,
+        account_scope: Some(AccountScope::new("scope-acct-1").unwrap()),
+        account_epoch: Some(AccountEpoch::new("acct-1").unwrap()),
+        deadline_ms: clock.now_ms() + 20_000,
+        ..playback_fence(clock, 1)
+    }
+}
+
+/// Manual actions outrank agents: an agent's held play gives way to the listener's pause or
+/// toggle (the toggle then means play), while an agent's pause does not cancel the listener's
+/// held play.
+#[tokio::test]
+async fn an_agents_held_play_gives_way_to_a_manual_command() {
+    for manual_op in [PlayerOp::Pause, PlayerOp::Toggle] {
+        let h = engine_with_saved_track(false).await;
+        sign_in(&h.engine).await;
+        init_ready_bridge(&h.engine, "bridge-1", 1).await;
+        settle(&h.engine).await;
+        let agent = h
+            .engine
+            .submit_external_player_command(
+                make_cmd("agent-play", PlayerOp::Play, None),
+                agent_fence(&h.clock, 1),
+            )
+            .await
+            .expect("an agent's play is held too");
+        assert_eq!(agent.status, CommandLifecycleStatus::Accepted);
+        h.engine
+            .submit_player_command(make_cmd("manual", manual_op, None))
+            .await
+            .unwrap();
+        settle(&h.engine).await;
+        assert_eq!(
+            receipt_status(&h.engine, "agent-play").await,
+            CommandLifecycleStatus::Cancelled,
+            "{manual_op:?}"
+        );
+        observe_empty_page(&h.engine, 2).await;
+        settle_launch_restore(&h, 3).await;
+        let plays: Vec<String> = h
+            .bridge
+            .sent_commands()
+            .into_iter()
+            .filter(|(_, command)| command.op == PlayerOp::Play)
+            .map(|(_, command)| command.command_id.as_str().to_owned())
+            .collect();
+        if manual_op == PlayerOp::Toggle {
+            // The listener's toggle saw nothing playing: it is the held play the restore carries.
+            assert_eq!(plays.len(), 1, "{plays:?}");
+            observe_restore(&h.engine, 6, PlaybackStatus::Playing, 42_300).await;
+            assert_eq!(
+                receipt_status(&h.engine, "manual").await,
+                CommandLifecycleStatus::Observed
+            );
+        } else {
+            assert!(plays.is_empty(), "{plays:?}");
+        }
+        assert!(!plays.iter().any(|id| id == "agent-play"));
+        h.engine.shutdown().await.unwrap();
+    }
+
+    let h = engine_with_saved_track(false).await;
+    press_before_first_report(&h, "manual-play", PlayerOp::Play)
+        .await
+        .unwrap();
+    h.engine
+        .submit_external_player_command(
+            make_cmd("agent-pause", PlayerOp::Pause, None),
+            agent_fence(&h.clock, 2),
+        )
+        .await
+        .unwrap();
+    settle(&h.engine).await;
+    assert_eq!(
+        receipt_status(&h.engine, "manual-play").await,
+        CommandLifecycleStatus::Accepted,
+        "an agent does not cancel the listener's play"
+    );
+    h.engine.shutdown().await.unwrap();
 }
 
 #[tokio::test]

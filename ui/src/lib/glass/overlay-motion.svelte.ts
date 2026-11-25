@@ -7,15 +7,53 @@ export function overlayExitDuration(surface: HTMLElement, fallback: number): num
   return Number.isFinite(value) ? value * (time.endsWith("ms") ? 1 : 1000) : fallback;
 }
 
+/** How long past its clock an exit may wait for its transitions (a hidden page does not run them). */
+const EXIT_LIMIT_MS = 1000;
+
+/**
+ * Calls `done` once the exit the leaving state started inside `region` has run: when every finite
+ * transition there has settled, so the removal lands on the frame after the last visible change,
+ * even when a busy main thread started the exit late. Without running transitions (or without Web
+ * Animations) it waits `clockMs`. Returns a cancel function; once cancelled, `done` never runs.
+ */
+export function afterExit(region: Element, clockMs: number, done: () => void): () => void {
+  let live = true;
+  const finish = () => {
+    if (!live) return;
+    live = false;
+    clearTimeout(timer);
+    done();
+  };
+  const running =
+    typeof region.getAnimations === "function"
+      ? region.getAnimations({ subtree: true }).filter((animation) => {
+          const end = animation.effect?.getComputedTiming().endTime;
+          return typeof end === "number" && Number.isFinite(end) && animation.playState !== "finished";
+        })
+      : [];
+  const timer = setTimeout(finish, running.length ? clockMs + EXIT_LIMIT_MS : clockMs);
+  if (running.length) void Promise.allSettled(running.map((animation) => animation.finished)).then(finish);
+  return () => {
+    live = false;
+    clearTimeout(timer);
+  };
+}
+
 /** Keep a closed menu or dialog visible for its exit, with an option to reopen the same surface. */
 export class OverlayPresence {
   rendered = $state(false);
   #resume: (() => void) | undefined;
-  #timer: ReturnType<typeof setTimeout> | undefined;
+  #cancelExit: (() => void) | undefined;
   #observer: MutationObserver | undefined;
 
+  /** True while a hide waits for its exit to run (plain, so a teardown reads the current value). */
+  get exiting(): boolean {
+    return this.#cancelExit !== undefined;
+  }
+
   show(): void {
-    clearTimeout(this.#timer);
+    this.#cancelExit?.();
+    this.#cancelExit = undefined;
     this.#observer?.disconnect();
     this.#resume?.();
     this.#resume = undefined;
@@ -50,6 +88,7 @@ export class OverlayPresence {
     const duration = overlayExitDuration(surface, 0);
     const remove = () => {
       this.#observer?.disconnect();
+      this.#cancelExit = undefined;
       this.#resume = undefined;
       this.rendered = false;
     };
@@ -60,11 +99,11 @@ export class OverlayPresence {
     // A playlist request can finish during the dissolve and add new controls to the retained DOM.
     this.#observer = new MutationObserver(stripIds);
     this.#observer.observe(region, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-testid"] });
-    this.#timer = setTimeout(remove, duration + 34);
+    this.#cancelExit = afterExit(region, duration, remove);
   }
 
   dispose(): void {
-    clearTimeout(this.#timer);
+    this.#cancelExit?.();
     this.#observer?.disconnect();
   }
 }

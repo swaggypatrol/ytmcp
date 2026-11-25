@@ -107,6 +107,17 @@
   cursor: progress;
 }
 
+/* Pending: a control already shows what was asked (play or pause, shuffle, repeat, a heart)
+   while the player or the account has not confirmed it. Its icon goes a little quieter, after a
+   120 ms wait so a quick confirmation never blinks, and comes back at once when settled. 0.85
+   keeps icons and the accent glyph at 3:1 over the worst glass backdrop of the tone audit
+   (the accent's 4.1 there becomes about 3.2). Under reduced motion the global reset leaves the
+   wait and makes the change instant. */
+[data-pending] .icon {
+  opacity: 0.85;
+  transition: opacity var(--duration-fast) var(--ease-standard) 120ms;
+}
+
 .link {
   background: none;
   border: none;

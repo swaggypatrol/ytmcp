@@ -47,6 +47,12 @@ CJK_ALLOWED=(
   ui/src/lib/__tests__/lib.test.ts
   packages/protocol/src/fake/index.ts
   tools/probes/runtime/glass-test.html
+  # CJK search queries and IME composition in the UI tests, the protocol fixtures and the
+  # window-check probe (recent searches keep the query as typed).
+  ui/src/app/__tests__/navigation-fluency.test.ts
+  ui/src/lib/components/__tests__/phase2-pages.test.ts
+  fixtures/contracts/valid_envelopes.ndjson
+  tools/probes/glass/window-check.mjs
   # Matching YouTube Music's own Chinese page labels, and the IME composition check.
   crates/ytm-data/src/probe/tests.rs
   tools/qa/t17-write.mjs

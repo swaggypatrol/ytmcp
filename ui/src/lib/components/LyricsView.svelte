@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { LyricsResult, Track } from "@ytmcp/protocol";
+  import type { Artwork } from "../cover.js";
   import { t } from "../i18n/index.svelte.js";
   import { queryErrorDetail, queryErrorMessage } from "../i18n/query-errors.js";
   import { activeLyricIndex, effectiveLineTimeMs } from "../lyrics.js";
@@ -13,12 +14,13 @@
     track: Track | null;
     lyrics: LyricsResult | null;
     loading: boolean;
+    /** The shown playback position: the seek preview while one holds, as in the player bar. */
     interpolatedPositionMs: number;
     canSeek: boolean;
     mockMode: boolean;
-    /** Follow the active line only while playing and visible; otherwise the view stays put. */
-    followActive: boolean;
     smoothScroll: boolean;
+    /** The header's cover: App's held artwork, which keeps the previous one while a new cover is cached. Defaults to the track's own. */
+    artwork?: Artwork | null;
     accent: TrackAccent | null;
     onSeekMs: (positionMs: number) => void;
     onStepOffset: (deltaMs: number) => void;
@@ -32,8 +34,8 @@
     interpolatedPositionMs,
     canSeek,
     mockMode,
-    followActive,
     smoothScroll,
+    artwork,
     accent,
     onSeekMs,
     onStepOffset,
@@ -47,6 +49,7 @@
   const activeIndex = $derived(activeLyricIndex(lyrics, interpolatedPositionMs));
   const synced = $derived(lyrics?.kind === "synced" && (lyrics.syncedLines?.length ?? 0) > 0);
   const heroArt = $derived(track ? [{ cover: track.cover, seed: track.videoId, label: track.title }] : []);
+  const headArt = $derived(artwork !== undefined ? artwork : (heroArt[0] ?? null));
   const accentStyle = $derived(
     accent ? `--accent: ${accent.accent}; --accent-soft: ${accent.accentSoft};` : ""
   );
@@ -72,30 +75,48 @@
     if (listEl && listEl.scrollHeight > listEl.clientHeight) browsing = true;
   }
 
-  /** Centres line `idx` in the list; scrolls only the list, never the page (offsetTop is measured from it). */
-  function scrollToLine(idx: number) {
+  /**
+   * Centres line `idx` in the list; scrolls only the list, never the page (offsetTop is measured
+   * from it). `glide` animates the move unless motion is reduced; otherwise it is instant.
+   */
+  function scrollToLine(idx: number, glide: boolean) {
     const el = listEl?.querySelector<HTMLElement>(`[data-line-index="${idx}"]`);
     if (!listEl || !el || typeof listEl.scrollTo !== "function") return;
     const targetTop = Math.max(0, el.offsetTop - listEl.clientHeight / 2 + el.clientHeight / 2);
-    listEl.scrollTo({ top: targetTop, behavior: smoothScroll ? "smooth" : "auto" });
+    listEl.scrollTo({ top: targetTop, behavior: glide && smoothScroll ? "smooth" : "auto" });
   }
 
+  /** The list, the lines and the line it was last centred on; plain, so placing never re-runs the effect. */
+  let placed: { list: HTMLElement; lines: unknown; index: number } | null = null;
+
+  function place(idx: number, glide: boolean) {
+    placed = listEl ? { list: listEl, lines: lyrics?.syncedLines ?? null, index: idx } : null;
+    scrollToLine(idx, glide);
+  }
+
+  // The current line stays centred, playing or paused, unless the listener is browsing. Moving
+  // on to a neighbouring line glides; anything else (opening the page, lyrics arriving, a seek,
+  // coming back to a window that was hidden) is placed at once, so the list never sweeps
+  // through the song.
   $effect(() => {
     const idx = activeIndex;
-    if (!followActive || browsing || idx < 0 || !listEl) return;
-    scrollToLine(idx);
+    const list = listEl;
+    const lines = lyrics?.syncedLines ?? null;
+    if (browsing || idx < 0 || !list) return;
+    const same = placed !== null && placed.list === list && placed.lines === lines;
+    if (same && placed!.index === idx) return;
+    place(idx, same && Math.abs(placed!.index - idx) === 1);
   });
 
   /**
-   * Ends browsing and returns to the current line, also while paused (the follow effect then
-   * stays still). Focus moves to that line, or the list, before this button goes away.
+   * Ends browsing and glides back to the current line. Focus moves to that line, or the list,
+   * before this button goes away.
    */
   function backToCurrent() {
     const line = activeIndex >= 0 ? listEl?.querySelector<HTMLElement>(`[data-line-index="${activeIndex}"]`) : null;
     ((canSeek && line) || listEl)?.focus({ preventScroll: true });
+    if (activeIndex >= 0) place(activeIndex, true);
     browsing = false;
-    // While following, the follow effect re-centres once browsing clears.
-    if (!followActive && activeIndex >= 0) scrollToLine(activeIndex);
   }
 </script>
 
@@ -103,7 +124,7 @@
   <header class="lyrics-head page-hero">
     <HeroWash art={heroArt} {mockMode} />
     {#if track}
-      <Cover cover={track.cover} seed={track.videoId} label={track.title} {mockMode} class="lyrics-head-cover" />
+      <Cover cover={headArt?.cover} seed={headArt?.seed ?? track.videoId} label={headArt?.label ?? track.title} {mockMode} class="lyrics-head-cover" />
     {/if}
     <div class="min-w-0 flex-1">
       <h1 id="lyrics-heading" class="lyrics-title">{t.lyrics.title}</h1>

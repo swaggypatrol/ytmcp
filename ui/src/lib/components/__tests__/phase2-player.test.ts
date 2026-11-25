@@ -106,11 +106,14 @@ describe("Player bar", () => {
     await fireEvent.click(like);
     expect(onToggleLike).toHaveBeenCalledTimes(1);
 
-    // While the write is in flight the same button stays, busy, and a second click sends nothing.
+    // While the write is in flight the same button stays, busy and marked pending. A second click
+    // is passed on too (it used to be swallowed): App turns it into the next request, so the
+    // heart ends where the last click left it.
     await view.rerender({ likePending: true });
     expect(like.getAttribute("aria-busy")).toBe("true");
+    expect(like.hasAttribute("data-pending")).toBe(true);
     await fireEvent.click(like);
-    expect(onToggleLike).toHaveBeenCalledTimes(1);
+    expect(onToggleLike).toHaveBeenCalledTimes(2);
   });
 
   it("opens the queue and marks it as the current page, not as a toggle, while it is open", async () => {
@@ -227,6 +230,20 @@ describe("Now Playing", () => {
     expect(page.textContent).not.toMatch(/Player page state|Waiting for|Codec|Audio mode|Quality|mp4a|\bauto\b/);
     expect(page.querySelector('input[type="range"]')).toBeNull();
     expect(screen.queryByTestId("np-playing-from")).toBeNull();
+  });
+
+  it("gives the title the room of two lines at every tier, so a track change never moves the stage", () => {
+    const title = "A very long synthetic title that wraps over more than two lines in the column";
+    render(NowPlayingView, { props: props({ ...base, player: { ...base.player, currentTrack: { ...base.player.currentTrack!, title } } }) });
+    const heading = screen.getByTestId("now-playing-title");
+    expect(heading.title).toBe(title);
+    expect(heading.textContent?.trim()).toBe(title);
+    const text = css("now-playing.css");
+    const rule = (selector: string) => [...text.matchAll(new RegExp(`(?:^|\\})\\s*${selector.replace(".", "\\.")} \\{([^}]*)\\}`, "g"))].map((m) => m[1]!);
+    expect(rule(".np-title")[0]).toMatch(/block-size: 2lh/);
+    expect(rule(".np-title-text")[0]).toMatch(/-webkit-line-clamp: 2/);
+    // No tier sets another fixed height or lifts the clamp; the type size is not shrunk to fit.
+    for (const body of rule(".np-title")) expect(body).not.toMatch(/block-size: (?!2lh)|(?<!line-)height:|line-clamp/);
   });
 
   it("says where the track plays from only when that is given", () => {
@@ -404,6 +421,7 @@ describe("Track menu", () => {
   function renderMenu(extra: Record<string, unknown> = {}) {
     const onClose = vi.fn();
     const onRequestPlaylists = vi.fn();
+    const onAddToPlaylist = vi.fn();
     const result = render(TrackActions, {
       props: {
         track,
@@ -424,13 +442,13 @@ describe("Track menu", () => {
         onEnqueue: vi.fn(),
         onSetLike: vi.fn(),
         onRequestPlaylists,
-        onAddToPlaylist: vi.fn(),
+        onAddToPlaylist,
         onOpenAlbum: vi.fn(),
         onOpenArtist: vi.fn(),
         ...extra,
       },
     });
-    return { ...result, onClose, onRequestPlaylists };
+    return { ...result, onClose, onRequestPlaylists, onAddToPlaylist };
   }
 
   it("is an overlay menu, not a modal: popover glass, no scrim, no modal dialog", () => {
@@ -462,16 +480,148 @@ describe("Track menu", () => {
     }
   });
 
-  it("closes on a press outside or a scroll outside, but not on a scroll inside it", async () => {
+  it("closes on a press outside or a scroll the listener made, but not on a scroll inside it", async () => {
     const { onClose } = renderMenu();
     const menu = screen.getByTestId("track-actions-menu");
     await fireEvent.pointerDown(menu.querySelector("button")!);
     menu.dispatchEvent(new Event("scroll"));
+    // A scroll nobody asked for (a smooth-scroll tail, a list clamping) leaves an unmoved menu open.
+    await fireEvent.scroll(document);
     expect(onClose).not.toHaveBeenCalled();
+    // The wheel, a scroll key or a touch outside the menu, then the scroll it makes: closed.
+    await fireEvent.wheel(document.body, { deltaY: 100 });
     await fireEvent.scroll(document);
     expect(onClose).toHaveBeenCalledTimes(1);
-    await fireEvent.pointerDown(document.body);
+    await fireEvent.keyDown(document.body, { key: "PageDown" });
+    await fireEvent.scroll(document);
     expect(onClose).toHaveBeenCalledTimes(2);
+    await fireEvent.touchMove(document.body);
+    await fireEvent.scroll(document);
+    expect(onClose).toHaveBeenCalledTimes(3);
+    // The wheel inside the menu (its playlist list) is the menu's own scroll.
+    await fireEvent.wheel(menu, { deltaY: 100 });
+    await fireEvent.scroll(document);
+    expect(onClose).toHaveBeenCalledTimes(3);
+    await fireEvent.pointerDown(document.body);
+    expect(onClose).toHaveBeenCalledTimes(4);
+  });
+
+  it("closes on a scroll that moved its trigger, so it never floats in the wrong place", async () => {
+    const opener = document.createElement("button");
+    let top = 200;
+    opener.getBoundingClientRect = () => ({ left: 1380, right: 1412, top, bottom: top + 32, width: 32, height: 32, x: 1380, y: top, toJSON: () => ({}) });
+    document.body.append(opener);
+    try {
+      await fireEvent.click(opener);
+      const { onClose } = renderMenu();
+      await fireEvent.scroll(document);
+      expect(onClose).not.toHaveBeenCalled();
+      // The page moved under the menu (a list update), with no input from the listener.
+      top = 260;
+      await fireEvent.scroll(document);
+      expect(onClose).toHaveBeenCalledTimes(1);
+      cleanup();
+
+      // The trigger's row left the page altogether.
+      top = 200;
+      await fireEvent.click(opener);
+      const gone = renderMenu();
+      opener.remove();
+      await fireEvent.scroll(document);
+      expect(gone.onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      opener.remove();
+    }
+  });
+
+  /** A scroll region holding a page title and a row whose actions button sits at `at.top`. */
+  function listWithOpener(at: { top: number }) {
+    const region = document.createElement("div");
+    region.className = "app-scroll";
+    const page = document.createElement("div");
+    page.className = "app-page";
+    const heading = document.createElement("h1");
+    heading.textContent = "Queue";
+    const row = document.createElement("div");
+    const opener = document.createElement("button");
+    opener.getBoundingClientRect = () =>
+      ({ left: 1380, right: 1412, top: at.top, bottom: at.top + 32, width: 32, height: 32, x: 1380, y: at.top, toJSON: () => ({}) }) as DOMRect;
+    row.append(opener);
+    page.append(heading, row);
+    region.append(page);
+    document.body.append(region);
+    return { region, heading, row, opener };
+  }
+  const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+
+  it("closes when a list update moves its row or takes it away, with no scroll at all", async () => {
+    const at = { top: 200 };
+    const { region, heading, row, opener } = listWithOpener(at);
+    try {
+      opener.focus();
+      await fireEvent.click(opener);
+      const { onClose } = renderMenu();
+      // An update that leaves the row where it was keeps the menu.
+      row.style.transform = "translateY(0px)";
+      await nextFrame();
+      await nextFrame();
+      expect(onClose).not.toHaveBeenCalled();
+      // An entry before it leaves: the row moves up by a row, and the menu closes.
+      at.top = 144;
+      row.style.transform = "translateY(-56px)";
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      cleanup();
+
+      // The row itself leaves: the menu closes, and focus goes to the page title, not the body.
+      at.top = 200;
+      opener.focus();
+      await fireEvent.click(opener);
+      const gone = renderMenu();
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("action-play")));
+      row.remove();
+      await waitFor(() => expect(gone.onClose).toHaveBeenCalledTimes(1));
+      await gone.rerender({ active: false });
+      await waitFor(() => expect(document.activeElement).toBe(heading));
+    } finally {
+      region.remove();
+    }
+  });
+
+  it("opens on a press made while the page still glides, and moves with its row until the glide ends", async () => {
+    const at = { top: 200 };
+    const { region, opener } = listWithOpener(at);
+    try {
+      // A wheel notch's glide under way when the row's button is pressed.
+      await fireEvent.wheel(region, { deltaY: 100 });
+      await fireEvent.scroll(region);
+      await fireEvent.click(opener);
+      const { onClose } = renderMenu();
+      const menu = screen.getByTestId("track-actions-menu");
+      const top = parseFloat(menu.style.top);
+      // The glide carries the row on: the menu goes with it instead of closing.
+      at.top = 160;
+      await fireEvent.scroll(region);
+      expect(onClose).not.toHaveBeenCalled();
+      expect(parseFloat(menu.style.top)).toBe(top - 40);
+      // The glide ended: from now on a move the listener did not make closes the menu as usual.
+      await fireEvent(region, new Event("scrollend"));
+      await fireEvent.scroll(region);
+      expect(onClose).not.toHaveBeenCalled();
+      at.top = 104;
+      await fireEvent.scroll(region);
+      expect(onClose).toHaveBeenCalledTimes(1);
+      cleanup();
+
+      // Mid-glide too, a wheel the listener makes once the menu is open closes it.
+      await fireEvent.scroll(region);
+      await fireEvent.click(opener);
+      const again = renderMenu();
+      await fireEvent.wheel(region, { deltaY: 100 });
+      await fireEvent.scroll(region);
+      expect(again.onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      region.remove();
+    }
   });
 
   it("goes back to the control that opened it, and a press on that control closes it without reopening", async () => {
@@ -625,13 +775,14 @@ describe("Track menu", () => {
     }
   });
 
-  it("opens straight on the playlist chooser when asked, and asks for the playlists", async () => {
-    const { onRequestPlaylists } = renderMenu({ startAt: "pick" });
+  it("opens straight on the playlist chooser when asked, asks for the playlists, and adds at the pick", async () => {
+    const { onRequestPlaylists, onAddToPlaylist } = renderMenu({ startAt: "pick" });
     expect(screen.queryByTestId("action-play")).toBeNull();
     expect(screen.getByTestId("pick-playlist-pl-a")).toBeTruthy();
     expect(onRequestPlaylists).toHaveBeenCalledTimes(1);
     await fireEvent.click(screen.getByTestId("pick-playlist-pl-b"));
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("confirm-add-to-playlist")));
+    expect(onAddToPlaylist).toHaveBeenCalledTimes(1);
+    expect(onAddToPlaylist.mock.calls[0]![0]).toMatchObject({ playlistId: "pl-b" });
   });
 
   it.each([["en", en], ["zh-CN", zhCN]] as const)(

@@ -14,7 +14,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // page-side helpers (run in the UI's main world through executeJavaScript)
 // ---------------------------------------------------------------------------------------------
 
-const PAGE_HELPERS = `(() => {
+export const PAGE_HELPERS = `(() => {
   const $ = (id) => document.querySelector('[data-testid="' + id + '"]');
   const main = () => $("main-scroll-region");
   const list = () => $("virtual-track-list");
@@ -196,12 +196,12 @@ export async function launchApp() {
 }
 
 // Errors name the script that failed: executeJavaScript alone only says that one did.
-const js = (win, code) =>
+export const js = (win, code) =>
   win.webContents.executeJavaScript(code).catch((err) => {
     throw new Error(`${err.message} (in: ${code.slice(0, 160)})`);
   });
 
-async function until(win, expression, timeoutMs = 8000) {
+export async function until(win, expression, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await js(win, `Boolean(${expression})`)) return;
@@ -210,7 +210,7 @@ async function until(win, expression, timeoutMs = 8000) {
   throw new Error(`timed out waiting for ${expression}`);
 }
 
-async function navigate(win, view) {
+export async function navigate(win, view) {
   await js(win, `__glassProbe.click("nav-${view}")`);
   // One shots run timed out here once (not reproduced); a second click is harmless.
   await until(win, `__glassProbe.has("view-${view}")`, 4000).catch(() => js(win, `__glassProbe.click("nav-${view}")`));
@@ -257,7 +257,7 @@ const SIDEBAR_SETTLE = `new Promise((resolve) => {
 })`;
 
 /** Changes appearance through the real settings page (theme, reduce transparency, reduce motion). */
-async function setAppearance(win, { theme, reduceTransparency, reduceMotion }) {
+export async function setAppearance(win, { theme, reduceTransparency, reduceMotion }) {
   await navigate(win, "settings");
   await until(win, '__glassProbe.has("setting-theme-select")');
   if (theme) await js(win, `__glassProbe.select("setting-theme-select", ${JSON.stringify(theme)})`);
@@ -268,7 +268,7 @@ async function setAppearance(win, { theme, reduceTransparency, reduceMotion }) {
 }
 
 /** Opens the first mock playlist with the 10,000-row fixture and scrolls the page `listScrollTop` px into the list. */
-async function openLongList(win, listScrollTop = 2000) {
+export async function openLongList(win, listScrollTop = 2000) {
   // The mock app's Settings > Advanced opens the first playlist and fills it with 10,000 songs.
   await navigate(win, "settings");
   await until(win, '__glassProbe.has("btn-load-10k-fixture")');
@@ -296,7 +296,7 @@ async function closeOverlay(win) {
 }
 
 /** Shows Settings with its Diagnostics button scrolled into view (the entry moved there from the bar). */
-async function showDiagnosticsEntry(win) {
+export async function showDiagnosticsEntry(win) {
   await navigate(win, "settings");
   await until(win, '__glassProbe.has("settings-open-diagnostics")');
   await js(win, `document.querySelector('[data-testid="settings-open-diagnostics"]').scrollIntoView({ block: "center" }); true`);
@@ -310,7 +310,7 @@ async function openDiagnostics(win) {
   await until(win, '__glassProbe.has("accessible-dialog")');
 }
 
-async function emulateMedia(win, features) {
+export async function emulateMedia(win, features) {
   if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach("1.3");
   await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", { features });
   await sleep(400);
@@ -597,7 +597,7 @@ const BAR_CROP = { x: 250, y: 560, width: 1030, height: 240 };
 const TOAST_CROP = { x: 480, y: 600, width: 600, height: 120 };
 
 /** Switches the mock app's test scenario through the real Settings control. */
-async function setScenario(win, id) {
+export async function setScenario(win, id) {
   await navigate(win, "settings");
   await until(win, '__glassProbe.has("mock-scenario-select")');
   await js(win, `__glassProbe.select("mock-scenario-select", ${JSON.stringify(id)})`);
@@ -989,6 +989,69 @@ export async function runTiers(outDir, only = null) {
   console.log(JSON.stringify({ sizes }));
 }
 
+// Logs every wheel event as the page receives it, read on window at bubble so defaultPrevented
+// shows what the volume control did with it.
+const WHEEL_LOG = `(() => {
+  window.__wheelLog = [];
+  addEventListener("wheel", (e) => window.__wheelLog.push({
+    deltaY: e.deltaY, wheelDeltaY: e.wheelDeltaY, deltaMode: e.deltaMode, dpr: devicePixelRatio,
+    ctrl: e.ctrlKey, defaultPrevented: e.defaultPrevented, volume: Number(document.querySelector('input[data-testid="player-volume-slider"]')?.value ?? NaN), overVolume: !!e.target.closest?.('[data-testid="player-volume-area"]'),
+  }), { passive: true });
+  return true;
+})()`;
+
+/**
+ * The volume wheel with synthetic events (sendInputEvent): three notches down, one up, Ctrl+wheel,
+ * a touchpad-like burst, a notch up while muted, and a notch outside the control. Each case waits
+ * past the wheel's 500 ms gesture reset first. Synthetic events say nothing about what a real
+ * notch delivers on this machine (tools/probes/input/run-wheel-log.mjs records that).
+ */
+async function wheelChecks(win, { rect, volume, scrolls }) {
+  const wc = win.webContents;
+  await js(win, WHEEL_LOG);
+  const r = await rect("player-volume-area");
+  const x = Math.round(r.x + r.w * 0.8);
+  const y = Math.round(r.y + r.h / 2);
+  const muted = () => js(win, `document.querySelector('[data-testid="btn-mute"]').getAttribute("aria-label")`);
+  const wheel = async (events, at = { x, y }, gap = 16) => {
+    await js(win, "window.__wheelLog.length = 0, true");
+    wc.sendInputEvent({ type: "mouseMove", x: at.x, y: at.y });
+    for (const e of events) {
+      wc.sendInputEvent({ type: "mouseWheel", x: at.x, y: at.y, deltaX: 0, canScroll: true, ...e });
+      await sleep(gap);
+    }
+    await sleep(700);
+    return js(win, "window.__wheelLog.slice()");
+  };
+  const step = async (name, events, opts = {}) => {
+    const before = { volume: await volume(), scroll: await scrolls(), zoom: wc.getZoomFactor(), mute: await muted() };
+    const log = await wheel(events, opts.at, opts.gap);
+    const after = { volume: await volume(), scroll: await scrolls(), zoom: wc.getZoomFactor(), mute: await muted() };
+    if (after.zoom !== before.zoom) wc.setZoomFactor(before.zoom);
+    return { name, before, after, volumeChange: after.volume - before.volume, scrolled: after.scroll.main !== before.scroll.main, events: log };
+  };
+  // Electron's mouseWheel delta is the scroll offset (negative scrolls down); the page's deltaY is the opposite.
+  const notchDown = { deltaY: -100, wheelTicksY: -1 };
+  const notchUp = { deltaY: 100, wheelTicksY: 1 };
+  const out = { devicePixelRatio: await js(win, "devicePixelRatio"), zoomFactor: wc.getZoomFactor(), cases: [] };
+  out.cases.push(await step("three notches down", [notchDown, notchDown, notchDown], { gap: 90 }));
+  out.cases.push(await step("one notch up", [notchUp]));
+  out.cases.push(await step("ctrl+wheel up", [{ ...notchUp, modifiers: ["control"] }]));
+  out.cases.push(await step("touchpad burst down (20 x 4 px, precise)", Array.from({ length: 20 }, () => ({ deltaY: -4, wheelTicksY: -4 / 120, hasPreciseScrollingDeltas: true })), { gap: 12 }));
+  await js(win, '__glassProbe.click("btn-mute")');
+  await sleep(400);
+  out.cases.push(await step("one notch up while muted", [notchUp]));
+  // The visible part of the page (the list's own box starts far above the window when scrolled).
+  const page = await rect("main-scroll-region");
+  out.cases.push(await step("one notch down over the list", [notchDown], { at: { x: Math.round(page.x + page.w / 2), y: Math.round(page.y + page.h / 2) } }));
+  // The slider value logged with each event is what the previous ones left (Svelte flushes later).
+  for (const c of out.cases) {
+    const vols = [...c.events.map((e) => e.volume), c.after.volume];
+    c.largestStepBetweenEvents = Math.max(0, ...vols.slice(1).map((v, i) => Math.abs(v - vols[i])));
+  }
+  return out;
+}
+
 /**
  * Real-input checks of the listening-flow UI in the mock app: the mouse wheel over the volume
  * control (a real wheel event, so a passive listener would show), closing lyrics with Ctrl+L back
@@ -1014,18 +1077,7 @@ export async function runFlow(outFile) {
 
   // 1. Wheel over the volume control on a scrolled list page.
   await openLongList(win, 2000);
-  const vol0 = await volume();
-  const s0 = await scrolls();
-  const r = await rect("player-volume-area");
-  const x = Math.round(r.x + r.w * 0.8);
-  const y = Math.round(r.y + r.h / 2);
-  wc.sendInputEvent({ type: "mouseMove", x, y });
-  for (let i = 0; i < 3; i++) {
-    wc.sendInputEvent({ type: "mouseWheel", x, y, deltaX: 0, deltaY: -100, wheelTicksY: -1, canScroll: true });
-    await sleep(90);
-  }
-  await sleep(500);
-  report.volumeWheel = { volumeBefore: vol0, volumeAfter: await volume(), scrollBefore: s0, scrollAfter: await scrolls() };
+  report.volumeWheel = await wheelChecks(win, { rect, volume, scrolls });
 
   // 2. Ctrl+L opens lyrics, Ctrl+L again comes back to the same scroll position.
   await js(win, `__glassProbe.scrollList(3000)`);

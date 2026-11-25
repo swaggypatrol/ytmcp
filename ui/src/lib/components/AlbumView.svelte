@@ -9,6 +9,8 @@
   interface Props {
     albumId: string;
     album: AlbumDetail | null;
+    /** The album's title as the page it was opened from named it, shown until its own page loads. */
+    knownTitle?: string | null;
     view: PageView;
     tracks: readonly Track[];
     currentVideoId: string | null;
@@ -26,6 +28,7 @@
   let {
     albumId,
     album,
+    knownTitle = null,
     view,
     tracks,
     currentVideoId,
@@ -46,7 +49,7 @@
 
 <TrackCollectionView
   name="album"
-  title={album?.title ?? t.album.title}
+  title={album?.title ?? knownTitle ?? t.album.title}
   cover={album?.cover}
   coverSeed={albumId}
   {view}

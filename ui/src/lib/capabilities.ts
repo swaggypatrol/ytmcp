@@ -1,7 +1,7 @@
 import type { AuthStatusInfo, CapabilitySupport, PlaybackStatus, PlayerConnectionState } from "@ytmcp/protocol";
 import { t } from "./i18n/index.svelte.js";
 
-/** Whether a control may be used, and the reason shown when it is disabled. */
+/** Whether a control may be used, and the reason shown when it is disabled (or a note on an enabled one). */
 export interface Gate {
   readonly enabled: boolean;
   readonly reason: string | null;
@@ -27,17 +27,22 @@ export function commandGate(
 /**
  * The play/pause toggle. Pausing follows `commandGate`; a toggle that would start playback
  * (core resolves it to play unless playing or buffering) also needs a loaded track, because
- * core rejects a play with nothing loaded.
+ * core rejects a play with nothing loaded. While core is `preparing` (the page has not reported
+ * yet, or the last track is being restored) it holds such a play until the track is back, so
+ * the play stays enabled and its title says so.
  */
 export function playPauseGate(
   support: CapabilitySupport | undefined,
   connection: PlayerConnectionState | null | undefined,
   playback: PlaybackStatus | null | undefined,
-  hasTrack: boolean
+  hasTrack: boolean,
+  preparing = false
 ): Gate {
   const gate = commandGate(support, connection);
   const wouldPlay = playback !== "playing" && playback !== "buffering";
-  if (gate.enabled && wouldPlay && !hasTrack) return { enabled: false, reason: t.player.noTrackToPlay };
+  if (gate.enabled && wouldPlay && !hasTrack) {
+    return preparing ? { enabled: true, reason: t.player.preparingTrack } : { enabled: false, reason: t.player.noTrackToPlay };
+  }
   return gate;
 }
 

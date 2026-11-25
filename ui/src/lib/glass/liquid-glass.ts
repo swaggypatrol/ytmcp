@@ -646,12 +646,24 @@ export function glass(el: HTMLElement): (() => void) | void {
   return () => {
     const surface = surfaces.get(el);
     if (!surface) return;
-    resizeObserver!.unobserve(el);
-    surface.listeners.abort();
-    surface.filter.remove();
-    el.style.removeProperty("--lg-backdrop");
-    el.style.removeProperty("--lg-light-shift");
-    delete el.dataset.lgLens;
-    surfaces.delete(el);
+    const release = () => {
+      resizeObserver!.unobserve(el);
+      surface.listeners.abort();
+      surface.filter.remove();
+      el.style.removeProperty("--lg-backdrop");
+      el.style.removeProperty("--lg-light-shift");
+      delete el.dataset.lgLens;
+      surfaces.delete(el);
+    };
+    // Svelte removes a component's nodes before its attachments clean up, so a surface still in
+    // the document is one its owner keeps on screen (a dialog finishing its exit after its page
+    // went): it keeps its lens until it leaves the document.
+    if (!el.isConnected) return release();
+    const watch = new MutationObserver(() => {
+      if (el.isConnected) return;
+      watch.disconnect();
+      release();
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
   };
 }

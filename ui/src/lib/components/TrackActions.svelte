@@ -27,6 +27,10 @@
   const MENU_PLAN_HEIGHT = 360;
   /** A trigger counts only when the menu opens this soon after it. */
   const TRIGGER_WINDOW_MS = 1000;
+  /** A scroll this soon after the listener's wheel, touch or scroll key is one they made. */
+  const USER_SCROLL_WINDOW_MS = 300;
+  /** Keys that scroll the page when focus is outside the menu. */
+  const SCROLL_KEYS = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "]);
 
   const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
 
@@ -86,10 +90,21 @@
     }
   }
 
+  // Scrollers still moving (a wheel notch's glide, a smooth scroll) until their scroll ends.
+  const gliding = new WeakSet<EventTarget>();
+
   if (typeof document !== "undefined") {
     for (const type of ["click", "contextmenu", "keydown"]) document.addEventListener(type, rememberTrigger, true);
     window.addEventListener("click", swallowClick, true);
     window.addEventListener("pointerdown", () => (swallowClickOn = null), true);
+    document.addEventListener("scroll", (event) => event.target && gliding.add(event.target), { capture: true, passive: true });
+    document.addEventListener("scrollend", (event) => event.target && gliding.delete(event.target), { capture: true, passive: true });
+  }
+
+  /** The trigger's scroller that is still gliding, if any: a press made mid-glide rides on it. */
+  function glidingScroller(source: Element): Element | null {
+    for (let el = source.parentElement; el; el = el.parentElement) if (gliding.has(el)) return el;
+    return null;
   }
 
   /**
@@ -99,14 +114,21 @@
    * right-click opens on whatever sits under the pointer (a row's play button, the page), so its
    * opener is the control focused at the time and pressing it afterwards works as usual.
    */
-  function currentTrigger(): { opener: HTMLElement | null; point: { x: number; y: number } | null; toggle: boolean } {
+  function currentTrigger(): {
+    opener: HTMLElement | null;
+    point: { x: number; y: number } | null;
+    toggle: boolean;
+    /** What the menu stands by on the page: the opener, or what a right-click was on. */
+    source: Element | null;
+  } {
     const recent = lastTrigger && performance.now() - lastTrigger.at < TRIGGER_WINDOW_MS ? lastTrigger : null;
     const focused = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     if (recent?.type === "click") {
       const clicked = recent.target.closest<HTMLElement>('button, a[href], [tabindex]:not([tabindex="-1"])');
-      if (clicked?.isConnected) return { opener: clicked, point: null, toggle: true };
+      if (clicked?.isConnected) return { opener: clicked, point: null, toggle: true, source: clicked };
     }
-    return { opener: focused, point: recent?.point ?? null, toggle: false };
+    const point = recent?.point ?? null;
+    return { opener: focused, point, toggle: false, source: point ? recent!.target : focused };
   }
 
   /** The content area: right of the sidebar, above the player bar, inset from both. */
@@ -153,7 +175,7 @@
     playlistsMoreError?: QueryError | null;
     /** "pick" opens straight on the playlist chooser (Now playing's Add to playlist). */
     startAt?: "menu" | "pick";
-    /** Escape, a press outside, a scroll or a resize asks to close. */
+    /** Escape, a press outside, a scroll the listener made, a scroll or list update that moved the trigger or took it away, or a resize asks to close. */
     onClose: () => void;
     onPlay: () => void;
     onEnqueue: (position: EnqueuePosition) => void;
@@ -196,8 +218,7 @@
     onOpenArtist,
   }: Props = $props();
 
-  let step = $state<"menu" | "pick" | "confirm">("menu");
-  let chosen = $state<PlaylistSummary | null>(null);
+  let step = $state<"menu" | "pick">("menu");
   let playlistFilter = $state("");
 
   const albumId = $derived(track.album?.id ?? track.album?.browseId ?? null);
@@ -217,6 +238,8 @@
   let trigger: ReturnType<typeof currentTrigger>;
   let bounds: Box;
   let anchor: Box;
+  /** Where the trigger's element was when the menu opened, to tell whether a scroll or an update moved it. */
+  let sourceAt: Box | null = null;
   let width = $state(MENU_WIDTH);
   let menuEl = $state<HTMLDivElement | null>(null);
   let placement = $state<MenuPlacement | null>(null);
@@ -234,6 +257,49 @@
           bottom: bounds.top + 56,
         });
     width = Math.min(MENU_WIDTH, bounds.right - bounds.left);
+    sourceAt = trigger.source?.isConnected ? trigger.source.getBoundingClientRect() : null;
+    riding = trigger.source && sourceAt ? glidingScroller(trigger.source) : null;
+  }
+
+  /**
+   * The scroller still gliding from the listener's last wheel notch when the menu opened. The
+   * press that opened the menu is their newest intent, so until that glide ends the menu moves
+   * with its trigger instead of closing; a glide cannot be stopped from script in Chromium (a
+   * programmatic scroll only nudges the running animation). Input after the open still closes.
+   */
+  let riding: Element | null = null;
+
+  /** Moves the menu (and its anchor) by as much as its trigger moved, on the side it opened on, and takes the new spot as home. */
+  function followSource() {
+    const source = trigger?.source;
+    if (!source?.isConnected || !sourceAt || !placement) return;
+    const now = source.getBoundingClientRect();
+    const dx = now.left - sourceAt.left;
+    const dy = now.top - sourceAt.top;
+    sourceAt = now;
+    if (dx === 0 && dy === 0) return;
+    anchor = { left: anchor.left + dx, right: anchor.right + dx, top: anchor.top + dy, bottom: anchor.bottom + dy };
+    placement = {
+      ...placement,
+      left: placement.left + dx,
+      top: placement.top != null ? placement.top + dy : null,
+      bottom: placement.bottom != null ? placement.bottom - dy : null,
+    };
+  }
+
+  /** After a scroll or a list update: follow a glide the menu opened on, else close if the trigger moved or left. */
+  function checkSource() {
+    if (riding && trigger.source?.isConnected) followSource();
+    else if (sourceMoved()) onClose();
+  }
+
+  /** The menu's trigger moved or left the page since it opened, so the menu no longer stands by it. */
+  function sourceMoved(): boolean {
+    const source = trigger?.source;
+    if (!source || !sourceAt) return false;
+    if (!source.isConnected) return true;
+    const now = source.getBoundingClientRect();
+    return Math.abs(now.top - sourceAt.top) > 1 || Math.abs(now.left - sourceAt.left) > 1;
   }
 
   const FOCUS_FIRST = 'input[type="search"], .menu-item:not(:disabled), .btn-primary:not(:disabled)';
@@ -245,7 +311,7 @@
     placement = placeMenu(anchor, { width, height: Math.max(node.offsetHeight, MENU_PLAN_HEIGHT) }, bounds, window.innerHeight);
   }
 
-  /** Moves focus to the step's first useful control (the filter, the first item, the confirm button). */
+  /** Moves focus to the step's first useful control (the filter or the first item). */
   async function focusStep(reposition = false) {
     await tick();
     if (!active || !menuEl) return;
@@ -289,7 +355,6 @@
     untrack(() => {
       prepareMenu();
       step = startAt;
-      chosen = null;
       playlistFilter = "";
       presence.show();
       if (step === "pick") onRequestPlaylists();
@@ -308,20 +373,73 @@
       },
       { capture: true, signal }
     );
-    // A scroll anywhere but inside the menu (the playlist list scrolls) moves its trigger away.
+    // A scroll outside the menu (the playlist list inside it scrolls) closes it when the
+    // listener made it (wheel, touch, scroll keys; a press on a scrollbar is a press outside) or
+    // when it moved the trigger. Scrolls nobody asked for (a smooth-scroll tail, a shelf
+    // snapping, a list clamping after an update) leave a menu that still stands by its trigger.
+    let userScrollAt = Number.NEGATIVE_INFINITY;
+    // The glide the menu opened on ends at its scrollend (or, should none come, within a second).
+    const ride = untrack(() => riding);
+    if (ride) {
+      const settle = () => (riding = null);
+      ride.addEventListener("scrollend", settle, { once: true, signal });
+      const timer = setTimeout(settle, 1000);
+      signal.addEventListener("abort", () => clearTimeout(timer));
+    }
+    const outside = (event: Event) => !(event.target instanceof Node && menuEl?.contains(event.target));
+    const noteUserScroll = (event: Event) => {
+      if (outside(event)) userScrollAt = performance.now();
+    };
+    document.addEventListener("wheel", noteUserScroll, { capture: true, passive: true, signal });
+    document.addEventListener("touchmove", noteUserScroll, { capture: true, passive: true, signal });
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (SCROLL_KEYS.has(event.key)) noteUserScroll(event);
+      },
+      { capture: true, signal }
+    );
     document.addEventListener(
       "scroll",
       (event) => {
-        if (event.target instanceof Node && menuEl?.contains(event.target)) return;
-        onClose();
+        if (!outside(event)) return;
+        if (performance.now() - userScrollAt < USER_SCROLL_WINDOW_MS) {
+          userScrollAt = Number.NEGATIVE_INFINITY;
+          onClose();
+        } else checkSource();
       },
       { capture: true, signal }
     );
     window.addEventListener("resize", () => onClose(), { signal });
+    // A list update can move the trigger's row or take it away with no scroll at all (an entry
+    // before it leaves, the row itself leaves). Rows come and go and are placed by their inline
+    // style, so the trigger's scroll region is watched for those changes; each batch checks the
+    // trigger once, in the next frame before it is painted. Nothing runs while the page is still.
+    const source = untrack(() => trigger.source);
+    if (source && sourceAt) {
+      let frame = 0;
+      const watch = new MutationObserver((records) => {
+        if (frame || records.every((record) => menuEl?.contains(record.target))) return;
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          checkSource();
+        });
+      });
+      watch.observe(source.closest(".app-scroll") ?? document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["style", "class"],
+      });
+      signal.addEventListener("abort", () => {
+        watch.disconnect();
+        cancelAnimationFrame(frame);
+      });
+    }
     return () => controller.abort();
   });
 
-  function selectStep(next: "menu" | "pick" | "confirm") {
+  function selectStep(next: "menu" | "pick") {
     step = next;
     void focusStep();
   }
@@ -386,7 +504,14 @@
   filled = false
 )}
   <li>
-    <button type="button" class="menu-item lg-press" disabled={!gate.enabled || pending} {onclick} data-testid={testId}>
+    <!-- A pending like or add waits only on the two write items; playing, queueing and navigating stay open. -->
+    <button
+      type="button"
+      class="menu-item lg-press"
+      disabled={!gate.enabled || (pending && (gate === likeGate || gate === playlistGate))}
+      {onclick}
+      data-testid={testId}
+    >
       <Icon name={icon} {filled} />
       <span class="min-w-0 flex-1 flex flex-col gap-0.5">
         <span class="truncate">{label}</span>
@@ -507,13 +632,12 @@
         <ul class="flex flex-col gap-1 m-0 p-0 list-none max-h-72 overflow-y-auto">
           {#each filteredPlaylists as pl (pl.playlistId)}
             <li>
+              <!-- The pick adds at once (the toast offers Undo when it can); no confirmation step. -->
               <button
                 type="button"
                 class="menu-item lg-press justify-between"
-                onclick={() => {
-                  chosen = pl;
-                  selectStep("confirm");
-                }}
+                disabled={pending || !playlistGate.enabled}
+                onclick={() => onAddToPlaylist(pl)}
                 data-testid={`pick-playlist-${pl.playlistId}`}
               >
                 <span class="truncate">{pl.title}</span>
@@ -561,23 +685,6 @@
         </div>
       {/if}
     </PageState>
-  {:else if chosen}
-    <h3 class="type-sm font-semibold m-0">{t.track.confirmAddTitle}</h3>
-    <p class="type-sm m-0">
-      {t.track.confirmAdd.replace("{track}", track.title).replace("{playlist}", chosen.title)}
-    </p>
-    <div class="flex justify-end gap-2">
-      <button type="button" class="btn-secondary" onclick={() => selectStep("pick")}>{t.common.cancel}</button>
-      <button
-        type="button"
-        class="btn-primary"
-        disabled={pending || !playlistGate.enabled}
-        onclick={() => onAddToPlaylist(chosen!)}
-        data-testid="confirm-add-to-playlist"
-      >
-        {t.common.confirm}
-      </button>
-    </div>
   {/if}
 </div>
 </div>

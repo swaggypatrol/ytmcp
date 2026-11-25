@@ -2,8 +2,8 @@
 
 /* Reduced motion: everything that moves or animates becomes instant. A component that keeps a
    colour or opacity change re-enables just those properties, at most --duration-fast, in a
-   more specific rule of its own (controls.css, glass.css); translation and scaling never come
-   back. */
+   rule of its own marked !important (specificity alone loses to the rule below); translation
+   and scaling never come back. */
 :root[data-reduce-motion="true"] *,
 :root[data-reduce-motion="true"] *::before,
 :root[data-reduce-motion="true"] *::after {

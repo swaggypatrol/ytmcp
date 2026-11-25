@@ -302,7 +302,7 @@ export type CatalogResponsePayload =
   | (ArtistDetail & {
       resultType: "artistDetail";
     })
-  | (PagedResult & {
+  | (LikedSongsPage & {
       resultType: "likedSongs";
     })
   | (RecentHistoryResult & {
@@ -330,6 +330,7 @@ export type MessageKind =
   | "ui.agentActivity"
   | "ui.settingsUpdate"
   | "ui.momentSettings"
+  | "ui.recentSearches"
   | "ui.openPlayerWindow"
   | "ui.logout"
   | "ui.clearCache"
@@ -343,6 +344,7 @@ export type MessageKind =
   | "core.agentActivity"
   | "core.settingsUpdated"
   | "core.momentSettings"
+  | "core.recentSearches"
   | "core.error"
   | "core.pong"
   | "host.hello"
@@ -390,7 +392,7 @@ export type MomentDesktopRequest =
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "MutationKind".
  */
-export type MutationKind = "setLike" | "addToPlaylist";
+export type MutationKind = "setLike" | "addToPlaylist" | "undoAddToPlaylist";
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "MutationOutcome".
@@ -401,6 +403,26 @@ export type MutationOutcome = "confirmed" | "rejected" | "indeterminate";
  * via the `definition` "EnqueuePosition".
  */
 export type EnqueuePosition = "next" | "last";
+/**
+ * Main UI -> Core: the Search page's recent searches for the signed-in account. The core
+ * picks the account from its own session; every action replies with the resulting list.
+ * `record` is sent only for a query the listener ran (submitted, picked from the list, or
+ * acted on a result of), never for text still being typed.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "RecentSearchesRequest".
+ */
+export type RecentSearchesRequest =
+  | {
+      action: "list";
+    }
+  | {
+      action: "record";
+      query: string;
+    }
+  | {
+      action: "clear";
+    };
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "StateDelta".
@@ -505,6 +527,8 @@ export interface ProtocolSchemaRoot {
   outputGateResult: OutputGateResultPayload;
   playerCommand: PlayerCommandPayload;
   queryError: QueryError;
+  recentSearchesRequest: RecentSearchesRequest;
+  recentSearchesSnapshot: RecentSearchesSnapshot;
   resolveAsset: ResolveAssetPayload;
   sessionMaterial: SessionMaterialPayload;
   stateDelta: StateDelta;
@@ -785,6 +809,13 @@ export interface PlayerObservedState {
   muted: boolean;
   playback: PlaybackStatus;
   playbackContext?: PlaybackContext | null;
+  /**
+   * The core is still finding out what this player can play: the page has not reported
+   * playback since its bridge became ready, the saved session or a launch restore is still
+   * pending, or the restore (with a play it carries) is running. A play or a toggle that
+   * would start playback is held meanwhile instead of refused. Absent means false.
+   */
+  preparing?: boolean;
   qualityLabel?: string | null;
   repeat?: RepeatMode | null;
   shuffle?: boolean | null;
@@ -1182,6 +1213,46 @@ export interface ArtistDetail {
   topSongs?: Track[];
 }
 /**
+ * A page of the account's liked songs. `playback` is present only when every row on the page
+ * carried a native play endpoint, all in the same playlist, with no index repeated; without
+ * it the page offers single tracks only.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "LikedSongsPage".
+ */
+export interface LikedSongsPage {
+  accountScope: AccountScope;
+  fetchedAtMs: number;
+  freshness: Freshness;
+  items: Track[];
+  nextCursor?: string | null;
+  playback?: CollectionPlayback | null;
+  providerVersion: string;
+}
+/**
+ * The native playback context of a page of collection rows, read from each row's own play
+ * button: the playlist the provider plays them in and, aligned 1:1 with the page's items, each
+ * row's watch index (never the row number) and entry id.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "CollectionPlayback".
+ */
+export interface CollectionPlayback {
+  entries: CollectionPlaybackEntry[];
+  playlistId: PlaylistId;
+}
+/**
+ * One row of a `CollectionPlayback`, as `playCollection` takes it (`startIndex`, and
+ * `playlistEntryId` when the provider named the occurrence).
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "CollectionPlaybackEntry".
+ */
+export interface CollectionPlaybackEntry {
+  playlistEntryId?: string | null;
+  startIndex: number;
+}
+/**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
  * via the `definition` "RecentHistoryResult".
  */
@@ -1431,6 +1502,10 @@ export interface MutationRequest {
   kind: MutationKind;
   liked?: boolean | null;
   playlistId?: PlaylistId | null;
+  /**
+   * `undoAddToPlaylist` only: the token of the addition to take back.
+   */
+  undoToken?: string | null;
   videoId: VideoId;
 }
 /**
@@ -1438,9 +1513,20 @@ export interface MutationRequest {
  * via the `definition` "MutationResult".
  */
 export interface MutationResult {
+  /**
+   * `undoAddToPlaylist` only, with a `rejected` outcome: a fresh read showed the entry the
+   * addition created no longer in the playlist, so nothing was sent.
+   */
+  alreadyRemoved?: boolean;
   error?: QueryError | null;
   kind: MutationKind;
   outcome: MutationOutcome;
+  /**
+   * A confirmed `addToPlaylist` whose provider reply named the one entry it created: an
+   * opaque, single-use token for `undoAddToPlaylist`, valid for a few minutes in this account
+   * session.
+   */
+  undoToken?: string | null;
 }
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
@@ -1508,6 +1594,26 @@ export interface PlaybackRef {
   queueEntryId?: QueueEntryId | null;
   startIndex?: number | null;
   videoId: VideoId;
+}
+/**
+ * Core -> Main UI: the account's recent searches after the requested action, newest first,
+ * at most `MAX_RECENT_SEARCHES`.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "RecentSearchesSnapshot".
+ */
+export interface RecentSearchesSnapshot {
+  items: RecentSearch[];
+}
+/**
+ * One recorded search: the query as the listener typed it (trimmed) and when it was run.
+ *
+ * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema
+ * via the `definition` "RecentSearch".
+ */
+export interface RecentSearch {
+  query: string;
+  recordedAtMs: number;
 }
 /**
  * This interface was referenced by `ProtocolSchemaRoot`'s JSON-Schema

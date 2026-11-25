@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use ytm_core::ports::{BoxFuture, OfficialLyrics};
 use ytm_protocol::{
-    AlbumDetail, AlbumId, ArtistDetail, ArtistId, BrowseId, CoverRef, PlaybackRef, PlaylistId,
-    PlaylistSummary, QueryError, QueryErrorCode, Track, VideoId,
+    AlbumDetail, AlbumId, ArtistDetail, ArtistId, BrowseId, CollectionPlayback, CoverRef,
+    PlaybackRef, PlaylistId, PlaylistSummary, QueryError, QueryErrorCode, Track, VideoId,
 };
 use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::{AuthToken, BrowserToken};
@@ -43,6 +43,7 @@ mod discovery;
 mod extended_media;
 mod library;
 mod music;
+mod playlist_playback;
 mod typed_search;
 pub(super) use discovery::scoped_mood_category_id;
 pub use discovery::{
@@ -79,6 +80,8 @@ pub struct BackendPlaylistPage {
     pub cover: Option<CoverRef>,
     pub tracks: Vec<Track>,
     pub next_continuation: Option<String>,
+    /// The page's native playback context, aligned with `tracks`; see `CollectionPlayback`.
+    pub playback: Option<CollectionPlayback>,
 }
 
 pub trait CatalogSession: Send + Sync {
@@ -177,12 +180,14 @@ pub trait CatalogBackend: Send + Sync {
         liked: bool,
     ) -> BoxFuture<'a, Result<(), QueryError>>;
 
+    /// Adds one song, refusing a duplicate. Returns the entry the add created when the
+    /// provider's reply named exactly one for this song (needed to undo exactly that entry).
     fn add_to_playlist<'a>(
         &'a self,
         session: &'a Arc<dyn CatalogSession>,
         playlist_id: &'a PlaylistId,
         video_id: &'a VideoId,
-    ) -> BoxFuture<'a, Result<(), QueryError>>;
+    ) -> BoxFuture<'a, Result<Option<String>, QueryError>>;
 
     fn discovery<'a>(
         &'a self,
@@ -541,17 +546,33 @@ where
     Ok((parsed, next.map(|c| c.get_raw().to_string())))
 }
 
+/// One parsed playlist page: its tracks, the next continuation, and the native playback
+/// context read from the same rows.
+pub(crate) type ParsedPlaylistPage = (Vec<Track>, Option<String>, Option<CollectionPlayback>);
+
+/// Parses one playlist page (first page or continuation) into a `ParsedPlaylistPage`.
 pub(crate) fn parse_playlist_tracks_page(
     query: &GetPlaylistTracksQuery<'_>,
     json: Json,
     continuation: bool,
-) -> Result<(Vec<Track>, Option<String>), QueryError> {
+) -> Result<ParsedPlaylistPage, QueryError> {
+    let raw = serde_json::to_value(&json).unwrap_or_default();
     let (items, next) = parse_playlist_items_page(query, json, continuation)?;
     let tracks = items
         .into_iter()
         .map(normalize_playlist_item)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((tracks, next))
+    let rows = raw
+        .pointer(if continuation {
+            PLAYLIST_NEXT_ROWS
+        } else {
+            PLAYLIST_FIRST_ROWS
+        })
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let playback = playlist_playback::playlist_rows_playback(rows, &tracks);
+    Ok((tracks, next, playback))
 }
 
 const PLAYLIST_FIRST_ROWS: &str = concat!(
@@ -896,7 +917,7 @@ impl CatalogBackend for YtmapiCatalogBackend {
                             Err(_) => (playlist_id.as_str().to_string(), None, None, None),
                         };
 
-                    let (tracks, next_continuation) =
+                    let (tracks, next_continuation, playback) =
                         parse_playlist_tracks_page(&tracks_query, json, false)?;
                     Ok(BackendPlaylistPage {
                         title,
@@ -905,11 +926,12 @@ impl CatalogBackend for YtmapiCatalogBackend {
                         cover,
                         tracks,
                         next_continuation,
+                        playback,
                     })
                 }
                 Some(token) => {
                     let json = fetch_continuation_page(yt, &tracks_query, token).await?;
-                    let (tracks, next_continuation) =
+                    let (tracks, next_continuation, playback) =
                         parse_playlist_tracks_page(&tracks_query, json, true)?;
                     Ok(BackendPlaylistPage {
                         title: playlist_id.as_str().to_string(),
@@ -918,6 +940,7 @@ impl CatalogBackend for YtmapiCatalogBackend {
                         cover: None,
                         tracks,
                         next_continuation,
+                        playback,
                     })
                 }
             }
@@ -1020,7 +1043,7 @@ impl CatalogBackend for YtmapiCatalogBackend {
         session: &'a Arc<dyn CatalogSession>,
         playlist_id: &'a PlaylistId,
         video_id: &'a VideoId,
-    ) -> BoxFuture<'a, Result<(), QueryError>> {
+    ) -> BoxFuture<'a, Result<Option<String>, QueryError>> {
         Box::pin(async move {
             let yt = Self::downcast_session(session)?;
             let query = AddPlaylistItemsQuery::new_from_videos(
@@ -1028,10 +1051,10 @@ impl CatalogBackend for YtmapiCatalogBackend {
                 [VideoID::from_raw(video_id.as_str())],
                 DuplicateHandlingMode::ReturnError,
             );
-            yt.query(query)
-                .await
-                .map(|_| ())
-                .map_err(classify_ytmapi_error)
+            // The provider parser checks the status first, so a refused duplicate still fails
+            // here exactly as before; only a successful reply is read for its entry.
+            let added = yt.query(query).await.map_err(classify_ytmapi_error)?;
+            Ok(music::single_created_entry(video_id, added))
         })
     }
 

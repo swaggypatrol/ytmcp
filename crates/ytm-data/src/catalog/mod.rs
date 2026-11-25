@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-use ytm_core::ports::{BoxFuture, CatalogIdentity, CatalogPort, OfficialLyrics};
+use ytm_core::ports::{BoxFuture, CatalogIdentity, CatalogPort, OfficialLyrics, PlaylistAddition};
 use ytm_protocol::{
     AccountEpoch, AccountScope, CatalogQueryRequest, CatalogResponsePayload, MutationRequest,
     MutationResult, QueryError, QueryErrorCode, SessionMaterialPayload,
@@ -259,6 +259,17 @@ impl CatalogPort for CatalogService {
             .mutate(account_epoch, account_scope, request, cancel)
     }
 
+    fn add_to_playlist(
+        &self,
+        account_epoch: AccountEpoch,
+        account_scope: AccountScope,
+        request: MutationRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<PlaylistAddition, QueryError>> {
+        self.adapter
+            .add_to_playlist(account_epoch, account_scope, request, cancel)
+    }
+
     fn official_lyrics(
         &self,
         account_epoch: AccountEpoch,
@@ -460,8 +471,8 @@ mod tests {
             _session: &'a Arc<dyn CatalogSession>,
             _playlist_id: &'a PlaylistId,
             _video_id: &'a VideoId,
-        ) -> BoxFuture<'a, Result<(), QueryError>> {
-            Box::pin(async { Ok(()) })
+        ) -> BoxFuture<'a, Result<Option<String>, QueryError>> {
+            Box::pin(async { Ok(None) })
         }
     }
 
@@ -574,6 +585,7 @@ mod tests {
                     video_id: VideoId::new("vid_dedup_1").unwrap(),
                     liked: Some(true),
                     playlist_id: None,
+                    undo_token: None,
                     confirmed_by_user: true,
                 },
                 CancellationToken::new(),

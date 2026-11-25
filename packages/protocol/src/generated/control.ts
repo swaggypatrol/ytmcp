@@ -927,7 +927,8 @@ export type ListenerActionKind =
   | "playCollection"
   | "pickFromQueue"
   | "upNextFilter"
-  | "rate";
+  | "rate"
+  | "undoAddToPlaylist";
 /**
  * This interface was referenced by `ControlV1`'s JSON-Schema
  * via the `definition` "MomentOccasionKind".

@@ -1,12 +1,15 @@
 <script lang="ts">
   import type { AppSnapshot, CommandReceipt, PlayerCommandPayload, PlayerOp, RepeatMode } from "@ytmcp/protocol";
   import { commandGate, playPauseGate, type Gate } from "../capabilities.js";
+  import { CommandIntent } from "../command-intent.svelte.js";
+  import type { Artwork } from "../cover.js";
   import { glass } from "../glass/liquid-glass.js";
   import { t } from "../i18n/index.svelte.js";
   import type { ClientPendingOverlay } from "../ipc/client.js";
   import { SeekControl } from "../seek-control.svelte.js";
   import { SEEK_KEY_STEP_MS, SEEK_PREVIEW_TIMEOUT_MS } from "../seek-preview.js";
-  import { onDestroy } from "svelte";
+  import { VolumeWheel } from "../volume-wheel.js";
+  import { onDestroy, untrack } from "svelte";
   import Cover from "./Cover.svelte";
   import { detectCjkLangHint, formatArtists, formatDurationMs } from "./format.js";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -32,6 +35,8 @@
     onToggleLike?: () => void;
     /** The seek preview; App shares one instance. */
     seek?: SeekControl;
+    /** The cover to show: App's held artwork, which keeps the previous one while a new cover is cached. Defaults to the track's own. */
+    artwork?: Artwork | null;
   }
 
   let {
@@ -49,6 +54,7 @@
     likePending = false,
     onToggleLike,
     seek = new SeekControl(),
+    artwork,
   }: Props = $props();
 
   const NEXT_REPEAT: Record<RepeatMode, RepeatMode> = { off: "all", all: "one", one: "off" };
@@ -70,6 +76,37 @@
   });
   const activeOp = $derived(pendingOverlay.activeOp ?? snapshot?.pending.activeOp ?? null);
   const isPending = $derived(pendingOverlay.pendingCount > 0 || (snapshot?.pending.pendingCommandCount ?? 0) > 0);
+
+  // What this bar's own presses asked for, shown at once and marked pending until the command
+  // settles (CommandIntent). A press steps from what is shown, so quick presses build on each other.
+  const lastReceipt = $derived(snapshot?.pending.lastReceipt ?? null);
+  const ownIdle = $derived(pendingOverlay.pendingCount === 0);
+  const intentFacts = () => ({ lastReceipt, ownIdle });
+  const playIntent = new CommandIntent<boolean>(intentFacts);
+  const shuffleIntent = new CommandIntent<boolean>(intentFacts);
+  const repeatIntent = new CommandIntent<RepeatMode>(intentFacts);
+  // A play or pause sent elsewhere (Space, media keys, another client) also shows as pending.
+  const otherDesired = $derived(pendingOverlay.desiredPlayback ?? snapshot?.pending.desiredPlayback ?? null);
+  const shownPlaying = $derived(playIntent.value ?? (otherDesired !== null ? otherDesired === "playing" : isPlaying));
+  const playPending = $derived(playIntent.value !== null || otherDesired !== null);
+  const shownShuffle = $derived(shuffleIntent.value ?? player?.shuffle ?? null);
+  const shownRepeat = $derived(repeatIntent.value ?? player?.repeat ?? null);
+
+  /** Asks for the opposite of what the button shows, as an explicit play or pause; App's Space shortcut calls it too. */
+  export function pressPlay() {
+    const play = !shownPlaying;
+    void playIntent.request(play, () => onCommand(play ? "play" : "pause"));
+  }
+
+  function pressShuffle() {
+    const shuffle = !(shownShuffle ?? false);
+    void shuffleIntent.request(shuffle, () => onCommand("setShuffle", { shuffle }));
+  }
+
+  function pressRepeat() {
+    const repeat = NEXT_REPEAT[shownRepeat ?? "off"];
+    void repeatIntent.request(repeat, () => onCommand("setRepeat", { repeat }));
+  }
   const VOLUME_DRAFT_TIMEOUT_MS = 2000;
   // An Up Next filter shows its wait on its own chip and never touches the current track, so it
   // stays quiet here unless another command is waiting with it.
@@ -110,7 +147,7 @@
     return () => clearTimeout(timer);
   });
 
-  const playGate = $derived(playPauseGate(caps?.playPause, connection, player?.playback, track !== null));
+  const playGate = $derived(playPauseGate(caps?.playPause, connection, player?.playback, track !== null, player?.preparing === true));
   const seekGate = $derived(commandGate(caps?.seek, connection));
   const nextGate = $derived(commandGate(caps?.next, connection));
   const prevGate = $derived(commandGate(caps?.previous, connection));
@@ -118,7 +155,7 @@
   const shuffleGate = $derived(commandGate(caps?.shuffle, connection));
   const repeatGate = $derived(commandGate(caps?.repeat, connection));
 
-  // The value under the hand while dragging, kept until the player reports it (or gives up).
+  // The volume under the hand (drag, wheel or keys), kept until the player reports it (or fails).
   let volumeDraft = $state<number | null>(null);
   let volumeDragging = $state(false);
   const volumePercent = $derived(Math.round((volumeDraft ?? player?.volume ?? 0) * 100));
@@ -134,98 +171,149 @@
   const seekMax = $derived(Math.max(durationMs, 1));
   const seekValue = $derived(Math.min(displayPositionMs, seekMax));
   const shuffleLabel = $derived(
-    player?.shuffle == null ? t.player.shuffleUnknown : player.shuffle ? t.player.shuffleOn : t.player.shuffleOff
+    shownShuffle == null ? t.player.shuffleUnknown : shownShuffle ? t.player.shuffleOn : t.player.shuffleOff
   );
-  const repeatLabel = $derived(t.player.repeat[player?.repeat ?? "unknown"]);
+  const repeatLabel = $derived(t.player.repeat[shownRepeat ?? "unknown"]);
   const muteLabel = $derived(player?.muted ? t.player.unmute : t.player.mute);
   const volumeText = $derived(`${volumePercent}%`);
   const showLike = $derived(track !== null && likeGate.enabled && onToggleLike !== undefined);
   const trackTooltip = $derived(track ? `${track.title} — ${formatArtists(track)}` : t.nav["now-playing"]);
+  const coverArt = $derived(
+    artwork !== undefined ? artwork : track ? { cover: track.cover, seed: track.videoId, label: track.title } : null
+  );
 
+  /** Volume sends are at least this far apart. */
   const VOLUME_THROTTLE_MS = 60;
-  let lastVolumeSentAt = 0;
-  let pendingVolumeValue: number | null = null;
-  let volumeThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A new target waits for the previous volume command to settle, but never longer than this. */
+  const VOLUME_SETTLE_WAIT_MS = 250;
+  let lastVolumeSentAt = Number.NEGATIVE_INFINITY;
+  // The newest target not sent yet. Held while a volume command is unsettled, so the core
+  // never queues (and cancels) a stale one; it is always sent in the end.
+  let heldVolume = $state<number | null>(null);
+  let volumeSendTimer: ReturnType<typeof setTimeout> | null = null;
+  // Counts sends, so only the newest send's failure restores the bar.
+  let volumeSendSeq = 0;
+  let lastVolumeCommandId: string | null = null;
+  // A volume command (from this window or elsewhere) the player has not settled yet.
+  const volumeUnsettled = $derived(
+    pendingOverlay.desiredVolume != null || snapshot?.pending.desiredVolume != null
+  );
+  // A command that will not take effect as sent: it failed, its outcome is unknown, or the core
+  // cancelled it (another client's command replaced it), so the player's own value stands.
+  const failedReceipt = (receipt: CommandReceipt | null | undefined) =>
+    receipt?.status === "failed" || receipt?.status === "indeterminate" || receipt?.status === "cancelled";
 
-  function flushVolumeCommand(volume: number) {
-    lastVolumeSentAt = Date.now();
-    pendingVolumeValue = null;
-    if (volumeThrottleTimer) {
-      clearTimeout(volumeThrottleTimer);
-      volumeThrottleTimer = null;
-    }
-    void onCommand("setVolume", { volume });
+  /** The bar goes back to the player's own volume, unless a newer target is still on its way. */
+  function restoreVolume() {
+    if (heldVolume === null && !volumeDragging) volumeDraft = null;
   }
 
-  $effect(() => {
-    if (volumeDraft === null || volumeDragging) return;
-    if (Math.abs((player?.volume ?? -1) - volumeDraft) < 0.005) {
-      volumeDraft = null;
+  /** Sends the held target once the throttle allows and the previous volume command has settled. */
+  function pumpVolume() {
+    if (volumeSendTimer) clearTimeout(volumeSendTimer);
+    volumeSendTimer = null;
+    const target = heldVolume;
+    if (target === null) return;
+    const since = Date.now() - lastVolumeSentAt;
+    const wait = Math.max(VOLUME_THROTTLE_MS - since, volumeUnsettled ? VOLUME_SETTLE_WAIT_MS - since : 0);
+    if (wait > 0) {
+      volumeSendTimer = setTimeout(pumpVolume, wait);
       return;
     }
+    heldVolume = null;
+    lastVolumeSentAt = Date.now();
+    const seq = ++volumeSendSeq;
+    lastVolumeCommandId = null;
+    void onCommand("setVolume", { volume: target }).then((receipt) => {
+      if (seq !== volumeSendSeq) return;
+      lastVolumeCommandId = receipt?.commandId ?? null;
+      const settled = snapshot?.pending.lastReceipt;
+      if (!receipt || failedReceipt(receipt) || (settled?.commandId === receipt.commandId && failedReceipt(settled))) {
+        restoreVolume();
+      }
+    });
+  }
+
+  // A settled volume command lets the held target go.
+  $effect(() => {
+    if (!volumeUnsettled) untrack(pumpVolume);
+  });
+
+  // The draft stays until the player reports it with nothing of ours still on its way, so a
+  // confirmation of an older target never pulls the bar back.
+  $effect(() => {
+    if (volumeDraft === null || volumeDragging) return;
+    if (heldVolume === null && !volumeUnsettled && Math.abs((player?.volume ?? -1) - volumeDraft) < 0.005) {
+      volumeDraft = null;
+    }
+  });
+
+  // The backstop: a draft left alone this long goes. It depends on the draft only, so player
+  // updates (every second while playing) never postpone it.
+  $effect(() => {
+    if (volumeDraft === null || volumeDragging) return;
     const timer = setTimeout(() => (volumeDraft = null), VOLUME_DRAFT_TIMEOUT_MS);
     return () => clearTimeout(timer);
   });
 
+  // A failed, unknown or cancelled volume command restores the true value at once (App reports
+  // failures); restoreVolume keeps the draft while a newer target is still held.
+  $effect(() => {
+    const receipt = snapshot?.pending.lastReceipt;
+    if (!failedReceipt(receipt)) return;
+    untrack(() => {
+      if (receipt!.op === "setVolume" && receipt!.commandId === lastVolumeCommandId) restoreVolume();
+      if (receipt!.op === "setMuted") unmuteSent = false;
+    });
+  });
+
+  // Set while the unmute sent by a volume raise is on its way, so a run of notches sends one.
+  let unmuteSent = false;
+  $effect(() => {
+    if (!player?.muted) unmuteSent = false;
+  });
+
+  /** Raising the volume while muted (even when already at 100) unmutes; the page's setVolume leaves mute alone. */
+  function unmuteForRaise() {
+    if (unmuteSent) return;
+    unmuteSent = true;
+    void onCommand("setMuted", { muted: false }).then((receipt) => {
+      if (!receipt || failedReceipt(receipt)) unmuteSent = false;
+    });
+  }
+
+  /** Shows a new volume at once and sends it through the throttle; dragging, wheel and keys share it. */
   function previewVolume(percent: number) {
     const target = percent / 100;
+    const from = volumeDraft ?? player?.volume ?? 0;
     volumeDraft = target;
-    const now = Date.now();
-    const elapsed = now - lastVolumeSentAt;
-    if (elapsed >= VOLUME_THROTTLE_MS) {
-      flushVolumeCommand(target);
-      return;
-    }
-    pendingVolumeValue = target;
-    if (!volumeThrottleTimer) {
-      volumeThrottleTimer = setTimeout(() => {
-        volumeThrottleTimer = null;
-        if (pendingVolumeValue !== null) {
-          flushVolumeCommand(pendingVolumeValue);
-        }
-      }, VOLUME_THROTTLE_MS - elapsed);
-    }
+    heldVolume = target;
+    pumpVolume();
+    if (player?.muted && target > from) unmuteForRaise();
   }
 
   function commitVolume() {
     volumeDragging = false;
-    if (pendingVolumeValue !== null) {
-      flushVolumeCommand(pendingVolumeValue);
-    }
+    pumpVolume();
   }
 
-  /** One mouse-wheel notch moves the volume by this many percent (a design value). */
-  const WHEEL_NOTCH_PERCENT = 2;
-  /** Pixels (deltaMode 0) and lines (deltaMode 1) that count as one notch; a page is one notch. */
-  const WHEEL_NOTCH_PX = 100;
-  const WHEEL_NOTCH_LINES = 3;
-  // Sub-percent wheel movement not applied yet, so slow trackpad scrolls still add up.
-  let wheelCarryPercent = 0;
+  const wheelSteps = new VolumeWheel();
+  // The main window's zoom, which the host sets from the interface scale (window-manager.ts).
+  const pageZoom = $derived(Math.min(1.5, Math.max(0.75, (snapshot?.settings.uiScalePercent ?? 100) / 100)));
 
   /**
-   * Wheel over the volume control: up raises, down lowers, through the same draft and send
-   * coalescing as dragging. Ctrl+wheel (zoom), mostly horizontal gestures and a disabled
-   * control are left to the page.
+   * Wheel over the volume control: up raises, down lowers, five points a notch (VolumeWheel),
+   * through the same draft and send path as dragging. Ctrl+wheel (zoom), mostly horizontal
+   * gestures and a disabled control are left to the page; at 0 or 100 the wheel is still taken.
    */
   function handleVolumeWheel(event: WheelEvent) {
-    if (!volumeGate.enabled || event.ctrlKey || event.deltaY === 0) return;
-    if (Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
-    event.preventDefault();
-    const notches =
-      event.deltaMode === 0
-        ? event.deltaY / WHEEL_NOTCH_PX
-        : event.deltaMode === 1
-          ? event.deltaY / WHEEL_NOTCH_LINES
-          : event.deltaY;
-    const change = -notches * WHEEL_NOTCH_PERCENT;
-    if (Math.sign(change) !== Math.sign(wheelCarryPercent)) wheelCarryPercent = 0;
-    wheelCarryPercent += change;
-    const steps = Math.trunc(wheelCarryPercent);
-    if (steps === 0) return;
-    wheelCarryPercent -= steps;
+    if (!volumeGate.enabled) return;
     const from = Math.round((volumeDraft ?? player?.volume ?? 0) * 100);
-    const to = Math.min(100, Math.max(0, from + steps));
+    const to = wheelSteps.next(event, from, pageZoom);
+    if (to === null) return;
+    event.preventDefault();
     if (to !== from) previewVolume(to);
+    else if (to === 100 && event.deltaY < 0 && player?.muted) unmuteForRaise();
   }
 
   /** One arrow press on the mute button moves the volume by this many percent. */
@@ -241,6 +329,7 @@
     const from = Math.round((volumeDraft ?? player?.volume ?? 0) * 100);
     const to = Math.min(100, Math.max(0, from + direction * MUTE_KEY_STEP_PERCENT));
     if (to !== from) previewVolume(to);
+    else if (direction > 0 && player?.muted) unmuteForRaise();
     volumeAnnouncement = `${t.player.volumeLabel} ${to}%`;
   }
 
@@ -251,8 +340,8 @@
   }
 
   onDestroy(() => {
-    if (volumeThrottleTimer) clearTimeout(volumeThrottleTimer);
-    volumeThrottleTimer = null;
+    if (volumeSendTimer) clearTimeout(volumeSendTimer);
+    volumeSendTimer = null;
   });
 
   // Roll the preview back on track change, on any terminal receipt of its seek, or on timeout.
@@ -286,9 +375,9 @@
         title={trackTooltip}
       >
         <Cover
-          cover={track?.cover}
-          seed={track?.videoId ?? "idle"}
-          label={track?.title ?? "YTM"}
+          cover={coverArt?.cover}
+          seed={coverArt?.seed ?? "idle"}
+          label={coverArt?.label ?? "YTM"}
           mockMode={snapshot?.mockMode ?? false}
           class="player-cover"
         />
@@ -312,11 +401,10 @@
           class:btn-icon-active={liked === true}
           aria-pressed={liked === true}
           aria-busy={likePending}
+          data-pending={likePending || undefined}
           aria-label={liked === true ? t.track.unlike : t.track.like}
           title={liked === true ? t.track.unlike : t.track.like}
-          onclick={() => {
-            if (!likePending) onToggleLike?.();
-          }}
+          onclick={() => onToggleLike?.()}
           data-testid="player-like"
         >
           <Icon name="heart" filled={liked === true} />
@@ -329,13 +417,14 @@
         <button
           type="button"
           class="btn-icon lg-press"
-          class:btn-icon-active={player?.shuffle === true}
+          class:btn-icon-active={shownShuffle === true}
           disabled={!shuffleGate.enabled || !player}
-          aria-pressed={player?.shuffle == null ? undefined : player.shuffle}
-          aria-busy={activeOp === "setShuffle"}
+          aria-pressed={shownShuffle == null ? undefined : shownShuffle}
+          aria-busy={activeOp === "setShuffle" || shuffleIntent.value !== null}
+          data-pending={shuffleIntent.value !== null || undefined}
           aria-label={shuffleLabel}
           title={shuffleGate.reason ?? shuffleLabel}
-          onclick={() => void onCommand("setShuffle", { shuffle: !(player?.shuffle ?? false) })}
+          onclick={pressShuffle}
           data-testid="btn-shuffle"
         >
           <Icon name="shuffle" />
@@ -347,6 +436,7 @@
           aria-label={t.player.previous}
           title={prevGate.reason ?? t.player.previous}
           aria-busy={activeOp === "previous"}
+          data-pending={activeOp === "previous" || undefined}
           onclick={() => void onCommand("previous")}
           data-testid="btn-prev"
         >
@@ -357,13 +447,14 @@
             type="button"
             class="btn-icon btn-play-focal lg-press"
             disabled={!playGate.enabled}
-            aria-label={isPlaying ? t.player.pause : t.player.play}
-            title={playGate.reason ?? (isPlaying ? t.player.pause : t.player.play)}
-            aria-busy={showBuffering || activeOp === "toggle" || activeOp === "play" || activeOp === "pause"}
-            onclick={() => void onCommand("toggle")}
+            aria-label={shownPlaying ? t.player.pause : t.player.play}
+            title={playGate.reason ?? (shownPlaying ? t.player.pause : t.player.play)}
+            aria-busy={showBuffering || playPending || activeOp === "toggle" || activeOp === "play" || activeOp === "pause"}
+            data-pending={playPending || undefined}
+            onclick={pressPlay}
             data-testid="btn-play-pause"
           >
-            <Icon name={isPlaying ? "pause" : "play"} filled />
+            <Icon name={shownPlaying ? "pause" : "play"} filled />
           </button>
           <!-- Buffering past 600 ms: a ring turns round the button. -->
           <svg class="player-buffer-ring" viewBox="0 0 52 52" aria-hidden="true" data-testid="player-buffer-ring">
@@ -380,6 +471,7 @@
           aria-label={t.player.next}
           title={nextGate.reason ?? t.player.next}
           aria-busy={activeOp === "next"}
+          data-pending={activeOp === "next" || undefined}
           onclick={() => void onCommand("next")}
           data-testid="btn-next"
         >
@@ -388,15 +480,16 @@
         <button
           type="button"
           class="btn-icon lg-press"
-          class:btn-icon-active={player?.repeat != null && player.repeat !== "off"}
+          class:btn-icon-active={shownRepeat != null && shownRepeat !== "off"}
           disabled={!repeatGate.enabled || !player}
           aria-label={repeatLabel}
           title={repeatGate.reason ?? repeatLabel}
-          aria-busy={activeOp === "setRepeat"}
-          onclick={() => void onCommand("setRepeat", { repeat: NEXT_REPEAT[player?.repeat ?? "off"] })}
+          aria-busy={activeOp === "setRepeat" || repeatIntent.value !== null}
+          data-pending={repeatIntent.value !== null || undefined}
+          onclick={pressRepeat}
           data-testid="btn-repeat"
         >
-          <Icon name={player?.repeat === "one" ? "repeatOne" : "repeat"} />
+          <Icon name={shownRepeat === "one" ? "repeatOne" : "repeat"} />
         </button>
       </div>
 

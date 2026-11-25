@@ -1,7 +1,11 @@
 <script lang="ts" module>
   import type { PlaybackStatus, PlayerConnectionState, Track } from "@ytmcp/protocol";
 
-  /** A like toggle for each row; pass it only while likes can be written. */
+  /**
+   * A like toggle for each row; pass it only while likes can be written. `liked` is what was last
+   * asked for, `pending` marks it as unconfirmed, and `toggle` stays live while pending: the
+   * owner turns a click during a write into the next request.
+   */
   export interface TrackRowLike {
     liked: (track: Track) => boolean | null;
     pending: (track: Track) => boolean;
@@ -124,7 +128,11 @@
   /** The rows' box (below the header row): its start is the virtualizer's scroll margin. */
   let bodyEl = $state<HTMLDivElement | null>(null);
   let scroller = $state<HTMLElement | null>(null);
-  let focusedIndex = $state(0);
+  /**
+   * The roving tab stop: the focused row's key, and its index when it was set (a hint for
+   * finding it again, and the place to fall back to when the row is gone).
+   */
+  let focus = $state.raw<{ key: string | null; index: number }>({ key: null, index: 0 });
   /** Row height for the current layout tier, read from `--track-row-h` (52 compact, 56 otherwise). */
   let rowPx = $state(DEFAULT_ROW_PX);
 
@@ -155,10 +163,45 @@
     getItemKey: (index) => rowKey(index),
   });
 
+  /**
+   * The tab stop's row in the current rows, found again by key when rows move (the current queue
+   * entry advances, a row above goes), so focus stays on the same track. When that row is gone
+   * the row now in its place takes the tab stop; DOM focus is never moved from here.
+   */
+  const focusedIndex = $derived.by(() => {
+    const count = tracks.length;
+    if (count === 0) return 0;
+    const { key, index } = focus;
+    if (key !== null) {
+      for (const near of [index, index - 1, index + 1]) {
+        if (near >= 0 && near < count && rowKey(near) === key) return near;
+      }
+      const found = indexOfKey(key);
+      if (found >= 0) return found;
+    }
+    return Math.min(index, count - 1);
+  });
+
+  function setFocus(index: number) {
+    focus = { key: rowKey(index), index };
+  }
+
+  // Keep the hint where the row is now, and hand the tab stop to the row that took its place
+  // when it is gone, so later changes start from there.
+  $effect.pre(() => {
+    const index = focusedIndex;
+    untrack(() => {
+      if (focus.key === null || tracks.length === 0) return;
+      if (focus.index !== index || focus.key !== rowKey(index)) setFocus(index);
+    });
+  });
+
+  // Row count and keys. The key function is new only when the rows change, never on a focus
+  // move: the virtualizer rebuilds every row's measurement whenever it gets a new one.
   $effect(() => {
     const count = tracks.length;
+    void entryIds;
     const el = scroller;
-    if (focusedIndex >= count) focusedIndex = Math.max(0, count - 1);
     get(virtualizer).setOptions({
       count,
       getScrollElement: () => el,
@@ -285,7 +328,7 @@
     });
     if (position.focusIndex === null) return;
     const keyed = position.focusKey === null ? -1 : indexOfKey(position.focusKey);
-    focusedIndex = keyed >= 0 ? keyed : Math.min(tracks.length - 1, position.focusIndex);
+    setFocus(keyed >= 0 ? keyed : Math.min(tracks.length - 1, position.focusIndex));
     await tick();
     listEl?.querySelector<HTMLElement>(`[data-row-index="${focusedIndex}"]`)?.focus({ preventScroll: true });
   }
@@ -310,7 +353,7 @@
   }
 
   function moveFocus(idx: number, align: "auto" | "start" | "end" = "auto") {
-    focusedIndex = idx;
+    setFocus(idx);
     get(virtualizer).scrollToIndex(idx, { align });
     void tick().then(() => focusRow(idx));
   }
@@ -349,6 +392,32 @@
   });
   const hasRowActions = $derived(rowActionCount > 0 || !!(rowActions || headerActions));
   const indicator = $derived(nowPlaying ? indicatorState(nowPlaying.playback, nowPlaying.connection) : null);
+
+  const tailNeeded = $derived(!!onLoadMore && (hasMore || moreFailed));
+  /**
+   * The tail keeps its space after the last page lands (an empty last page would otherwise
+   * shorten the page under a listener at its end) until it is below the window.
+   */
+  let tailHeld = $state(false);
+  $effect(() => {
+    if (tailNeeded) {
+      tailHeld = true;
+      return;
+    }
+    const root = scroller;
+    if (!tailHeld || !root) return;
+    const tailTop = margin + totalSize;
+    // Released once it is below the window, or once the page is long enough that removing it
+    // cannot pull the page up (a list that ends inside the window).
+    const release = () => {
+      const below = tailTop >= root.scrollTop + viewportHeight(root);
+      const noClamp = root.scrollTop <= root.scrollHeight - viewportHeight(root) - rowPx;
+      if (below || noClamp) tailHeld = false;
+    };
+    release();
+    root.addEventListener("scroll", release, { passive: true });
+    return () => root.removeEventListener("scroll", release);
+  });
 
   /** Row count a page was last asked for at; cleared once the request is under way. */
   let askedAt = -1;
@@ -435,12 +504,10 @@
             title={playDisabled ?? undefined}
             data-row-index={row.index}
             onclick={() => {
-              focusedIndex = row.index;
+              setFocus(row.index);
               if (playable && !playDisabled) onPlayTrack(track, row.index, entryId);
             }}
-            onfocus={() => {
-              focusedIndex = row.index;
-            }}
+            onfocus={() => setFocus(row.index)}
           >
             <span class="tl-num">
               {#if isCurrent && currentMarker}
@@ -483,13 +550,10 @@
                 {tabindex}
                 aria-pressed={liked}
                 aria-busy={busy}
-                aria-disabled={busy}
+                data-pending={busy || undefined}
                 aria-label={(liked ? t.track.unlikeFor : t.track.likeFor).replace("{title}", track.title)}
                 title={liked ? t.track.unlike : t.track.like}
-                onclick={() => {
-                  // Not `disabled`: that would drop keyboard focus out of the row while it waits.
-                  if (!busy) like.toggle(track);
-                }}
+                onclick={() => like.toggle(track)}
                 data-testid="track-like-btn"
               >
                 <Icon name="heart" filled={liked} />
@@ -518,15 +582,17 @@
     {/each}
   </div>
 
-  {#if onLoadMore && (hasMore || moreFailed)}
-    <!-- Always as tall as one row while more can load, so its states never move the page. -->
-    <div class="tl-tail" style="height: {rowPx}px;" data-testid="track-list-tail">
-      <!-- Stays mounted while more can load, so screen readers announce the loading note and the failure. -->
-      <span class="tl-tail-note" class:tl-tail-failed={moreFailed} role="status" aria-live="polite">
-        {moreFailed ? t.track.loadMoreFailed : loadingMore ? t.track.loadingMore : ""}
-      </span>
-      {#if moreFailed}
-        <button type="button" class="btn-ghost" onclick={onLoadMore} data-testid="track-list-retry">{t.states.retry}</button>
+  {#if tailNeeded || tailHeld}
+    <!-- Always as tall as one row, so its states never move the page; blank once held after the last page. -->
+    <div class="tl-tail" style="height: {rowPx}px;" data-testid="track-list-tail" aria-hidden={tailNeeded ? undefined : "true"}>
+      {#if tailNeeded}
+        <!-- Stays mounted while more can load, so screen readers announce the loading note and the failure. -->
+        <span class="tl-tail-note" class:tl-tail-failed={moreFailed} role="status" aria-live="polite">
+          {moreFailed ? t.track.loadMoreFailed : loadingMore ? t.track.loadingMore : ""}
+        </span>
+        {#if moreFailed}
+          <button type="button" class="btn-ghost" onclick={onLoadMore} data-testid="track-list-retry">{t.states.retry}</button>
+        {/if}
       {/if}
     </div>
   {/if}

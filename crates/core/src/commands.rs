@@ -491,6 +491,10 @@ pub struct QueuedCommand {
     /// Core-internal flag: complete a `playTarget` paused behind the output gate.
     pub keep_paused: bool,
     pub playback_fence: Option<PlaybackFence>,
+    /// Set for a play accepted before the player knew what it could play: the command stays
+    /// queued (`accepted`) without being sent until then, and fails as nothing to play at this
+    /// deadline (core monotonic clock) unless a launch restore carries it.
+    pub hold_deadline_ms: Option<u64>,
 }
 
 /// Position at or below which a same-instance observation counts as a YTM "restart" for

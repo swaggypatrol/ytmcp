@@ -25,6 +25,7 @@ mod share;
 mod state;
 mod subscription;
 mod write;
+pub(crate) use playlist_edits::{EntryRemoval, EntryRemovalCheck, prepare_entry_removal};
 pub use write::{DispatchAuthority, DispatchGrant};
 
 use std::collections::HashMap;

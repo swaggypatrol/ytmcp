@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import type { Toast, ToastStore } from "../feedback/toasts.svelte.js";
   import { glass } from "../glass/liquid-glass.js";
-  import { overlayExitDuration, type OverlayExit } from "../glass/overlay-motion.svelte.js";
+  import { afterExit, overlayExitDuration, type OverlayExit } from "../glass/overlay-motion.svelte.js";
 
   interface Props {
     store: ToastStore;
@@ -41,7 +41,8 @@
     announcedSticky = toast.id;
     return "status";
   }
-  const exitTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** Cancels the pending removal of each leaving toast. */
+  const exitWaits = new Set<() => void>();
   const entryElements = new Map<number, HTMLElement>();
 
   function trackEntry(el: HTMLElement, key: number) {
@@ -69,27 +70,28 @@
         ...(next ? [{ key: ++entrySeq, toast: next, leaving: null, sticky: next === sticky, live: liveRole(next) }] : []),
       ];
       if (!current) return;
-      // The keyed element is still mounted. Read the exit clock after Svelte marks it leaving.
+      // The keyed element is still mounted. Read the exit after Svelte marks it leaving, and
+      // remove it once that exit has run.
       queueMicrotask(() => {
         const el = entryElements.get(current.key);
         if (!el) return;
-        const timer = setTimeout(() => {
-          exitTimers.delete(timer);
+        const cancel = afterExit(el, overlayExitDuration(el, exit === "dismiss" ? 160 : 360), () => {
+          exitWaits.delete(cancel);
           entries = entries.filter((entry) => entry.key !== current.key);
-        }, overlayExitDuration(el, exit === "dismiss" ? 160 : 360) + 34);
-        exitTimers.add(timer);
+        });
+        exitWaits.add(cancel);
       });
     });
   });
 
   $effect(() => () => {
-    for (const timer of exitTimers) clearTimeout(timer);
-    exitTimers.clear();
+    for (const cancel of exitWaits) cancel();
+    exitWaits.clear();
     store.release();
   });
 
   function runAction(toast: Toast) {
-    toast.action?.run();
+    toast.action?.run(toast);
     // A transient toast has done its job; a sticky one stays until its problem is resolved.
     store.dismiss(toast.id);
   }
@@ -124,6 +126,9 @@
           type="button"
           class="toast-action lg-press lg-overlay-content"
           onclick={() => runAction(toast)}
+          disabled={toast.action.pending === true}
+          aria-busy={toast.action.pending === true || undefined}
+          data-pending={toast.action.pending || undefined}
           data-testid={entry.leaving ? undefined : (toast.action.testId ?? "toast-action")}
         >
           {toast.action.label}

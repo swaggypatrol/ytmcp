@@ -2,6 +2,23 @@
 
 Versions are `<app version>-<package revision>`; see [docs/building.md](docs/building.md#versioning).
 
+## Unreleased
+
+- **Menus, toasts and dialogs leave in one motion.** When a menu closed, its content went first and a clear glass frame stayed for a moment and then vanished at once. The whole surface now fades out together with its content, with nothing left standing, also while the app is busy.
+- **Volume wheel.** One notch of the wheel over the volume control changes the volume by 5 points (it was about 2). A touchpad stays fine-grained. Raising the volume while muted unmutes. The bar no longer slips back to an older value while you scroll, and fast scrolling no longer shows a false "the player didn't do that".
+- **Controls answer at once.** Play, pause, shuffle, repeat and the heart change the moment you press them and settle when the player confirms; if it refuses, they go back and say so. Space and the play button do the same thing. While a like is being saved, the rest of that song's menu stays usable.
+- **Moving around.** A page you open starts at its top, and Back returns to where you were. Playlists, albums and artists you opened a moment ago come back at once instead of through a loading screen; a new search keeps the previous results until the new ones arrive. Adding a song to a playlist no longer throws a long list back to its start.
+- **Song changes without flashes.** The cover in the player bar and the light behind the page change once, without a placeholder in between; Now Playing keeps its layout; the lyrics page opens on the current line, also while paused, and clicking a line moves the time and the bar with it.
+- **Up next on Now Playing.** Songs you queued can be started from there, the heading opens the queue, and a short window shows the next song in one line instead of hiding the list.
+- **Search shows songs first,** then artists, albums and playlists, with **All songs** for the full list.
+- **Recent searches are remembered** per account across restarts, and removed when you sign out.
+- **Problems you can find again.** A failure used to be a toast that was gone in three seconds. Each one is now also listed under **Recent problems** at the top of Diagnostics (Settings > Advanced), with its details; a change to your account whose outcome is unknown stays marked until you have checked it. A toast waits while the window is hidden.
+- **Play right after launch.** Pressing Play with a media key, the tray or an agent in the first moments after the app starts now waits for the player and resumes your last track where you left it, instead of failing and leaving it paused.
+- **Keyboard in the queue.** When the song changes, keyboard focus stays on the song you were on.
+- **Reduced motion** keeps its short fades (they had become instant) and still removes all movement.
+- **Play and Shuffle for Liked songs.** The Liked songs header has Play and Shuffle, as playlists have Play: Play starts your liked songs from the first one in order, and Shuffle starts them and turns shuffle on once the first song is playing. They show only when the app has a fresh read of the list for your account. Not yet tried against the real YouTube Music page.
+- **Undo after adding to a playlist.** Choosing a playlist adds the song right away, without a confirmation step. The "Added to" toast has **Undo**, which removes exactly the copy you just added, for up to five minutes; if it was already removed, or can no longer be undone, the toast says so. Not yet tried on a real account.
+
 ## 1.3.0-1
 
 - **A window that uses its space.** The layout follows the width of the content area in four steps instead of stretching one narrow column: on a 1920-wide window the page is over 1500 wide. A list is the page itself, with one scrollbar, running under the player bar; lists and the library load further as you scroll, with no **Load more** buttons. From 880 px of content width, writable rows with a known rating have a heart beside the duration. Use the row menu in a narrower window.

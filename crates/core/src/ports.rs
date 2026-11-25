@@ -8,7 +8,8 @@ use ytm_protocol::{
     AccountEpoch, AccountScope, AppSettings, AssetId, AssetResolvedPayload, BridgeEpoch,
     CatalogQueryRequest, CatalogResponsePayload, LyricsQueryRequest, LyricsResult, MutationRequest,
     MutationResult, OutputGateResultPayload, OwnerMomentConfig, PlaybackRef, PlayerCommandPayload,
-    QueryError, QueryErrorCode, SessionMaterialPayload, Track, VideoId,
+    QueryError, QueryErrorCode, RecentSearchesRequest, RecentSearchesSnapshot,
+    SessionMaterialPayload, Track, VideoId,
 };
 
 /// Identity the catalog established for a session. `account_hint` is the opaque hash shared
@@ -169,6 +170,15 @@ pub trait OutputGatePort: Send + Sync {
     ) -> BoxFuture<'_, Result<OutputGateResultPayload, QueryError>>;
 }
 
+/// The outcome of adding one song to a playlist and, when the provider's reply named exactly one
+/// entry it created for that song, the entry's ID. The ID stays in the core: it is what an undo
+/// removes, and it never reaches the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistAddition {
+    pub result: MutationResult,
+    pub created_entry_id: Option<String>,
+}
+
 /// Port for YouTube Music catalog queries, mutations, and in-memory session binding (`crates/ytm-data`).
 pub trait CatalogPort: Send + Sync {
     fn query(
@@ -186,6 +196,26 @@ pub trait CatalogPort: Send + Sync {
         request: MutationRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'_, Result<MutationResult, QueryError>>;
+
+    /// `mutate` for an `addToPlaylist`, also naming the entry the provider said the add created
+    /// (only when its reply named exactly one for the song). Ports that cannot name it add
+    /// through `mutate` and report none, so the addition cannot be undone.
+    fn add_to_playlist(
+        &self,
+        account_epoch: AccountEpoch,
+        account_scope: AccountScope,
+        request: MutationRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<PlaylistAddition, QueryError>> {
+        Box::pin(async move {
+            Ok(PlaylistAddition {
+                result: self
+                    .mutate(account_epoch, account_scope, request, cancel)
+                    .await?,
+                created_entry_id: None,
+            })
+        })
+    }
 
     /// Binds in-memory credentials and returns the identity the catalog verified for them.
     fn apply_session_material(
@@ -249,6 +279,13 @@ pub trait StoragePort: Send + Sync {
     /// Fetches (or reuses) the cover behind `remote_url` and returns its asset id and accent.
     fn cache_cover(&self, remote_url: String) -> BoxFuture<'_, Result<CachedCover, QueryError>>;
 
+    /// The cover behind `remote_url` when it is already cached, answered from memory without
+    /// disk or network IO (the engine calls it on a track change). `None` means "not known to
+    /// be cached"; `cache_cover` remains the authority.
+    fn cached_cover(&self, _remote_url: &str) -> Option<CachedCover> {
+        None
+    }
+
     /// Keeps the now-playing cover out of capacity eviction; `None` releases it.
     fn pin_cover(&self, _asset_id: Option<AssetId>) {}
 
@@ -269,6 +306,16 @@ pub trait StoragePort: Send + Sync {
         account_epoch: AccountEpoch,
         played: LastPlayed,
     ) -> BoxFuture<'_, Result<(), QueryError>>;
+
+    /// Applies one action to the account's recent searches (kept across restarts, deleted with
+    /// the account's data, untouched by a cache clear) and returns the list, newest first.
+    /// Writes are refused for an epoch that is no longer the account's active one.
+    fn recent_searches(
+        &self,
+        account_scope: AccountScope,
+        account_epoch: AccountEpoch,
+        request: RecentSearchesRequest,
+    ) -> BoxFuture<'_, Result<RecentSearchesSnapshot, QueryError>>;
 
     /// Updates the position of the newest history entry when it is still `video_id`.
     fn update_playback_position(

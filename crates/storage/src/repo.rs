@@ -5,8 +5,9 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use ytm_protocol::{
     AccountEpoch, AccountScope, AlbumDetail, AlbumId, ArtistDetail, ArtistId, Freshness, HomeFeed,
-    LyricsKind, LyricsMatchMetadata, LyricsResult, PagedResult, PlaybackRef, PlaylistDetail,
-    PlaylistId, PlaylistSummary, SearchResult, Track, VideoId,
+    LyricsKind, LyricsMatchMetadata, LyricsResult, MAX_RECENT_SEARCHES, PagedResult, PlaybackRef,
+    PlaylistDetail, PlaylistId, PlaylistSummary, RecentSearch, RecentSearchesRequest,
+    RecentSearchesSnapshot, SearchResult, Track, VideoId,
 };
 
 pub const DEFAULT_LIBRARY_LIST_TTL_SECS: u64 = 15 * 60;
@@ -236,6 +237,10 @@ pub fn clear_account_data_tx(
     )?;
     let _ = tx.execute(
         "DELETE FROM control_listening_intents WHERE account_scope = ?1",
+        params![scope],
+    );
+    let _ = tx.execute(
+        "DELETE FROM recent_searches WHERE account_scope = ?1",
         params![scope],
     );
     Ok(())
@@ -515,6 +520,75 @@ pub fn update_latest_playback_position_tx(
     Ok(())
 }
 
+/// The key two recent searches share when they differ only in letter case or spacing.
+pub fn fold_recent_search(query: &str) -> String {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Applies one recent-searches action to the account's list and returns the list, newest first.
+/// Writes (record, clear) need `account_epoch` to be the account's active epoch, so a write that
+/// races a sign-out cannot bring rows back. Recording a query that folds like a kept one moves it
+/// to the front with its new spelling; the list is pruned to `MAX_RECENT_SEARCHES`.
+pub fn apply_recent_searches_tx(
+    tx: &Transaction<'_>,
+    account_scope: &AccountScope,
+    account_epoch: &AccountEpoch,
+    request: &RecentSearchesRequest,
+    now_ms: u64,
+) -> Result<RecentSearchesSnapshot, StorageError> {
+    request.validate().map_err(StorageError::InvalidPayload)?;
+    let scope = account_scope.as_str();
+    match request {
+        RecentSearchesRequest::List => {}
+        RecentSearchesRequest::Record { query } => {
+            ensure_account_epoch_writable_tx(tx, account_scope, account_epoch, now_ms)?;
+            let query = query.trim();
+            let folded = fold_recent_search(query);
+            tx.execute(
+                "DELETE FROM recent_searches WHERE account_scope = ?1 AND folded = ?2",
+                params![scope, folded],
+            )?;
+            tx.execute(
+                "INSERT INTO recent_searches (account_scope, folded, query, recorded_at_ms) VALUES (?1, ?2, ?3, ?4)",
+                params![scope, folded, query, i64::try_from(now_ms).unwrap_or(i64::MAX)],
+            )?;
+            // Newest is the highest id, whatever the wall clock did.
+            tx.execute(
+                r#"
+DELETE FROM recent_searches
+WHERE account_scope = ?1 AND id NOT IN (
+    SELECT id FROM recent_searches WHERE account_scope = ?1 ORDER BY id DESC LIMIT ?2
+)
+"#,
+                params![scope, MAX_RECENT_SEARCHES as i64],
+            )?;
+        }
+        RecentSearchesRequest::Clear => {
+            ensure_account_epoch_writable_tx(tx, account_scope, account_epoch, now_ms)?;
+            tx.execute(
+                "DELETE FROM recent_searches WHERE account_scope = ?1",
+                params![scope],
+            )?;
+        }
+    }
+    let mut stmt = tx.prepare(
+        "SELECT query, recorded_at_ms FROM recent_searches WHERE account_scope = ?1 ORDER BY id DESC LIMIT ?2",
+    )?;
+    let items = stmt
+        .query_map(params![scope, MAX_RECENT_SEARCHES as i64], |r| {
+            Ok(RecentSearch {
+                query: r.get(0)?,
+                recorded_at_ms: u64::try_from(r.get::<_, i64>(1)?.max(0)).unwrap_or(0),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RecentSearchesSnapshot { items })
+}
+
 /// Scope of the most recently registered, still active account epoch (logout invalidates it).
 pub fn last_active_account_scope_conn(
     conn: &Connection,
@@ -731,7 +805,9 @@ pub fn reset_lyrics_user_offset_tx(
 pub(crate) const LIBRARY_PLAYLIST_PAGE_KIND: &str = "library_playlists_page_v2";
 pub(crate) const PLAYLIST_DETAIL_PAGE_KIND: &str = "playlist_detail_page_v2";
 pub(crate) const SEARCH_PAGE_KIND: &str = "search_page_v2";
-pub(crate) const LIKED_SONGS_PAGE_KIND: &str = "liked_songs_page_v2";
+// v3: liked pages carry their native playback context; a v2 page without one is never served
+// as if it were complete.
+pub(crate) const LIKED_SONGS_PAGE_KIND: &str = "liked_songs_page_v3";
 
 pub(crate) fn invalidate_library_playlist_views_tx(
     tx: &Transaction<'_>,

@@ -22,7 +22,8 @@
 {#if view.kind === "ready"}
   {@render children()}
 {:else if view.kind === "loading"}
-  <div class="state-block" role="status" aria-busy="true" data-testid={`${name}-state-loading`}>
+  <!-- Takes its place at once but shows only once the wait lasts (a fast reply never flashes it). -->
+  <div class="state-block is-waiting" role="status" aria-busy="true" data-testid={`${name}-state-loading`}>
     <span class="type-sm" style="color: var(--text-secondary);">{t.states.loading}</span>
   </div>
 {:else if view.kind === "empty"}
@@ -66,3 +67,19 @@
     {/if}
   </div>
 {/if}
+
+<style>
+  /* Like the player's buffering cue (600 ms): a wait shorter than that shows nothing. The delay
+     holds under reduced motion too, which shortens only the (already instant) reveal. */
+  .is-waiting {
+    animation: page-wait-reveal 1ms linear 600ms both;
+  }
+  @keyframes page-wait-reveal {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+</style>

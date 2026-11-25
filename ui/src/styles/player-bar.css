@@ -254,7 +254,8 @@
   to { opacity: 0.7; }
 }
 
-/* Reduced motion: nothing turns or flows; the ring and the flow stay as still marks. */
+/* Reduced motion: nothing turns or flows; the ring and the flow stay as still marks that only
+   fade (!important, as the global reset in motion-a11y.css sets durations with !important). */
 :root[data-reduce-motion="true"] .wait-dot {
   animation: status-wait-still 1ms linear var(--wait-delay) forwards;
 }
@@ -268,7 +269,7 @@
 }
 :root[data-reduce-motion="true"] .player-buffer-ring,
 :root[data-reduce-motion="true"] .scrub-flow {
-  transition-duration: var(--duration-fast);
+  transition-duration: var(--duration-fast) !important;
 }
 @media (prefers-reduced-motion: reduce) {
   .wait-dot {
@@ -284,7 +285,7 @@
   }
   .player-buffer-ring,
   .scrub-flow {
-    transition-duration: var(--duration-fast);
+    transition-duration: var(--duration-fast) !important;
   }
 }
 

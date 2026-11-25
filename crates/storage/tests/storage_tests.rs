@@ -14,7 +14,7 @@ use ytm_protocol::{
     AccountEpoch, AccountScope, AlbumDetail, AlbumId, AppSettings, ArtistDetail, ArtistId,
     ArtistRef, AssetId, Freshness, HomeFeed, LyricsKind, LyricsLine, LyricsMatchMetadata,
     LyricsResult, PagedResult, PlaylistDetail, PlaylistId, PlaylistSummary, QueryErrorCode,
-    SearchResult, ThemeMode, Track, TrackAvailability, UiLanguage, VideoId,
+    RecentSearchesRequest, SearchResult, ThemeMode, Track, TrackAvailability, UiLanguage, VideoId,
 };
 use ytm_storage::{
     AccountCacheContext, CoverCacheConfig, LibraryMembershipCache, RecentPlaybackRecord,
@@ -232,7 +232,7 @@ async fn migration_from_v1_creates_online_backup_and_preserves_data() {
     let storage =
         SqliteStorage::open(paths.clone(), clock, CoverCacheConfig::production()).unwrap();
 
-    assert_eq!(storage.current_schema_version().unwrap(), 8);
+    assert_eq!(storage.current_schema_version().unwrap(), 9);
     assert_eq!(storage.created_backups().len(), 1);
     let backup_path = &storage.created_backups()[0];
     assert!(backup_path.exists());
@@ -678,7 +678,7 @@ async fn playlist_membership_clears_library_fallbacks_across_locales_only_for_it
     ];
     let independent_kinds = [
         "playlist_detail_page_v2",
-        "liked_songs_page_v2",
+        "liked_songs_page_v3",
         "search_page_v2",
     ];
     for account in [&scope, &other] {
@@ -963,7 +963,7 @@ async fn catalog_ttl_lyrics_ttl_and_user_offset_separation() {
     };
     storage.put_home_feed(&ctx, &home, None).await.unwrap();
     storage
-        .put_liked_songs(&ctx, None, 100, &search.songs, None)
+        .put_liked_songs(&ctx, None, 100, &search.songs.clone().into(), None)
         .await
         .unwrap();
 
@@ -1015,7 +1015,7 @@ async fn catalog_ttl_lyrics_ttl_and_user_offset_separation() {
         ..search.songs.clone()
     };
     storage
-        .put_liked_songs(&other, None, 100, &other_songs, None)
+        .put_liked_songs(&other, None, 100, &other_songs.into(), None)
         .await
         .unwrap();
     storage.invalidate_rating_cache(&scope).await.unwrap();
@@ -1741,6 +1741,54 @@ async fn cover_oversized_bad_image_dominant_color_lru_and_traversal_rejection() 
     assert_eq!(sym_err.code, QueryErrorCode::InvalidPayload);
 }
 
+/// `cached_cover` answers from memory, and only for covers that are in the cache: it follows
+/// inserts, capacity eviction, a cache clear and a restart.
+#[tokio::test]
+async fn cached_cover_lookup_follows_the_disk_cache() {
+    let server = MockServer::start().await;
+    let red = make_solid_png(32, 32, [230, 35, 45, 255]);
+    let blue = make_solid_png(32, 32, [35, 95, 235, 255]);
+    for (route, body) in [("/red.png", red.clone()), ("/blue.png", blue.clone())] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+    }
+    let tmp = TempDir::new().unwrap();
+    let paths = StoragePaths::for_root(tmp.path());
+    let clock = Arc::new(MockClock::new(1_700_000_000_000));
+    // Room for one cover only, so caching the second evicts the first.
+    let config = CoverCacheConfig::production()
+        .with_test_endpoint(*server.address())
+        .with_max_cache_bytes(red.len().max(blue.len()) as u64 + 10);
+    let storage = SqliteStorage::open(paths.clone(), clock.clone(), config.clone()).unwrap();
+    let red_url = format!("{}/red.png", server.uri());
+    let blue_url = format!("{}/blue.png", server.uri());
+
+    assert_eq!(storage.cached_cover(&red_url), None);
+    let red_info = storage.cache_cover(red_url.clone()).await.unwrap();
+    assert_eq!(storage.cached_cover(&red_url), Some(red_info.clone()));
+
+    clock.advance(1_000);
+    let blue_info = storage.cache_cover(blue_url.clone()).await.unwrap();
+    assert_eq!(storage.cached_cover(&blue_url), Some(blue_info.clone()));
+    assert_eq!(
+        storage.cached_cover(&red_url),
+        None,
+        "evicted covers are not reported"
+    );
+
+    // A restart reads the index back from the database.
+    drop(storage);
+    let storage = SqliteStorage::open(paths, clock, config).unwrap();
+    assert_eq!(storage.cached_cover(&blue_url), Some(blue_info));
+    assert_eq!(storage.cached_cover(&red_url), None);
+
+    storage.clear_cache(None).await.unwrap();
+    assert_eq!(storage.cached_cover(&blue_url), None);
+}
+
 #[tokio::test]
 async fn cover_asset_id_is_url_derived_and_resolved_lazily_after_registration() {
     let server = MockServer::start().await;
@@ -1897,5 +1945,251 @@ async fn play_history_is_bounded_restorable_and_cleared_on_logout() {
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+async fn record_search(
+    storage: &SqliteStorage,
+    scope: &AccountScope,
+    epoch: &AccountEpoch,
+    query: &str,
+) -> Vec<String> {
+    let request = RecentSearchesRequest::Record {
+        query: query.to_string(),
+    };
+    queries(
+        storage
+            .recent_searches(scope.clone(), epoch.clone(), request)
+            .await
+            .unwrap(),
+    )
+}
+
+async fn list_searches(
+    storage: &SqliteStorage,
+    scope: &AccountScope,
+    epoch: &AccountEpoch,
+) -> Vec<String> {
+    queries(
+        storage
+            .recent_searches(scope.clone(), epoch.clone(), RecentSearchesRequest::List)
+            .await
+            .unwrap(),
+    )
+}
+
+fn queries(snapshot: ytm_protocol::RecentSearchesSnapshot) -> Vec<String> {
+    snapshot.items.into_iter().map(|item| item.query).collect()
+}
+
+#[tokio::test]
+async fn recent_searches_are_capped_folded_and_kept_per_account() {
+    let tmp = TempDir::new().unwrap();
+    let clock = Arc::new(MockClock::new(1_700_000_000_000));
+    let storage = SqliteStorage::open(
+        StoragePaths::for_root(tmp.path()),
+        clock.clone(),
+        CoverCacheConfig::production(),
+    )
+    .unwrap();
+    let (a, a_epoch) = (
+        AccountScope::new("scope-a").unwrap(),
+        AccountEpoch::new("epoch-a").unwrap(),
+    );
+    let (b, b_epoch) = (
+        AccountScope::new("scope-b").unwrap(),
+        AccountEpoch::new("epoch-b").unwrap(),
+    );
+    storage.register_account_epoch(&a, &a_epoch).await.unwrap();
+    storage.register_account_epoch(&b, &b_epoch).await.unwrap();
+
+    // The same clock reading for every write: order comes from insertion, not time.
+    for i in 0..10 {
+        record_search(&storage, &a, &a_epoch, &format!("query {i}")).await;
+    }
+    let kept = list_searches(&storage, &a, &a_epoch).await;
+    assert_eq!(kept.len(), 8);
+    assert_eq!(kept[0], "query 9");
+    assert_eq!(kept[7], "query 2");
+
+    // A query that differs only in case and spacing moves to the front with its new spelling.
+    let kept = record_search(&storage, &a, &a_epoch, "  QUERY   5 ").await;
+    assert_eq!(kept.len(), 8);
+    assert_eq!(kept[0], "QUERY   5");
+    assert_eq!(
+        kept.iter()
+            .filter(|q| q.to_lowercase().contains("5"))
+            .count(),
+        1
+    );
+
+    // Blank and overlong queries are refused, not stored.
+    for query in ["   ".to_string(), "x".repeat(201)] {
+        let err = storage
+            .recent_searches(
+                a.clone(),
+                a_epoch.clone(),
+                RecentSearchesRequest::Record { query },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, QueryErrorCode::InvalidPayload);
+    }
+
+    // Another account sees and changes only its own list.
+    assert!(list_searches(&storage, &b, &b_epoch).await.is_empty());
+    record_search(&storage, &b, &b_epoch, "b only").await;
+    storage
+        .recent_searches(b.clone(), b_epoch.clone(), RecentSearchesRequest::Clear)
+        .await
+        .unwrap();
+    assert_eq!(list_searches(&storage, &a, &a_epoch).await.len(), 8);
+
+    // Clearing the cache keeps the list.
+    storage.clear_cache(Some(a.clone())).await.unwrap();
+    storage.clear_cache(None).await.unwrap();
+    assert_eq!(list_searches(&storage, &a, &a_epoch).await.len(), 8);
+
+    // Signing out deletes it, and a write that raced the sign-out cannot bring it back.
+    record_search(&storage, &b, &b_epoch, "b kept").await;
+    storage.logout_account(&a, Some(&a_epoch)).await.unwrap();
+    assert!(list_searches(&storage, &a, &a_epoch).await.is_empty());
+    let late = storage
+        .recent_searches(
+            a.clone(),
+            a_epoch.clone(),
+            RecentSearchesRequest::Record {
+                query: "late".to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(late.code, QueryErrorCode::StaleContext);
+    assert!(list_searches(&storage, &a, &a_epoch).await.is_empty());
+    assert_eq!(list_searches(&storage, &b, &b_epoch).await, ["b kept"]);
+
+    // The core's sign-out path (clear_account_data) deletes it too.
+    storage
+        .clear_account_data(Some(b.clone()), None)
+        .await
+        .unwrap();
+    assert!(list_searches(&storage, &b, &b_epoch).await.is_empty());
+}
+
+/// The point of keeping them in storage: the next run signs in with a new epoch for the same
+/// account and finds the list; the previous run's epoch can no longer write.
+#[tokio::test]
+async fn recent_searches_survive_a_restart_under_the_next_runs_epoch() {
+    let tmp = TempDir::new().unwrap();
+    let paths = StoragePaths::for_root(tmp.path());
+    let clock = Arc::new(MockClock::new(1_700_000_000_000));
+    let scope = AccountScope::new("scope-restart").unwrap();
+    let first_run = AccountEpoch::new("epoch-run-1").unwrap();
+    let second_run = AccountEpoch::new("epoch-run-2").unwrap();
+    {
+        let storage =
+            SqliteStorage::open(paths.clone(), clock.clone(), CoverCacheConfig::production())
+                .unwrap();
+        storage
+            .register_account_epoch(&scope, &first_run)
+            .await
+            .unwrap();
+        record_search(&storage, &scope, &first_run, "before restart").await;
+    }
+
+    let storage = SqliteStorage::open(paths, clock, CoverCacheConfig::production()).unwrap();
+    storage
+        .register_account_epoch(&scope, &second_run)
+        .await
+        .unwrap();
+    assert_eq!(
+        list_searches(&storage, &scope, &second_run).await,
+        ["before restart"]
+    );
+    assert_eq!(
+        record_search(&storage, &scope, &second_run, "after restart").await,
+        ["after restart", "before restart"]
+    );
+    let stale = storage
+        .recent_searches(
+            scope.clone(),
+            first_run,
+            RecentSearchesRequest::Record {
+                query: "from the old run".to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, QueryErrorCode::StaleContext);
+}
+
+#[tokio::test]
+async fn migration_from_v8_keeps_data_backs_up_and_adds_recent_searches() {
+    let tmp = TempDir::new().unwrap();
+    let paths = StoragePaths::for_root(tmp.path());
+    let clock = Arc::new(MockClock::new(1_700_000_000_000));
+    let scope = AccountScope::new("scope-v8").unwrap();
+    let epoch = AccountEpoch::new("epoch-v8").unwrap();
+    {
+        let v8 = SqliteStorage::open_at_schema_version(
+            paths.clone(),
+            clock.clone(),
+            CoverCacheConfig::production(),
+            8,
+        )
+        .unwrap();
+        assert_eq!(v8.current_schema_version().unwrap(), 8);
+        v8.register_account_epoch(&scope, &epoch).await.unwrap();
+        v8.record_recent_playback(
+            &scope,
+            &epoch,
+            RecentPlaybackRecord {
+                track: make_track("vid_v8", "Before Upgrade"),
+                playback_ref: None,
+                position_ms: 7_000,
+                duration_ms: Some(210_000),
+                recorded_at_ms: 1,
+                source_context: None,
+            },
+        )
+        .await
+        .unwrap();
+        v8.set_lyrics_user_offset(&VideoId::new("vid_v8").unwrap(), 120)
+            .await
+            .unwrap();
+    }
+
+    let storage =
+        SqliteStorage::open(paths.clone(), clock, CoverCacheConfig::production()).unwrap();
+    assert_eq!(storage.current_schema_version().unwrap(), 9);
+    let backups = storage.created_backups();
+    assert_eq!(backups.len(), 1);
+    assert!(
+        backups[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("ytmcp.db.v8-to-v9.")
+    );
+    let backup_ver: u32 = Connection::open(&backups[0])
+        .unwrap()
+        .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(backup_ver, 8);
+
+    let latest = storage.get_latest_playback(&scope).await.unwrap().unwrap();
+    assert_eq!(latest.track.video_id.as_str(), "vid_v8");
+    assert_eq!(latest.position_ms, 7_000);
+    assert_eq!(
+        storage
+            .get_lyrics_user_offset(&VideoId::new("vid_v8").unwrap())
+            .await
+            .unwrap(),
+        120
+    );
+    // The epoch registered before the upgrade still writes.
+    assert_eq!(
+        record_search(&storage, &scope, &epoch, "after upgrade").await,
+        ["after upgrade"]
     );
 }

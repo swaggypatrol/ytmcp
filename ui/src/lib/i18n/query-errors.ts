@@ -1,4 +1,4 @@
-import type { QueryError, QueryErrorCode } from "@ytmcp/protocol";
+import type { PlayerOp, QueryError, QueryErrorCode } from "@ytmcp/protocol";
 import { t } from "./index.svelte.js";
 
 /** Use the UI's own words. Callers supply a fallback suited to the task that failed. */
@@ -23,6 +23,16 @@ export function queryErrorMessage(code: QueryErrorCode | null | undefined, fallb
     default:
       return fallback;
   }
+}
+
+/**
+ * The words for a failed player command (`op` null when the failed request is not known). A play,
+ * or a toggle that meant play, failing because no track could be loaded is not about an
+ * unavailable song: it says there is nothing to play yet.
+ */
+export function commandFailureMessage(op: PlayerOp | null | undefined, code: QueryErrorCode | null | undefined): string {
+  if ((op === "play" || op === "toggle") && code === "UNAVAILABLE_TRACK") return t.player.noTrackToPlay;
+  return op ? t.toast.commandFailed[op] : t.toast.commandFailedGeneric;
 }
 
 /** Core detail is available in tooltips and Diagnostics. */

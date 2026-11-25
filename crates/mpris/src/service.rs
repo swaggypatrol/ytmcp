@@ -341,7 +341,7 @@ impl PlayerInterface for MprisService {
     }
 
     async fn play_pause(&self) -> fdo::Result<()> {
-        if !self.can_play().await? && !self.can_pause().await? {
+        if !self.read_state(|s| s.can_play_pause())? {
             return Err(fdo::Error::NotSupported(
                 "playPause is currently unavailable".to_string(),
             ));
@@ -912,6 +912,106 @@ mod tests {
         assert_eq!(rx.recv().await, Some(MprisHostAction::Raise));
         assert_eq!(rx.recv().await, Some(MprisHostAction::Quit));
 
+        core.shutdown().await.unwrap();
+    }
+
+    /// Right after the bridge is ready the core holds a play until it knows what it can play,
+    /// so Play and PlayPause are offered; once it knows there is nothing, they are not, and
+    /// PlayPause sends nothing the core would refuse.
+    #[tokio::test]
+    async fn play_controls_follow_what_the_core_holds_or_refuses() {
+        let clock = Arc::new(MockClock::new(1_000));
+        let bridge = Arc::new(RecordingBridgePort::default());
+        let core = Arc::new(CoreEngine::start(
+            CoreDeps {
+                clock: clock.clone(),
+                bridge: bridge.clone(),
+                output_gate: Arc::new(NoopOutputGatePort),
+                ..CoreDeps::default()
+            },
+            EngineConfig::default(),
+        ));
+        let b_epoch = BridgeEpoch::new("bridge-test-1").unwrap();
+        assert!(
+            core.on_bridge_ready(
+                1,
+                BridgeReadyPayload {
+                    bridge_epoch: b_epoch.clone(),
+                    bridge_version: "0.1.0".to_string(),
+                    capabilities: supported_caps(),
+                    account_hint: None,
+                    logged_in_observed: false,
+                }
+            )
+            .await
+            .unwrap()
+        );
+        let (tx, _rx) = mpsc::channel(8);
+        let svc = MprisService {
+            core: Arc::clone(&core),
+            config: MprisConfig::default(),
+            state: Arc::new(RwLock::new(MprisCachedState::from_snapshot(
+                &core.snapshot().await.unwrap(),
+            ))),
+            host_action_tx: tx,
+            cmd_seq: AtomicU64::new(1),
+        };
+        assert!(svc.read_state(|s| s.player.preparing).unwrap());
+        assert!(svc.can_play().await.unwrap(), "a held play is accepted");
+        svc.play_pause().await.unwrap();
+        let snap = core.snapshot().await.unwrap();
+        assert_eq!(snap.pending.pending_command_count, 1, "held, not refused");
+        assert!(bridge.commands.lock().unwrap().is_empty());
+
+        // The page reports nothing loaded and there is nothing to restore.
+        assert!(
+            core.on_bridge_playback_observed(
+                2,
+                BridgePlaybackObservedPayload {
+                    bridge_epoch: b_epoch,
+                    playback: CorePlaybackStatus::Idle,
+                    track_instance_id: None,
+                    current_track: None,
+                    current_queue_entry_id: None,
+                    playback_context: None,
+                    position_ms: 0,
+                    duration_ms: None,
+                    buffered_ms: None,
+                    playback_rate: 1.0,
+                    sample_age_ms: 0,
+                    volume: 1.0,
+                    muted: false,
+                    shuffle: None,
+                    repeat: None,
+                    autoplay: None,
+                    codec: None,
+                    audio_mode: None,
+                    quality_label: None,
+                    audio_itag: None,
+                    audio_quality: None,
+                    audio_bitrate_kbps: None,
+                    drm_protected: None,
+                }
+            )
+            .await
+            .unwrap()
+        );
+        let snap = core.snapshot().await.unwrap();
+        assert_eq!(snap.pending.pending_command_count, 0);
+        assert!(!snap.player.preparing);
+        *svc.state.write().unwrap() = MprisCachedState::from_snapshot(&snap);
+        assert!(!svc.can_play().await.unwrap());
+        assert!(svc.can_pause().await.unwrap());
+        assert!(
+            svc.play_pause().await.is_err(),
+            "nothing to play is not offered"
+        );
+        svc.play().await.unwrap();
+        assert_eq!(
+            core.snapshot().await.unwrap().pending.pending_command_count,
+            0
+        );
+        assert!(bridge.commands.lock().unwrap().is_empty());
         core.shutdown().await.unwrap();
     }
 

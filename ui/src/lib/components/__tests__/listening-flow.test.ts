@@ -17,6 +17,7 @@ import PlaybackIndicator from "../PlaybackIndicator.svelte";
 import PlayerBar from "../PlayerBar.svelte";
 import QueueView from "../QueueView.svelte";
 import Sidebar from "../Sidebar.svelte";
+import { ARTWORK_HOLD_MS } from "../../ambient/held-artwork.svelte.js";
 import { RETURN_FRAMES_KEY, ReturnFrames } from "../../return-frame.js";
 
 afterEach(() => cleanup());
@@ -513,6 +514,8 @@ describe("Now Playing up next", () => {
     onOpenArtist: vi.fn(),
     onOpenLyrics: vi.fn(),
     onOpenQueue: vi.fn(),
+    selectGate: { enabled: true, reason: null },
+    onSelectEntry: vi.fn(async (): Promise<CommandReceipt | null> => null),
   });
 
   function summary(overrides: Partial<QueueSummary> = {}): QueueSummary {
@@ -565,6 +568,117 @@ describe("Now Playing up next", () => {
     expect(screen.queryByTestId("np-up-next-source")).toBeNull();
   });
 
+  const startReceipt = (status: CommandReceipt["status"], commandId = "sel-1"): CommandReceipt => ({
+    commandId,
+    op: "selectQueueEntry",
+    status,
+    acceptedAtMs: 0,
+    deduplicated: false,
+  });
+  const withReceipt = (snapshot: AppSnapshot, lastReceipt: CommandReceipt | null): AppSnapshot => ({
+    ...snapshot,
+    pending: { ...snapshot.pending, lastReceipt },
+  });
+  const startButtons = () =>
+    screen.getAllByTestId("np-up-next-row").flatMap((row) => within(row).queryAllByTestId("np-up-next-start"));
+
+  it("starts a queued row through the queue's handler; suggestions offer no start", async () => {
+    const p = props(snapshotWith(summary()));
+    render(NowPlayingView, { props: p });
+    const rows = screen.getAllByTestId("np-up-next-row");
+    expect(rows.map((row) => within(row).queryAllByRole("button").length)).toEqual([1, 1, 0, 0, 0]);
+    await fireEvent.click(startButtons()[1]!);
+    expect(p.onSelectEntry).toHaveBeenCalledTimes(1);
+    expect(p.onSelectEntry).toHaveBeenCalledWith(summary().previewEntries![3]);
+  });
+
+  it("keeps rows reachable but inert while the queue cannot start them, or the track is unavailable", async () => {
+    const preview = entries(4);
+    preview[2] = { ...preview[2]!, availability: "unavailable", track: { ...preview[2]!.track, availability: "unavailable" } };
+    const blocked = { ...props(snapshotWith(summary())), selectGate: { enabled: false, reason: "Reconnecting" } };
+    render(NowPlayingView, { props: blocked });
+    const [first] = startButtons();
+    expect(first!.getAttribute("aria-disabled")).toBe("true");
+    expect(first!.title).toBe("Reconnecting");
+    expect(first!.hasAttribute("disabled")).toBe(false);
+    await fireEvent.click(first!);
+    expect(blocked.onSelectEntry).not.toHaveBeenCalled();
+    cleanup();
+
+    const open = props(snapshotWith(summary({ previewEntries: preview })));
+    render(NowPlayingView, { props: open });
+    const unavailable = startButtons()[0]!;
+    expect(unavailable.getAttribute("aria-disabled")).toBe("true");
+    expect(unavailable.textContent).toContain("Unavailable");
+    await fireEvent.click(unavailable);
+    expect(open.onSelectEntry).not.toHaveBeenCalled();
+    expect(startButtons()[1]!.getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("shows the wait on the pressed row and never re-arms it from a late or foreign receipt", async () => {
+    const snapshot = snapshotWith(summary());
+    const p = { ...props(snapshot), onSelectEntry: vi.fn(async () => startReceipt("accepted")) };
+    const view = render(NowPlayingView, { props: p });
+    await fireEvent.click(startButtons()[0]!);
+    await tick();
+    expect(startButtons()[0]!.getAttribute("aria-busy")).toBe("true");
+    expect(startButtons()[1]!.getAttribute("aria-busy")).toBe("false");
+
+    // Another command's outcome leaves the wait alone; this command's failure ends it.
+    await view.rerender({ ...p, snapshot: withReceipt(snapshot, startReceipt("failed", "other")) });
+    expect(startButtons()[0]!.getAttribute("aria-busy")).toBe("true");
+    await view.rerender({ ...p, snapshot: withReceipt(snapshot, startReceipt("failed")) });
+    expect(startButtons()[0]!.getAttribute("aria-busy")).toBe("false");
+    // The same receipt delivered again, or a stale accepted one, does not bring the wait back.
+    await view.rerender({ ...p, snapshot: withReceipt(snapshot, startReceipt("accepted")) });
+    expect(startButtons()[0]!.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("keeps focus in Up next when the started row leaves it", async () => {
+    const first = snapshotWith(summary());
+    const p = props(first);
+    const view = render(NowPlayingView, { props: p });
+    const pressed = startButtons()[0]!;
+    pressed.focus();
+    await fireEvent.click(pressed);
+    const moved = summary({ currentEntryId: "e-2" });
+    await view.rerender({ ...p, snapshot: snapshotWith(moved) });
+    await tick();
+    await tick();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(startButtons()[0]!);
+  });
+
+  it("leads to the queue from the heading and names the next track on one line", async () => {
+    const p = props(snapshotWith(summary()));
+    render(NowPlayingView, { props: p });
+    const link = screen.getByTestId("np-up-next-open-queue");
+    expect(link.closest("h2")).toBeTruthy();
+    expect(link.getAttribute("aria-label") ?? link.textContent).toContain("Up next");
+    await fireEvent.click(link);
+    expect(p.onOpenQueue).toHaveBeenCalledTimes(1);
+    const next = summary().previewEntries![2]!.track;
+    const line = screen.getByTestId("np-up-next-line");
+    expect(line.textContent?.trim()).toBe(`Next: ${next.title} · ${next.artists!.map((a) => a.name).join(" / ")}`);
+    // The line starts that entry the way its row does.
+    await fireEvent.click(within(line).getByTestId("np-up-next-line-start"));
+    expect(p.onSelectEntry).toHaveBeenCalledWith(summary().previewEntries![2]);
+    cleanup();
+
+    // A suggestion next: named as one, with nothing to press.
+    render(NowPlayingView, { props: props(snapshotWith(summary({ currentEntryId: "e-3" }))) });
+    const suggested = screen.getByTestId("np-up-next-line");
+    expect(within(suggested).queryByRole("button")).toBeNull();
+    expect(suggested.textContent).toContain("YouTube Music suggestion · ");
+    cleanup();
+
+    // Nothing queued after this track: the line says where playback goes instead of naming one.
+    render(NowPlayingView, {
+      props: props(snapshotWith(summary({ currentEntryId: "e-3", officialUpcoming: { status: "off" } }))),
+    });
+    expect(screen.getByTestId("np-up-next-line").textContent?.trim()).toBe("Autoplay is off, so playback stops after the queue");
+  });
+
   it("fades the cover in on a track change, not on first show or under reduced motion", async () => {
     const first = snapshotWith(summary());
     const next = { ...first, player: { ...first.player, trackInstanceId: "ti-2" } };
@@ -605,5 +719,84 @@ describe("Now Playing up next", () => {
     await reduced.rerender(props(next, true));
     expect(wrap().classList.contains("np-wait")).toBe(false);
     expect(wrap().classList.contains("np-reveal")).toBe(false);
+  });
+
+  it("never reveals the previous track's held cover under the new title", async () => {
+    vi.useFakeTimers();
+    try {
+      const wrap = () => screen.getByTestId("np-cover-wrap");
+      const img = () => wrap().querySelector("img")?.getAttribute("src") ?? null;
+      const first = { ...snapshotWith(summary()), mockMode: false };
+      const a = first.player.currentTrack!;
+      const artA = { cover: { assetId: "asset-a", remoteUrl: "https://example.invalid/a.jpg" }, seed: a.videoId, label: a.title };
+      const b = { ...a, videoId: "vid-b", title: "B", cover: { remoteUrl: "https://example.invalid/b.jpg" } };
+      const onB = (cover: { assetId?: string; remoteUrl: string }) => ({
+        ...first,
+        player: { ...first.player, trackInstanceId: "ti-2", currentTrack: { ...b, cover } },
+      });
+      const remoteB = onB(b.cover);
+      const cachedB = onB({ ...b.cover, assetId: "asset-b" });
+      const artOf = (s: AppSnapshot) => ({ cover: s.player.currentTrack!.cover, seed: "vid-b", label: "B" });
+      const view = render(NowPlayingView, { props: { ...props({ ...first, player: { ...first.player, currentTrack: { ...a, cover: artA.cover } } }), artwork: artA } });
+
+      // App holds A's cover while B's is cached: the stage keeps waiting past the old 500 ms cap.
+      await view.rerender({ ...props(remoteB), artwork: artA });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(wrap().classList.contains("np-wait")).toBe(true);
+      // B's own cover lands: it is what fades in.
+      await view.rerender({ ...props(cachedB), artwork: artOf(cachedB) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(wrap().classList.contains("np-reveal")).toBe(true);
+      expect(img()).toBe("app://covers/asset-b");
+      cleanup();
+
+      // The hold runs out first: the stage fades in with B's placeholder, never with A's cover.
+      const late = render(NowPlayingView, { props: { ...props(first), artwork: artA } });
+      await late.rerender({ ...props(remoteB), artwork: artA });
+      await vi.advanceTimersByTimeAsync(ARTWORK_HOLD_MS);
+      expect(wrap().classList.contains("np-reveal")).toBe(true);
+      expect(img()).toBeNull();
+      expect(within(wrap()).getByTestId("cover-placeholder")).toBeTruthy();
+      cleanup();
+
+      // No stand-in (a second skip): the stage waits the short while for B's own cover...
+      const skipped = render(NowPlayingView, { props: { ...props(first), artwork: artA } });
+      await skipped.rerender({ ...props(remoteB), artwork: artOf(remoteB) });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(wrap().classList.contains("np-wait")).toBe(true);
+      await skipped.rerender({ ...props(cachedB), artwork: artOf(cachedB) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(wrap().classList.contains("np-reveal")).toBe(true);
+      expect(img()).toBe("app://covers/asset-b");
+      cleanup();
+      // ...and fades in its placeholder when the cover is not there by then.
+      const slow = render(NowPlayingView, { props: { ...props(first), artwork: artA } });
+      await slow.rerender({ ...props(remoteB), artwork: artOf(remoteB) });
+      await vi.advanceTimersByTimeAsync(499);
+      expect(wrap().classList.contains("np-wait")).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(wrap().classList.contains("np-reveal")).toBe(true);
+      expect(img()).toBeNull();
+      cleanup();
+
+      // A stand-in that ends after the short wait (App's hold ran out) reveals the placeholder then.
+      const ended = render(NowPlayingView, { props: { ...props(first), artwork: artA } });
+      await ended.rerender({ ...props(remoteB), artwork: artA });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(wrap().classList.contains("np-wait")).toBe(true);
+      await ended.rerender({ ...props(remoteB), artwork: artOf(remoteB) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(wrap().classList.contains("np-reveal")).toBe(true);
+      expect(img()).toBeNull();
+      cleanup();
+
+      // Reduced motion hides nothing: the held cover stays in view, as in the player bar.
+      const reduced = render(NowPlayingView, { props: { ...props(first, true), artwork: artA } });
+      await reduced.rerender({ ...props(remoteB, true), artwork: artA });
+      expect(wrap().classList.contains("np-wait")).toBe(false);
+      expect(img()).toBe("app://covers/asset-a");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

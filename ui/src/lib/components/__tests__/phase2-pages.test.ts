@@ -5,7 +5,6 @@ import { createSyntheticTracks, type HomeFeed, type PlaylistSummary, type Track 
 import { createRawSnippet } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLocale } from "../../i18n/index.svelte.js";
-import { RECENT_SEARCH_LIMIT, RecentSearches, recentSearches } from "../../recent-searches.svelte.js";
 import CoverShelf, { alignedOffset, arrowTarget, shelfEndPadding, shelfWheelTarget } from "../CoverShelf.svelte";
 import HomeView from "../HomeView.svelte";
 import LibraryView from "../LibraryView.svelte";
@@ -16,94 +15,17 @@ const ACCOUNT_A = "acct:scope-a:epoch-1";
 const ACCOUNT_B = "acct:scope-b:epoch-2";
 const ready = { kind: "ready", cached: false, error: null } as const;
 
-/** In-memory Storage; `broken` makes every call throw like a blocked profile. */
-function memoryStorage(broken = false): Storage {
-  const data = new Map<string, string>();
-  const guard = () => {
-    if (broken) throw new Error("storage blocked");
-  };
-  return {
-    get length() {
-      return data.size;
-    },
-    clear: () => data.clear(),
-    key: (i) => [...data.keys()][i] ?? null,
-    getItem: (k) => (guard(), data.get(k) ?? null),
-    setItem: (k, v) => (guard(), void data.set(k, v)),
-    removeItem: (k) => (guard(), void data.delete(k)),
-  };
-}
-
 function playlist(id: string): PlaylistSummary {
   return { playlistId: id, title: `List ${id}`, subtitle: null, trackCount: 3, cover: null } as PlaylistSummary;
 }
 
 beforeEach(() => {
   setLocale("en");
-  recentSearches.sync("none:signedOut");
 });
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
-});
-
-describe("Recent searches store", () => {
-  it("keeps queries newest first, folds case and spacing, and stops at the limit", () => {
-    const store = new RecentSearches(memoryStorage());
-    store.record(ACCOUNT_A, "glass sessions");
-    store.record(ACCOUNT_A, "  Hanbit ");
-    store.record(ACCOUNT_A, "GLASS   Sessions");
-    store.record(ACCOUNT_A, "   ");
-    expect(store.itemsFor(ACCOUNT_A)).toEqual(["GLASS Sessions", "Hanbit"]);
-
-    for (let i = 0; i < RECENT_SEARCH_LIMIT + 3; i += 1) store.record(ACCOUNT_A, `q${i}`);
-    const items = store.itemsFor(ACCOUNT_A);
-    expect(items).toHaveLength(RECENT_SEARCH_LIMIT);
-    expect(items[0]).toBe(`q${RECENT_SEARCH_LIMIT + 2}`);
-  });
-
-  it("shows a list only to its own account and forgets it on sign-out or another account", () => {
-    const storage = memoryStorage();
-    const store = new RecentSearches(storage);
-    store.record("none:unknown", "while starting");
-    expect(store.itemsFor("none:unknown")).toEqual([]);
-
-    store.record(ACCOUNT_A, "mine");
-    expect(store.itemsFor(ACCOUNT_B)).toEqual([]);
-    // Start-up and signing-in states keep the list for when the account is back.
-    store.sync("none:unknown");
-    store.sync("none:signingIn");
-    expect(store.itemsFor(ACCOUNT_A)).toEqual(["mine"]);
-
-    store.sync(ACCOUNT_B);
-    expect(store.itemsFor(ACCOUNT_A)).toEqual([]);
-    expect(new RecentSearches(storage).itemsFor(ACCOUNT_A)).toEqual([]);
-
-    store.record(ACCOUNT_B, "theirs");
-    store.sync("none:signedOut");
-    expect(store.itemsFor(ACCOUNT_B)).toEqual([]);
-    expect(storage.length).toBe(0);
-  });
-
-  it("survives a reload from storage, ignores a damaged record and works without storage", () => {
-    const storage = memoryStorage();
-    new RecentSearches(storage).record(ACCOUNT_A, "kept");
-    expect(new RecentSearches(storage).itemsFor(ACCOUNT_A)).toEqual(["kept"]);
-
-    storage.setItem("ytmcp.recentSearches.v1", "{not json");
-    expect(new RecentSearches(storage).itemsFor(ACCOUNT_A)).toEqual([]);
-
-    const blocked = new RecentSearches(memoryStorage(true));
-    blocked.record(ACCOUNT_A, "in memory");
-    expect(blocked.itemsFor(ACCOUNT_A)).toEqual(["in memory"]);
-
-    // No storage at all (a fresh in-memory session, or none available): an empty list that works.
-    const none = new RecentSearches(null);
-    expect(none.itemsFor(ACCOUNT_A)).toEqual([]);
-    none.record(ACCOUNT_A, "no storage");
-    expect(none.itemsFor(ACCOUNT_A)).toEqual(["no storage"]);
-  });
 });
 
 describe("Library paging", () => {
@@ -266,6 +188,7 @@ describe("Search before typing", () => {
     const onPlayTrack = vi.fn();
     const onOpenAlbum = vi.fn();
     const onRequestStartData = vi.fn();
+    const onRememberQuery = vi.fn();
     const props = {
       query: "",
       view: ready,
@@ -284,6 +207,7 @@ describe("Search before typing", () => {
       libraryPlaylists: [] as PlaylistSummary[],
       smoothScroll: false,
       onRequestStartData,
+      onRememberQuery,
       onSearch,
       onLoadMore: () => {},
       onPlayTrack,
@@ -296,7 +220,7 @@ describe("Search before typing", () => {
       ...overrides,
     };
     const view = render(SearchView, { props });
-    return { ...view, onSearch, onPlayTrack, onOpenAlbum, onRequestStartData };
+    return { ...view, onSearch, onPlayTrack, onOpenAlbum, onRequestStartData, onRememberQuery };
   }
 
   const startPane = () => screen.getByTestId("search-start");
@@ -346,25 +270,33 @@ describe("Search before typing", () => {
     expect(startPane().classList.contains("is-active")).toBe(false);
   });
 
-  it("remembers only queries the user ran, runs a chip again and clears the list", async () => {
+  it("records only queries the user ran: never debounced typing or text still being composed", async () => {
     vi.useFakeTimers();
-    const { onSearch, onOpenAlbum, rerender } = renderSearch();
+    const onClearRecent = vi.fn();
+    const { onSearch, onOpenAlbum, onRememberQuery, rerender } = renderSearch({ recentQueries: ["glass", "syn"], onClearRecent });
     const input = screen.getByTestId("search-input") as HTMLInputElement;
 
     await fireEvent.input(input, { target: { value: "syn" } });
     vi.advanceTimersByTime(300);
     expect(onSearch).toHaveBeenLastCalledWith("syn");
-    expect(recentSearches.itemsFor(ACCOUNT_A)).toEqual([]);
+    // An IME composition searches when it ends, and Enter while composing submits nothing.
+    await fireEvent.compositionStart(input);
+    await fireEvent.input(input, { target: { value: "synt" } });
+    await fireEvent.submit(input.closest("form")!);
+    await fireEvent.compositionEnd(input, { target: { value: "synth" } });
+    vi.advanceTimersByTime(300);
+    expect(onSearch).toHaveBeenLastCalledWith("synth");
+    expect(onRememberQuery).not.toHaveBeenCalled();
 
     await fireEvent.submit(input.closest("form")!);
-    expect(recentSearches.itemsFor(ACCOUNT_A)).toEqual(["syn"]);
+    expect(onRememberQuery).toHaveBeenLastCalledWith("synth");
 
     // Opening a result keeps the query that found it.
     await rerender({ query: "glass", albums: [{ id: "alb-1", browseId: null, title: "Album" }] });
     await fireEvent.input(input, { target: { value: "glass" } });
     screen.getByTestId("search-album-alb-1").click();
     expect(onOpenAlbum).toHaveBeenCalledWith("alb-1");
-    expect(recentSearches.itemsFor(ACCOUNT_A)).toEqual(["glass", "syn"]);
+    expect(onRememberQuery).toHaveBeenLastCalledWith("glass");
 
     await fireEvent.input(input, { target: { value: "" } });
     const chips = within(screen.getByTestId("search-recent")).getAllByTestId("search-recent-chip");
@@ -372,27 +304,39 @@ describe("Search before typing", () => {
     await fireEvent.click(chips[1]!);
     expect(onSearch).toHaveBeenLastCalledWith("syn");
     expect(input.value).toBe("syn");
-    expect(recentSearches.itemsFor(ACCOUNT_A)).toEqual(["syn", "glass"]);
+    expect(onRememberQuery).toHaveBeenLastCalledWith("syn");
+    expect(onRememberQuery).toHaveBeenCalledTimes(3);
 
     await fireEvent.input(input, { target: { value: "" } });
     await fireEvent.click(screen.getByTestId("search-recent-clear"));
+    expect(onClearRecent).toHaveBeenCalledTimes(1);
+    await rerender({ recentQueries: [] });
     expect(screen.queryByTestId("search-recent")).toBeNull();
   });
 
-  it("never shows one account's recent searches to another", async () => {
-    recentSearches.record(ACCOUNT_A, "private query");
-    const { rerender } = renderSearch();
-    expect(screen.getByTestId("search-recent").textContent).toContain("private query");
-
-    await rerender({ accountKey: ACCOUNT_B });
+  it("holds a list that arrives late until it can appear without pushing the blocks below", async () => {
+    const recentTracks = createSyntheticTracks(2, "r");
+    const { rerender } = renderSearch({ recentTracks, recentQueries: [] });
+    const input = screen.getByTestId("search-input") as HTMLInputElement;
+    await rerender({ recentQueries: ["late"] });
     expect(screen.queryByTestId("search-recent")).toBeNull();
-    await rerender({ accountKey: ACCOUNT_A });
+
+    // Out of view (typing), the list takes its place; it is there when the field is cleared.
+    await fireEvent.input(input, { target: { value: "x" } });
+    await fireEvent.input(input, { target: { value: "" } });
+    expect(screen.getByTestId("search-recent").textContent).toContain("late");
+
+    // With nothing below yet, the list shows at once; emptying always shows at once.
+    cleanup();
+    const second = renderSearch({ recentQueries: [] });
+    await second.rerender({ recentQueries: ["first"] });
+    expect(screen.getByTestId("search-recent").textContent).toContain("first");
+    await second.rerender({ recentTracks, recentQueries: [] });
     expect(screen.queryByTestId("search-recent")).toBeNull();
   });
 
   it("gives way to results as soon as typing starts and comes back when the field is cleared", async () => {
-    recentSearches.record(ACCOUNT_A, "earlier");
-    renderSearch();
+    renderSearch({ recentQueries: ["earlier"] });
     const input = screen.getByTestId("search-input") as HTMLInputElement;
     expect(startPane().classList.contains("is-active")).toBe(true);
     expect(isInert(resultsPane())).toBe(true);
@@ -435,6 +379,7 @@ describe("Search songs and list rows", () => {
     const props = { ...base, query: "abc", songs: createSyntheticTracks(3, "s"), hasMore: true, loadingMore: false, moreError: null, onLoadMore };
     const { rerender } = render(SearchView, { props });
     await fireEvent.input(screen.getByTestId("search-input"), { target: { value: "abc" } });
+    await fireEvent.click(screen.getByTestId("search-all-songs"));
     await vi.waitFor(() => expect(onLoadMore).toHaveBeenCalled());
     expect(screen.queryByTestId("search-load-more")).toBeNull();
 
@@ -443,6 +388,100 @@ describe("Search songs and list rows", () => {
     expect(screen.queryByTestId("search-more-error")).toBeNull();
     await fireEvent.click(screen.getByTestId("track-list-retry"));
     expect(onLoadMore.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  const groups = () =>
+    Array.from(screen.getByTestId("search-results").querySelectorAll("h2")).map((h) => h.textContent?.trim());
+  const songRows = () => within(screen.getByTestId("search-results")).queryAllByTestId("virtual-track-row");
+
+  it("shows six songs first, then the tile groups, and pages nothing until All songs is chosen", async () => {
+    const onLoadMore = vi.fn();
+    const onPlayTrack = vi.fn();
+    const songs = createSyntheticTracks(9, "s");
+    const props = {
+      ...base,
+      query: "six first",
+      songs,
+      artists: [{ id: "art-1", name: "Artist" }],
+      albums: [{ id: "alb-1", browseId: null, title: "Album" }],
+      hasMore: true,
+      loadingMore: false,
+      moreError: null,
+      onLoadMore,
+      onPlayTrack,
+    };
+    render(SearchView, { props });
+    const input = screen.getByTestId("search-input") as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: "six first" } });
+    expect(groups()).toEqual(["Songs", "Artists", "Albums"]);
+    expect(songRows()).toHaveLength(6);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(onLoadMore).not.toHaveBeenCalled();
+
+    // Rows in the short block play like rows anywhere else.
+    await fireEvent.click(songRows()[2]!.querySelector("button")!);
+    expect(onPlayTrack).toHaveBeenCalledWith(songs[2]);
+
+    const allSongs = screen.getByTestId("search-all-songs");
+    expect(allSongs.textContent?.trim()).toBe("All songs");
+    await fireEvent.click(allSongs);
+    expect(groups()).toEqual(["Songs"]);
+    expect(songRows()).toHaveLength(9);
+    await vi.waitFor(() => expect(onLoadMore).toHaveBeenCalled());
+    expect(document.activeElement).toBe(screen.getByTestId("search-songs-back"));
+
+    await fireEvent.click(screen.getByTestId("search-songs-back"));
+    await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("search-all-songs")));
+    expect(groups()).toEqual(["Songs", "Artists", "Albums"]);
+    expect(input.value).toBe("six first");
+  });
+
+  it("comes back to the full songs list after the page is left and shown again for the same search", async () => {
+    const props = { ...base, query: "round trip", songs: createSyntheticTracks(9, "s"), hasMore: false, loadingMore: false, moreError: null, onLoadMore: () => {} };
+    render(SearchView, { props });
+    await fireEvent.click(screen.getByTestId("search-all-songs"));
+    cleanup();
+    const shown = render(SearchView, { props });
+    expect(screen.queryByTestId("search-all-songs")).toBeNull();
+    expect(songRows()).toHaveLength(9);
+    // A new search starts grouped.
+    await shown.rerender({ ...props, query: "another" });
+    expect(screen.getByTestId("search-all-songs")).toBeTruthy();
+    expect(songRows()).toHaveLength(6);
+  });
+
+  it("leaves out the Songs block with no songs and All songs with six or fewer", async () => {
+    const props = { ...base, query: "abc", songs: [] as Track[], artists: [{ id: "art-1", name: "Artist" }], hasMore: false, loadingMore: false, moreError: null, onLoadMore: () => {} };
+    const { rerender } = render(SearchView, { props });
+    await fireEvent.input(screen.getByTestId("search-input"), { target: { value: "abc" } });
+    expect(groups()).toEqual(["Artists"]);
+    expect(screen.queryByTestId("search-all-songs")).toBeNull();
+    await rerender({ ...props, songs: createSyntheticTracks(6, "s") });
+    expect(groups()).toEqual(["Songs", "Artists"]);
+    expect(screen.queryByTestId("search-all-songs")).toBeNull();
+  });
+
+  it("searches nothing while an input method is composing, and once when it ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const onSearch = vi.fn();
+      render(SearchView, { props: { ...base, query: "", songs: [], hasMore: false, loadingMore: false, moreError: null, onLoadMore: () => {}, onSearch } });
+      const input = screen.getByTestId("search-input") as HTMLInputElement;
+      await fireEvent.compositionStart(input);
+      await fireEvent.input(input, { target: { value: "ni" } });
+      await fireEvent.input(input, { target: { value: "nih" } });
+      await fireEvent.submit(input.closest("form")!);
+      vi.advanceTimersByTime(300);
+      expect(onSearch).not.toHaveBeenCalled();
+      await fireEvent.compositionEnd(input, { target: { value: "你好" } });
+      vi.advanceTimersByTime(249);
+      expect(onSearch).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onSearch).toHaveBeenCalledTimes(1);
+      expect(onSearch).toHaveBeenLastCalledWith("你好");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives Search songs and Home recent plays the like column the other lists have", async () => {

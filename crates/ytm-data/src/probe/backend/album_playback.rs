@@ -20,7 +20,7 @@ const ALBUM_BUTTONS: &str = concat!(
 );
 const ALBUM_ROWS: &str =
     "/secondaryContents/sectionListRenderer/contents/0/musicShelfRenderer/contents";
-const TRACK_WATCH_ENDPOINT: &str = concat!(
+pub(super) const TRACK_WATCH_ENDPOINT: &str = concat!(
     "/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer",
     "/playNavigationEndpoint/watchEndpoint"
 );
@@ -219,7 +219,7 @@ fn album_rows(album: &Value) -> Result<&[Value], QueryError> {
 }
 
 /// Non-greyed track rows paired with their play button's watch endpoint.
-fn playable_rows(rows: &[Value]) -> impl Iterator<Item = (&Value, &Value)> {
+pub(super) fn playable_rows(rows: &[Value]) -> impl Iterator<Item = (&Value, &Value)> {
     rows.iter().filter_map(|item| {
         let row = item.get("musicResponsiveListItemRenderer")?;
         if row

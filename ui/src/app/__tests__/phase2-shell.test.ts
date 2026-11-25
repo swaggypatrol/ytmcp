@@ -307,6 +307,33 @@ describe("Toasts (L4)", () => {
     expect(document.body.textContent).not.toContain("Done:");
   });
 
+  it("does not report a command the core dropped for a newer one of the same kind", async () => {
+    const { bridge } = preload();
+    const client = createUiClient({ preloadBridge: bridge });
+    render(App, { props: { client, initialView: "home" } });
+    await screen.findByTestId("player-bar");
+    const dropped = (cmd: PlayerCommandPayload): CommandReceipt => ({
+      commandId: cmd.commandId, op: cmd.op, status: "cancelled", acceptedAtMs: 0, observedAtMs: null, deduplicated: false,
+      error: { code: "STALE_CONTEXT", retriable: false, retryAfterMs: null, safeMessage: "coalesced by newer SetVolume command", requestId: null },
+    });
+    let settleFirst!: () => void;
+    bridge.sendPlayerCommand
+      .mockImplementationOnce((cmd) => new Promise<CommandReceipt>((resolve) => (settleFirst = () => resolve(dropped(cmd)))) as never)
+      .mockImplementationOnce(() => new Promise<CommandReceipt>(() => {}) as never);
+    const first = client.sendPlayerCommand("setVolume", { volume: 0.4 });
+    void client.sendPlayerCommand("setVolume", { volume: 0.5 });
+    settleFirst();
+    await first;
+    expect(client.getState().pendingOverlay.lastError).toBeNull();
+    expect(client.getState().pendingOverlay.desiredVolume).toBe(0.5);
+    expect(screen.queryByTestId("toast-command-failed")).toBeNull();
+
+    // A cancellation with nothing of the same kind behind it is still reported.
+    bridge.sendPlayerCommand.mockImplementationOnce((cmd) => dropped(cmd));
+    await client.sendPlayerCommand("seek", { positionMs: 1000 });
+    expect(client.getState().pendingOverlay.lastError?.code).toBe("STALE_CONTEXT");
+  });
+
   it("reports a failed command once, even when the same receipt arrives again", async () => {
     const receipt: CommandReceipt = {
       commandId: "cmd-1",

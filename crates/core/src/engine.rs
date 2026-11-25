@@ -329,6 +329,10 @@ pub struct CoreEngine {
     deps: CoreDeps,
     clock: Arc<dyn Clock>,
     shutdown_token: CancellationToken,
+    /// Reads and edits playlists for the undo of the app's own additions; without it an addition
+    /// carries no undo token.
+    playlist_editor: Option<Arc<dyn crate::control::catalog::ControlCatalog>>,
+    added_entries: Arc<std::sync::Mutex<crate::playlist_undo::AddedEntries>>,
 }
 
 impl CoreEngine {
@@ -362,7 +366,19 @@ impl CoreEngine {
             deps,
             clock,
             shutdown_token,
+            playlist_editor: None,
+            added_entries: Arc::default(),
         }
+    }
+
+    /// Lets the listener undo the app's own playlist additions, reading and editing playlists
+    /// through the same catalog as the control path. Set it before the handle is cloned.
+    pub fn with_playlist_editor(
+        mut self,
+        editor: Arc<dyn crate::control::catalog::ControlCatalog>,
+    ) -> Self {
+        self.playlist_editor = Some(editor);
+        self
     }
 
     pub fn core_epoch(&self) -> &CoreEpoch {
@@ -438,8 +454,9 @@ impl CoreEngine {
         rx.await.map_err(|_| CoreError::EngineStopped)
     }
 
-    /// Whether the command may have changed the page: it started a bridge dispatch and the
-    /// bridge did not refuse it before acting. Admission refusals and bridge refusals did not.
+    /// Whether the command may have changed the page: it (or, for a held play, the restore
+    /// autoplay that carried it) started a bridge dispatch and the bridge did not refuse it
+    /// before acting. Admission refusals and bridge refusals did not.
     pub async fn may_have_reached_page(&self, command_id: CommandId) -> Result<bool, CoreError> {
         let (reply, rx) = oneshot::channel();
         self.send_msg(CoreMsg::MayHaveReachedPage { command_id, reply })
@@ -948,10 +965,62 @@ impl CoreEngine {
         Ok(response)
     }
 
+    /// The Search page's recent searches for the signed-in account (`ui.recentSearches`). The
+    /// account comes from the core's own session, never from the request: the request must
+    /// carry that session's `accountEpoch` (`INVALID_PAYLOAD` without one, `ACCOUNT_MISMATCH`
+    /// for another), and without an authenticated session (signed out, expired, or only a
+    /// restored offline scope) it is refused with `AUTH_REQUIRED`. A reply whose account
+    /// changed while storage ran is dropped as `ACCOUNT_MISMATCH`.
+    pub async fn recent_searches(
+        &self,
+        request: ytm_protocol::RecentSearchesRequest,
+        expected_account_epoch: Option<AccountEpoch>,
+    ) -> Result<ytm_protocol::RecentSearchesSnapshot, QueryError> {
+        request
+            .validate()
+            .map_err(|reason| QueryError::from(CoreError::InvalidPayload(reason)))?;
+        let Some(expected_epoch) = expected_account_epoch else {
+            return Err(CoreError::InvalidPayload(
+                "ui.recentSearches requires the envelope accountEpoch".to_string(),
+            )
+            .into());
+        };
+        let Some(storage) = &self.deps.storage else {
+            return Err(CoreError::UnsupportedCapability(
+                "storage port is not attached".to_string(),
+            )
+            .into());
+        };
+        let ctx = self.acquire_catalog_context(true).await?;
+        let (Some(account_epoch), Some(account_scope)) = (ctx.account_epoch, ctx.account_scope)
+        else {
+            return Err(CoreError::AuthRequired("no active account session".to_string()).into());
+        };
+        if expected_epoch != account_epoch {
+            return Err(CoreError::AccountMismatch(
+                "request accountEpoch does not match active session".to_string(),
+            )
+            .into());
+        }
+        let snapshot = storage
+            .recent_searches(account_scope, account_epoch.clone(), request)
+            .await?;
+        let after = self.acquire_catalog_context(false).await?;
+        if after.account_epoch.as_ref() != Some(&account_epoch) {
+            return Err(CoreError::AccountMismatch(
+                "accountEpoch changed while recent searches were read".to_string(),
+            )
+            .into());
+        }
+        Ok(snapshot)
+    }
+
     /// Executes one user-confirmed account mutation at a time. Preconditions (confirmation, the
     /// request's `accountEpoch`, a verified player/catalog identity match) are checked before
     /// anything is sent. Once sent, an unknown result is `indeterminate` (never retried, never
-    /// reported as an account error); a cheap read-back may then settle it.
+    /// reported as an account error); a cheap read-back may then settle it. A confirmed addition
+    /// whose reply named its new entry carries an undo token, and `undoAddToPlaylist` removes
+    /// exactly that entry (`crate::playlist_undo`).
     pub async fn mutate(
         &self,
         request: MutationRequest,
@@ -1009,29 +1078,94 @@ impl CoreEngine {
             .into());
         }
 
+        use ytm_protocol::MutationKind;
+        use ytm_protocol::MutationOutcome::{Confirmed, Indeterminate, Rejected};
         let kind = request.kind;
         let listener_scope = account_scope.clone();
         let readback_target = match (kind, request.liked) {
-            (ytm_protocol::MutationKind::SetLike, Some(liked)) => {
-                Some((request.video_id.clone(), liked))
-            }
+            (MutationKind::SetLike, Some(liked)) => Some((request.video_id.clone(), liked)),
             _ => None,
         };
-        let sent = tokio::select! {
-            _ = ctx.cancel.cancelled() => Ok(MutationResult {
+        let cancelled = || {
+            MutationResult::new(
                 kind,
-                outcome: ytm_protocol::MutationOutcome::Indeterminate,
-                error: Some(CoreError::StaleContext(
-                    "account state changed while the mutation was in flight".to_string(),
-                ).into()),
-            }),
-            res = catalog.mutate(account_epoch.clone(), account_scope, request, ctx.cancel.clone()) => res,
+                Indeterminate,
+                Some(
+                    CoreError::StaleContext(
+                        "account state changed while the mutation was in flight".to_string(),
+                    )
+                    .into(),
+                ),
+            )
         };
-        let mut result = match sent {
-            Ok(result) => result,
-            Err(err) => {
-                self.note_catalog_error(Some(account_epoch), &err).await;
-                return Err(err);
+        // What the write touched, so the invalidation names it: the playlist an add or its undo
+        // went to, or the song a like rated (as the control path's rating writes do).
+        let (mut result, written_id, created_entry_id) = match kind {
+            MutationKind::UndoAddToPlaylist => {
+                let Some(editor) = self.playlist_editor.as_deref() else {
+                    return Err(CoreError::UnsupportedCapability(
+                        "undoing a playlist addition is not available".to_string(),
+                    )
+                    .into());
+                };
+                let context = crate::control::catalog::CatalogReadContext {
+                    account_scope: account_scope.clone(),
+                    account_epoch: account_epoch.clone(),
+                    cancel: ctx.cancel.clone(),
+                };
+                let (result, sent_to) = crate::playlist_undo::undo_addition(
+                    &self.added_entries,
+                    editor,
+                    &request,
+                    context,
+                    self.clock.now_ms(),
+                )
+                .await?;
+                (result, sent_to.map(|id| id.as_str().to_string()), None)
+            }
+            MutationKind::AddToPlaylist => {
+                let written_id = request
+                    .playlist_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_string());
+                let sent = tokio::select! {
+                    _ = ctx.cancel.cancelled() => Ok(crate::ports::PlaylistAddition {
+                        result: cancelled(),
+                        created_entry_id: None,
+                    }),
+                    res = catalog.add_to_playlist(
+                        account_epoch.clone(),
+                        account_scope.clone(),
+                        request.clone(),
+                        ctx.cancel.clone(),
+                    ) => res,
+                };
+                match sent {
+                    Ok(added) => (added.result, written_id, added.created_entry_id),
+                    Err(err) => {
+                        self.note_catalog_error(Some(account_epoch), &err).await;
+                        return Err(err);
+                    }
+                }
+            }
+            MutationKind::SetLike => {
+                let written_id = Some(request.video_id.as_str().to_string());
+                let sent = tokio::select! {
+                    _ = ctx.cancel.cancelled() => Ok(cancelled()),
+                    res = catalog.mutate(
+                        account_epoch.clone(),
+                        account_scope.clone(),
+                        request.clone(),
+                        ctx.cancel.clone(),
+                    ) => res,
+                };
+                match sent {
+                    Ok(result) => (result, written_id, None),
+                    Err(err) => {
+                        self.note_catalog_error(Some(account_epoch), &err).await;
+                        return Err(err);
+                    }
+                }
             }
         };
 
@@ -1039,7 +1173,7 @@ impl CoreEngine {
             .acquire_catalog_context(false)
             .await
             .is_ok_and(|after| after.account_epoch.as_ref() == Some(&account_epoch));
-        if result.outcome == ytm_protocol::MutationOutcome::Indeterminate
+        if result.outcome == Indeterminate
             && same_account
             && let Some((video_id, liked)) = readback_target
         {
@@ -1047,8 +1181,27 @@ impl CoreEngine {
                 .read_back_like(catalog.as_ref(), &account_epoch, &video_id, liked)
                 .await;
         }
+        // Only an addition whose reply named the one entry it created can be undone, and only
+        // in the account session that made it.
+        if result.outcome == Confirmed
+            && same_account
+            && self.playlist_editor.is_some()
+            && let Some(entry) = crate::playlist_undo::added_entry(
+                &request,
+                &account_scope,
+                &account_epoch,
+                created_entry_id,
+            )
+        {
+            let token = self
+                .added_entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remember(entry, self.clock.now_ms());
+            result.undo_token = Some(token);
+        }
         if same_account
-            && result.outcome != ytm_protocol::MutationOutcome::Rejected
+            && result.outcome != Rejected
             && let Some(draft) = listener_draft
         {
             let _ = self
@@ -1058,16 +1211,31 @@ impl CoreEngine {
                 })
                 .await;
         }
-        if result.outcome == ytm_protocol::MutationOutcome::Confirmed && same_account {
+        // An undo whose removal was sent may have changed the playlist even when the result is
+        // unknown; anything else is published only once confirmed.
+        let changed = match kind {
+            MutationKind::UndoAddToPlaylist => result.outcome != Rejected,
+            MutationKind::SetLike | MutationKind::AddToPlaylist => result.outcome == Confirmed,
+        };
+        if changed && same_account {
             let resource = match kind {
-                ytm_protocol::MutationKind::SetLike => "likedSongs",
-                ytm_protocol::MutationKind::AddToPlaylist => "playlistTracks",
+                MutationKind::SetLike => "likedSongs",
+                MutationKind::AddToPlaylist | MutationKind::UndoAddToPlaylist => "playlistTracks",
             };
-            let _ = self
-                .send_msg(CoreMsg::InvalidateResource {
-                    resource_kind: resource.to_string(),
-                })
-                .await;
+            let _ = match written_id {
+                // Published only while this write's account is still the active one.
+                Some(id) => {
+                    self.invalidate_control_resource(account_epoch, resource.to_string(), id)
+                        .await
+                }
+                None if kind != MutationKind::UndoAddToPlaylist => {
+                    self.send_msg(CoreMsg::InvalidateResource {
+                        resource_kind: resource.to_string(),
+                    })
+                    .await
+                }
+                None => Ok(()),
+            };
         }
         Ok(result)
     }
@@ -1104,10 +1272,10 @@ impl CoreEngine {
             )
             .await
         {
-            Ok(CatalogResponsePayload::LikedSongs(page))
-                if page.freshness == ytm_protocol::Freshness::Fresh =>
+            Ok(CatalogResponsePayload::LikedSongs(liked))
+                if liked.page.freshness == ytm_protocol::Freshness::Fresh =>
             {
-                page
+                liked.page
             }
             _ => return Indeterminate,
         };
@@ -1411,6 +1579,9 @@ struct CoreActor {
     /// The saved last track with the account scope it was recorded under.
     restore_candidate: Option<(AccountScope, crate::ports::LastPlayed)>,
     restore_attempted: bool,
+    /// The saved session has been read (or there is no storage), so a missing restore
+    /// candidate means there is nothing to restore.
+    last_session_known: bool,
     launch_autoplay_handled: bool,
     /// The active bridge epoch has reported playback from a healthy page at least once, so an
     /// empty page is a fact.
@@ -1419,6 +1590,9 @@ struct CoreActor {
     /// Ready again.
     bridge_unhealthy: bool,
     restore_followup: Option<RestoreFollowup>,
+    /// The restore's autoplay command that carries the held plays: they settle with it and
+    /// are never sent themselves.
+    restore_autoplay_carrier: Option<CommandId>,
     last_recorded_video: Option<ytm_protocol::VideoId>,
     /// The playback instance of the last history row; `None` after a launch restore or a new
     /// bridge epoch, whose first sighting of `last_recorded_video` continues that row.
@@ -1465,6 +1639,7 @@ impl CoreActor {
         let now_ms = deps.clock.now_ms();
         let clock_model = PlaybackClock::new(now_ms);
         let time_anchor = clock_model.snapshot_anchor(now_ms);
+        let last_session_known = deps.storage.is_none();
         Self {
             core_epoch,
             deps,
@@ -1516,6 +1691,7 @@ impl CoreActor {
                 audio_bitrate_kbps: None,
                 drm_protected: None,
                 stopped_confirmed: false,
+                preparing: false,
             },
             clock_model,
             capabilities: CapabilitySet::default(),
@@ -1533,10 +1709,12 @@ impl CoreActor {
             bridge_caps: CapabilitySet::default(),
             restore_candidate: None,
             restore_attempted: false,
+            last_session_known,
             launch_autoplay_handled: false,
             bridge_playback_seen: false,
             bridge_unhealthy: false,
             restore_followup: None,
+            restore_autoplay_carrier: None,
             last_recorded_video: None,
             last_recorded_instance: None,
             last_position_persist_ms: 0,
@@ -1619,8 +1797,11 @@ impl CoreActor {
                         None => break,
                     }
                 }
-                // Deadlines belong to the active command, and only playing positions need periodic writes.
-                _ = ticker.tick(), if self.active_command.is_some() || self.player.playback == PlaybackStatus::Playing => {
+                // Deadlines belong to the active command and to held plays, and only playing
+                // positions need periodic writes.
+                _ = ticker.tick(), if self.active_command.is_some()
+                    || self.has_held_play()
+                    || self.player.playback == PlaybackStatus::Playing => {
                     self.check_timeouts();
                 }
                 _ = self.shutdown_token.cancelled() => {
@@ -1628,8 +1809,89 @@ impl CoreActor {
                     break;
                 }
             }
+            self.settle_readiness();
         }
         debug!(core_epoch = %self.core_epoch, "CoreActor exited");
+    }
+
+    /// Runs after every event: once the player knows what it can play, held plays leave the
+    /// queue (sent, or refused as nothing to play), and a changed `player.preparing` is
+    /// published.
+    fn settle_readiness(&mut self) {
+        if self.active_command.is_none() && !self.pending_queue.is_empty() {
+            self.start_next_queued_command(None);
+        }
+        if self.player.preparing != self.preparing() {
+            self.emit_player_changed();
+        }
+    }
+
+    /// The player cannot say yet whether it has something to play: the page has not reported
+    /// playback on this bridge (unless a playTarget is loading it), the saved session is
+    /// unread, or a saved track can still be restored (its account is bound or being bound).
+    /// Plays are held while this lasts.
+    fn awaiting_playback_source(&self) -> bool {
+        if self.active_bridge_epoch.is_none()
+            || matches!(
+                self.player.connection,
+                PlayerConnectionState::Disconnected | PlayerConnectionState::Incompatible
+            )
+        {
+            return false;
+        }
+        if !self.bridge_playback_seen {
+            // A playTarget that navigated to this page loads what plays itself; commands
+            // queue behind it as usual.
+            return !self
+                .active_command
+                .as_ref()
+                .is_some_and(|active| matches!(active.plan, PendingOpPlan::PlayTarget { .. }));
+        }
+        if self.player.current_track.is_some() || self.restore_attempted {
+            return false;
+        }
+        if !self.last_session_known {
+            return true;
+        }
+        self.restore_candidate.as_ref().is_some_and(|(scope, _)| {
+            self.pending_session_bind.is_some()
+                || (self.auth_state.state == AuthState::Authenticated
+                    && self.auth_state.account_scope.as_ref() == Some(scope))
+        })
+    }
+
+    /// `player.preparing`: still awaiting a playback source, or the launch restore (with the
+    /// plays it carries) is running.
+    fn preparing(&self) -> bool {
+        self.awaiting_playback_source() || self.restore_play_active() || self.carrier_pending()
+    }
+
+    fn has_held_play(&self) -> bool {
+        self.pending_queue
+            .iter()
+            .any(|queued| queued.hold_deadline_ms.is_some())
+    }
+
+    /// The restore's autoplay that carries held plays is still active or queued.
+    fn carrier_pending(&self) -> bool {
+        self.restore_autoplay_carrier.as_ref().is_some_and(|id| {
+            self.active_command
+                .as_ref()
+                .is_some_and(|active| &active.receipt.command_id == id)
+                || self
+                    .pending_queue
+                    .iter()
+                    .any(|queued| &queued.receipt.command_id == id)
+        })
+    }
+
+    /// A queued command that must not be sent yet: a held play while the player is still
+    /// finding out what to play or the launch restore that carries it runs.
+    fn is_blocked(&self, queued: &QueuedCommand) -> bool {
+        queued.hold_deadline_ms.is_some()
+            && (self.awaiting_playback_source()
+                || self.restore_followup.is_some()
+                || self.carrier_pending())
     }
 
     /// The playback a new command will find once the active and queued commands have run; a
@@ -1714,6 +1976,7 @@ impl CoreActor {
         let now_ms = self.deps.clock.now_ms();
         let mut player = self.player.clone();
         player.time_anchor = self.clock_model.snapshot_anchor(now_ms);
+        player.preparing = self.preparing();
 
         AppSnapshot {
             protocol_version: PROTOCOL_VERSION,
@@ -1744,6 +2007,7 @@ impl CoreActor {
     fn emit_player_changed(&mut self) {
         let now_ms = self.deps.clock.now_ms();
         self.player.time_anchor = self.clock_model.snapshot_anchor(now_ms);
+        self.player.preparing = self.preparing();
         let rev = self.next_revision();
         self.emit_delta(StateDelta::PlayerChanged {
             revision: rev,
@@ -2069,12 +2333,18 @@ impl CoreActor {
             }
             CoreMsg::InvalidateResource { resource_kind } => {
                 if resource_kind == "catalog" {
-                    // Cache cleared: the now-playing cover's URL mapping is gone, so cache it
-                    // again or its assetId stops resolving until the track changes.
+                    // Cache cleared: the now-playing cover's file and URL mapping are gone. The
+                    // state drops its assetId and the cover is cached again, or the id would
+                    // stop resolving until the track changes.
                     self.now_playing_cover = None;
                     if let Some(mut track) = self.player.current_track.take() {
+                        let before = track.cover.clone();
                         self.apply_now_playing_cover(&mut track);
+                        let changed = track.cover != before;
                         self.player.current_track = Some(track);
+                        if changed {
+                            self.emit_player_changed();
+                        }
                     }
                 }
                 let rev = self.next_revision();
@@ -2135,7 +2405,7 @@ impl CoreActor {
 
     fn handle_submit_command(
         &mut self,
-        payload: PlayerCommandPayload,
+        mut payload: PlayerCommandPayload,
         keep_paused: bool,
         origin: CommandOrigin,
         reply: oneshot::Sender<Result<CommandReceipt, QueryError>>,
@@ -2293,17 +2563,24 @@ impl CoreActor {
             self.listener_log
                 .record(self.auth_state.account_scope.as_ref(), action);
         }
+        let hold_deadline_ms = if is_internal {
+            None
+        } else {
+            self.admit_play_intent(&mut payload, manual, now_ms)
+        };
         if !is_internal && loads_playback(payload.op) {
             // The caller chose what to play. A launch restore not yet started must never
             // navigate after it, even when its command times out while the page still loads.
             self.restore_attempted = true;
             self.restore_candidate = None;
         }
+        let queued_op = payload.op;
         let command = QueuedCommand {
             receipt: receipt.clone(),
             payload,
             keep_paused,
             playback_fence,
+            hold_deadline_ms,
         };
         if took_over && matches!(receipt.op, PlayerOp::Pause | PlayerOp::Stop) {
             self.pending_queue.push_front(command);
@@ -2312,15 +2589,129 @@ impl CoreActor {
         }
         self.emit_command_updated(receipt.clone());
 
-        if self.active_command.is_none() {
+        // The caller's reply follows its own command, not a held play this one unblocked.
+        let starts_now = self.active_command.is_none()
+            && self
+                .pending_queue
+                .iter()
+                .find(|queued| !self.is_blocked(queued))
+                .is_some_and(|queued| queued.receipt.command_id == receipt.command_id);
+        if starts_now {
             self.start_next_queued_command(Some(reply));
         } else {
+            if self.active_command.is_none() {
+                self.start_next_queued_command(None);
+            }
             self.emit_player_changed();
-            let supersedes_restore_seek = is_restore_play_intent(receipt.op);
+            let supersedes_restore_seek =
+                hold_deadline_ms.is_none() && is_restore_play_intent(queued_op);
             let _ = reply.send(Ok(receipt));
             if supersedes_restore_seek {
                 self.evaluate_restore_seek();
             }
+        }
+    }
+
+    /// Applies a newly accepted outside command to plays still held. A command that decides
+    /// whether or what plays replaces them (an agent's replaces only an agent's), so the
+    /// newest intent wins. A toggle meeting a held play or a player that cannot say yet what
+    /// it can play is pinned to what it means now (after a held play, "do not play"). A play
+    /// that cannot be sent yet is held; its hold deadline is returned.
+    fn admit_play_intent(
+        &mut self,
+        payload: &mut PlayerCommandPayload,
+        manual: bool,
+        now_ms: u64,
+    ) -> Option<u64> {
+        let awaiting = self.awaiting_playback_source();
+        if payload.op == PlayerOp::Toggle && (awaiting || self.has_held_play()) {
+            payload.op = resolve_toggle_op(self.playback_when_queue_runs());
+        }
+        if replaces_held_play(payload.op) {
+            let error = external_playback_stale("replaced by a newer playback command");
+            let (replaced, kept): (VecDeque<_>, VecDeque<_>) =
+                std::mem::take(&mut self.pending_queue)
+                    .into_iter()
+                    .partition(|queued| {
+                        queued.hold_deadline_ms.is_some()
+                            && (manual || queued.playback_fence.is_some())
+                    });
+            self.pending_queue = kept;
+            for queued in replaced {
+                self.finish_interrupted(queued.receipt, false, error.clone());
+            }
+        }
+        (payload.op == PlayerOp::Play && awaiting).then(|| now_ms.saturating_add(PLAY_HOLD_MS))
+    }
+
+    /// Ends held plays that can no longer be sent: an agent's play whose permission ended is
+    /// cancelled, and with `check_deadline`, a play past its hold deadline fails as nothing
+    /// to play in time. A running launch restore bounds the plays it carries by its own
+    /// deadlines, so nothing expires meanwhile.
+    fn expire_held_plays(&mut self, now_ms: u64, check_deadline: bool) {
+        if !self.has_held_play() || self.restore_play_active() || self.carrier_pending() {
+            return;
+        }
+        let mut ended = Vec::new();
+        let mut kept = VecDeque::with_capacity(self.pending_queue.len());
+        while let Some(queued) = self.pending_queue.pop_front() {
+            let Some(deadline_ms) = queued.hold_deadline_ms else {
+                kept.push_back(queued);
+                continue;
+            };
+            let fence_error = queued
+                .playback_fence
+                .as_ref()
+                .and_then(|fence| self.validate_playback_fence(fence, false).err());
+            if let Some(error) = fence_error {
+                ended.push((queued.receipt, CommandLifecycleStatus::Cancelled, error));
+            } else if check_deadline && now_ms >= deadline_ms {
+                ended.push((
+                    queued.receipt,
+                    CommandLifecycleStatus::Failed,
+                    nothing_to_play("the player found no track to play in time"),
+                ));
+            } else {
+                kept.push_back(queued);
+            }
+        }
+        self.pending_queue = kept;
+        if ended.is_empty() {
+            return;
+        }
+        for (mut receipt, status, error) in ended {
+            receipt.status = status;
+            receipt.error = Some(error);
+            self.dedup.upsert(receipt.clone(), now_ms);
+            self.emit_command_updated(receipt);
+        }
+        self.emit_player_changed();
+    }
+
+    /// Held plays settle with the restore autoplay that carried them: the page received that
+    /// one play, so its outcome is theirs, and so is whether it may have reached the page.
+    fn settle_carried_plays(&mut self, carrier: &CommandReceipt) {
+        let now_ms = self.deps.clock.now_ms();
+        let reached_page = self.dispatched_commands.contains(&carrier.command_id)
+            && !self.page_refused_commands.contains(&carrier.command_id);
+        let (carried, kept): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut self.pending_queue)
+            .into_iter()
+            .partition(|queued| queued.hold_deadline_ms.is_some());
+        self.pending_queue = kept;
+        for queued in carried {
+            if reached_page {
+                if self.dispatched_commands.len() >= MAX_DISPATCHED_COMMANDS {
+                    self.dispatched_commands.pop_front();
+                }
+                self.dispatched_commands
+                    .push_back(queued.receipt.command_id.clone());
+            }
+            let mut receipt = queued.receipt;
+            receipt.status = carrier.status;
+            receipt.error = carrier.error.clone();
+            receipt.observed_at_ms = carrier.observed_at_ms;
+            self.dedup.upsert(receipt.clone(), now_ms);
+            self.emit_command_updated(receipt);
         }
     }
 
@@ -2432,9 +2823,9 @@ impl CoreActor {
                 == Some(true)
     }
 
-    /// A play with no track loaded can never be observed: right after start-up the official
-    /// page has not restored its own queue yet, and its play control does nothing. Such a play
-    /// fails at once (retriable) instead of timing out as indeterminate.
+    /// A play with no track loaded can never be observed: the official page's play control
+    /// does nothing then. Once the player knows it has nothing to play (plays are held until
+    /// then), such a play fails at once (retriable) instead of timing out as indeterminate.
     fn check_something_to_play(&self, payload: &PlayerCommandPayload) -> Result<(), QueryError> {
         let is_play = match payload.op {
             PlayerOp::Play => true,
@@ -2442,13 +2833,7 @@ impl CoreActor {
             _ => false,
         };
         if is_play && self.player.current_track.is_none() {
-            return Err(QueryError {
-                code: QueryErrorCode::UnavailableTrack,
-                retriable: true,
-                retry_after_ms: Some(1_000),
-                safe_message: "no track is loaded in the player yet".to_string(),
-                request_id: None,
-            });
+            return Err(nothing_to_play("no track is loaded in the player yet"));
         }
         Ok(())
     }
@@ -2485,9 +2870,17 @@ impl CoreActor {
         if self.active_command.is_some() {
             return;
         }
-        let Some(queued) = self.pending_queue.pop_front() else {
+        let Some(index) = self
+            .pending_queue
+            .iter()
+            .position(|queued| !self.is_blocked(queued))
+        else {
             return;
         };
+        let queued = self
+            .pending_queue
+            .remove(index)
+            .expect("position is in range");
         let Some(bridge_epoch) = self.active_bridge_epoch.clone() else {
             let err = QueryError {
                 code: QueryErrorCode::BridgeIncompatible,
@@ -3294,6 +3687,10 @@ impl CoreActor {
         let receipt = active.receipt.clone();
         self.dedup.upsert(receipt.clone(), now_ms);
         self.emit_command_updated(receipt.clone());
+        if self.restore_autoplay_carrier.as_ref() == Some(&receipt.command_id) {
+            self.restore_autoplay_carrier = None;
+            self.settle_carried_plays(&receipt);
+        }
         self.emit_player_changed();
         self.continue_restore(&receipt);
         self.start_next_queued_command(None);
@@ -3457,6 +3854,7 @@ impl CoreActor {
             return false;
         };
         let now_ms = self.deps.clock.now_ms();
+        let play_queued = self.queued_play_intent();
         let Some(ActiveCommand {
             plan:
                 PendingOpPlan::PlayTarget {
@@ -3480,10 +3878,7 @@ impl CoreActor {
             self.clock_model.anchor().position_ms,
             position_ms,
             self.player.playback,
-        ) || self
-            .pending_queue
-            .iter()
-            .any(|queued| is_restore_play_intent(queued.receipt.op))
+        ) || play_queued
         {
             return false;
         }
@@ -3515,6 +3910,14 @@ impl CoreActor {
             None,
         );
         true
+    }
+
+    /// A play queued during the restore: the listener wants to hear it now, so the restore
+    /// stops waiting for its seek. Held plays do not count; the restore carries them.
+    fn queued_play_intent(&self) -> bool {
+        self.pending_queue.iter().any(|queued| {
+            queued.hold_deadline_ms.is_none() && is_restore_play_intent(queued.payload.op)
+        })
     }
 
     /// A restore seek is best-effort. Its observation, short deadline, or a queued
@@ -3554,10 +3957,7 @@ impl CoreActor {
             *position_ms,
             self.player.playback,
         ) || self.deps.clock.now_ms() >= *deadline_ms
-            || self
-                .pending_queue
-                .iter()
-                .any(|queued| is_restore_play_intent(queued.receipt.op))
+            || self.queued_play_intent()
         {
             self.pause_silent_transition(Some(track_instance_id.clone()));
         }
@@ -3612,6 +4012,7 @@ impl CoreActor {
     fn check_timeouts(&mut self) {
         let now_ms = self.deps.clock.now_ms();
         self.dedup.purge_expired(now_ms);
+        self.expire_held_plays(now_ms, true);
         if self.player.playback == PlaybackStatus::Playing {
             self.persist_position(false);
         }
@@ -3747,7 +4148,7 @@ impl CoreActor {
     }
 
     fn take_over_external_playback(&mut self, reason: &str) -> bool {
-        let released_active = self.invalidate_external_playback(reason);
+        let released_active = self.invalidate_external_playback(reason, false);
         let revision = self.next_revision();
         self.emit_delta(StateDelta::ManualTakeover {
             revision,
@@ -3756,20 +4157,26 @@ impl CoreActor {
         released_active
     }
 
-    fn invalidate_external_playback(&mut self, reason: &str) -> bool {
+    /// Ends the agents' pending playback commands (fenced to the old playback generation). After
+    /// an account change it also ends pending collection plays, the listener's too: their
+    /// context was read in the old account, and "Liked music" is another collection in each.
+    fn invalidate_external_playback(&mut self, reason: &str, account_changed: bool) -> bool {
         self.playback_generation += 1;
         let error = external_playback_stale(reason);
+        let ends = |fenced: bool, op: PlayerOp| {
+            fenced || (account_changed && op == PlayerOp::PlayCollection)
+        };
         let released_active = self
             .active_command
             .as_ref()
-            .is_some_and(|active| active.playback_fence.is_some());
+            .is_some_and(|active| ends(active.playback_fence.is_some(), active.receipt.op));
         if released_active {
             self.interrupt_active(error.clone());
         }
         let old_queue = std::mem::take(&mut self.pending_queue);
         let old_len = old_queue.len();
         for queued in old_queue {
-            if queued.playback_fence.is_some() {
+            if ends(queued.playback_fence.is_some(), queued.receipt.op) {
                 self.finish_interrupted(queued.receipt, false, error.clone());
             } else {
                 self.pending_queue.push_back(queued);
@@ -3790,6 +4197,7 @@ impl CoreActor {
             self.finish_interrupted(queued.receipt, false, cancel_err.clone());
         }
         self.restore_followup = None;
+        self.restore_autoplay_carrier = None;
         self.emit_player_changed();
     }
 
@@ -3916,7 +4324,7 @@ impl CoreActor {
         let same_account = self.auth_state.account_epoch.as_ref() == Some(&payload.account_epoch);
 
         if !same_account && self.auth_state.account_epoch.is_some() {
-            self.invalidate_account_scoped_state("account changed");
+            self.invalidate_account_scoped_state("account changed", true);
         }
 
         if let Some(catalog) = self.deps.catalog.clone() {
@@ -3979,7 +4387,7 @@ impl CoreActor {
     ) {
         let scope_changed = self.auth_state.account_scope.as_ref() != Some(&identity.account_scope);
         if !same_account || scope_changed {
-            self.invalidate_external_playback("account changed");
+            self.invalidate_external_playback("account changed", scope_changed);
         }
         self.auth_state.state = AuthState::Authenticated;
         self.auth_state.account_epoch = Some(account_epoch);
@@ -4019,6 +4427,7 @@ impl CoreActor {
     /// Restores the last active account scope so cached data can be browsed (stale, unverified)
     /// before any session material arrives, e.g. on an offline start.
     fn handle_last_session_loaded(&mut self, session: Option<LastSession>) {
+        self.last_session_known = true;
         let Some(session) = session else {
             return;
         };
@@ -4074,10 +4483,14 @@ impl CoreActor {
             self.maybe_start_launch_autoplay();
             return;
         }
+        // Held plays do not wait for the restore: it carries them.
         if self.auth_state.state != AuthState::Authenticated
             || self.player.connection != PlayerConnectionState::Ready
             || self.active_command.is_some()
-            || !self.pending_queue.is_empty()
+            || self
+                .pending_queue
+                .iter()
+                .any(|queued| queued.hold_deadline_ms.is_none())
         {
             return;
         }
@@ -4159,8 +4572,9 @@ impl CoreActor {
         );
     }
 
-    /// Start configured autoplay once silent restoration has settled, unless the user
-    /// already queued an action.
+    /// Once silent restoration has settled, play when configured or when a held play is
+    /// waiting for it, unless the user already queued another action. A held play is carried
+    /// by this one autoplay and never sent itself.
     fn continue_restore(&mut self, receipt: &CommandReceipt) {
         let Some(followup) = self.restore_followup.as_ref() else {
             return;
@@ -4169,6 +4583,9 @@ impl CoreActor {
             return;
         }
         let followup = self.restore_followup.take().expect("checked above");
+        // An agent's held play whose permission ended meanwhile is not carried.
+        self.expire_held_plays(self.deps.clock.now_ms(), false);
+        let carries_play = self.has_held_play();
         let should_autoplay = followup.autoplay && !self.launch_autoplay_handled;
         // This restore was the launch's one chance to autoplay; a failed one must not be
         // followed by the self-restore autoplay path playing whatever the page shows later.
@@ -4176,15 +4593,21 @@ impl CoreActor {
         if receipt.status != CommandLifecycleStatus::Observed
             || self.player.current_track.as_ref().map(|t| &t.video_id) != Some(&followup.video_id)
         {
+            // Held plays are released to the normal path: they play what the page shows, or
+            // fail as nothing to play.
             warn!(status = ?receipt.status, "paused restore did not settle; leaving player as is");
             return;
         }
-        if should_autoplay && self.pending_queue.is_empty() {
+        if carries_play || (should_autoplay && self.pending_queue.is_empty()) {
+            let command_id = internal_command_id("restore-autoplay");
+            if carries_play {
+                self.restore_autoplay_carrier = Some(command_id.clone());
+            }
             let mut args = empty_args();
             args.track_instance_id = self.player.track_instance_id.clone();
             self.submit_internal(
                 PlayerCommandPayload {
-                    command_id: internal_command_id("restore-autoplay"),
+                    command_id,
                     op: PlayerOp::Play,
                     args: Some(args),
                 },
@@ -4317,7 +4740,7 @@ impl CoreActor {
         let prev_scope = self.auth_state.account_scope.clone();
         self.catalog_account_hint = None;
         self.restore_candidate = None;
-        self.invalidate_account_scoped_state("user logged out");
+        self.invalidate_account_scoped_state("user logged out", true);
 
         self.auth_state = AuthStatusInfo {
             state: AuthState::SignedOut,
@@ -4363,7 +4786,8 @@ impl CoreActor {
 
     fn handle_auth_expired(&mut self, reason: Option<String>) {
         self.clear_catalog_session(self.auth_state.account_epoch.clone());
-        self.invalidate_account_scoped_state("session expired");
+        // The same account may sign in again: its collection plays still name its collections.
+        self.invalidate_account_scoped_state("session expired", false);
 
         // Keep the account scope: its cache stays browsable (stale) until the user signs in
         // again, and the same accountEpoch may be re-applied once credentials are refreshed.
@@ -4381,11 +4805,13 @@ impl CoreActor {
         self.refresh_capabilities();
     }
 
-    fn invalidate_account_scoped_state(&mut self, reason: &str) {
+    /// Drops what belonged to the account session; `account_may_change` also ends pending
+    /// collection plays (see `invalidate_external_playback`).
+    fn invalidate_account_scoped_state(&mut self, reason: &str, account_may_change: bool) {
         self.listener_log.clear();
         self.account_cancel.cancel();
         self.account_cancel = CancellationToken::new();
-        self.invalidate_external_playback(reason);
+        self.invalidate_external_playback(reason, account_may_change);
 
         let rev = self.next_revision();
         self.emit_delta(StateDelta::ResourceInvalidated {
@@ -4553,7 +4979,13 @@ impl CoreActor {
                         active.successor_handoff_used = true;
                     }
                     // Cancel anything else queued behind PlayTarget; never auto-retry next/enqueue.
+                    // Held plays were never sent and wait for what the navigation loads.
                     let now_ms = self.deps.clock.now_ms();
+                    let (held, rest): (VecDeque<_>, VecDeque<_>) =
+                        std::mem::take(&mut self.pending_queue)
+                            .into_iter()
+                            .partition(|queued| queued.hold_deadline_ms.is_some());
+                    self.pending_queue = rest;
                     while let Some(mut queued) = self.pending_queue.pop_front() {
                         queued.receipt.status = CommandLifecycleStatus::Cancelled;
                         queued.receipt.error = Some(QueryError {
@@ -4567,6 +4999,7 @@ impl CoreActor {
                         self.dedup.upsert(queued.receipt.clone(), now_ms);
                         self.emit_command_updated(queued.receipt);
                     }
+                    self.pending_queue = held;
                 } else {
                     self.cancel_all_pending("unexpected bridgeEpoch transition");
                 }
@@ -4731,7 +5164,9 @@ impl CoreActor {
 
     /// The page reports the playing track's cover as a remote URL. The core caches it once
     /// through storage and patches the resulting asset id and accent into every observation of
-    /// that cover, so UI (`app://covers/<id>`) and MPRIS (`file://`) get a local image.
+    /// that cover, so UI (`app://covers/<id>`) and MPRIS (`file://`) get a local image. A cover
+    /// storage already holds is patched into the track's first state; it is still passed through
+    /// `cache_cover`, which refreshes its recency and confirms (or withdraws) it.
     fn apply_now_playing_cover(&mut self, track: &mut ytm_protocol::Track) {
         let Some(remote) = track.cover.as_ref().and_then(|c| c.remote_url.clone()) else {
             // A track without cover art leaves nothing to protect from eviction.
@@ -4748,49 +5183,63 @@ impl CoreActor {
             }
             return;
         }
-        // The previous track's cover is no longer playing; the new one is pinned once cached.
-        if let Some(storage) = &self.deps.storage {
-            storage.pin_cover(None);
-        }
-        self.now_playing_cover = Some((remote.clone(), None));
-        if let Some(storage) = self.deps.storage.clone() {
-            let internal_tx = self.internal_tx.clone();
-            tokio::spawn(async move {
-                let result = storage.cache_cover(remote.clone()).await;
-                let _ = internal_tx
-                    .send(InternalEvent::CoverCached {
-                        remote_url: remote,
-                        result,
-                    })
-                    .await;
+        let Some(storage) = self.deps.storage.clone() else {
+            self.now_playing_cover = Some((remote, None));
+            return;
+        };
+        let hit = storage
+            .cached_cover(&remote)
+            .map(|cached| ytm_protocol::CoverRef {
+                asset_id: Some(cached.asset_id),
+                remote_url: Some(remote.clone()),
+                accent_oklch: Some(cached.accent_oklch),
             });
-        }
+        // The previous track's cover is no longer playing; the new one is pinned once known.
+        storage.pin_cover(hit.as_ref().and_then(|cover| cover.asset_id.clone()));
+        // Until a local asset is known, the state names only the remote URL, never an id that
+        // may not resolve (for example one left over from before a cache clear).
+        track.cover = Some(hit.clone().unwrap_or_else(|| remote_cover_only(&remote)));
+        self.now_playing_cover = Some((remote.clone(), hit));
+        let internal_tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            let result = storage.cache_cover(remote.clone()).await;
+            let _ = internal_tx
+                .send(InternalEvent::CoverCached {
+                    remote_url: remote,
+                    result,
+                })
+                .await;
+        });
     }
 
+    /// Settles the now-playing cover once storage has cached it (or failed to). A confirmed hit
+    /// changes nothing; a failure withdraws an asset the state named, leaving the remote URL.
     fn handle_cover_cached(&mut self, remote_url: String, result: Result<CachedCover, QueryError>) {
-        let cached = match result {
-            Ok(cached) => cached,
-            Err(err) => {
-                debug!(code = ?err.code, "now-playing cover could not be cached");
-                return;
-            }
-        };
         if self.now_playing_cover.as_ref().map(|(url, _)| url) != Some(&remote_url) {
             return;
         }
-        if let Some(storage) = &self.deps.storage {
-            storage.pin_cover(Some(cached.asset_id.clone()));
-        }
-        let cover = ytm_protocol::CoverRef {
-            asset_id: Some(cached.asset_id),
-            remote_url: Some(remote_url.clone()),
-            accent_oklch: Some(cached.accent_oklch),
+        let cover = match result {
+            Ok(cached) => Some(ytm_protocol::CoverRef {
+                asset_id: Some(cached.asset_id),
+                remote_url: Some(remote_url.clone()),
+                accent_oklch: Some(cached.accent_oklch),
+            }),
+            Err(err) => {
+                debug!(code = ?err.code, "now-playing cover could not be cached");
+                None
+            }
         };
-        self.now_playing_cover = Some((remote_url.clone(), Some(cover.clone())));
+        if self.now_playing_cover.as_ref().map(|(_, known)| known) == Some(&cover) {
+            return;
+        }
+        if let Some(storage) = &self.deps.storage {
+            storage.pin_cover(cover.as_ref().and_then(|c| c.asset_id.clone()));
+        }
+        self.now_playing_cover = Some((remote_url.clone(), cover.clone()));
         if let Some(track) = self.player.current_track.as_mut()
             && track.cover.as_ref().and_then(|c| c.remote_url.as_ref()) == Some(&remote_url)
         {
-            track.cover = Some(cover);
+            track.cover = Some(cover.unwrap_or_else(|| remote_cover_only(&remote_url)));
             self.emit_player_changed();
         }
     }
@@ -5014,6 +5463,29 @@ async fn release_gate(
         .cloned()
 }
 
+/// How long a play waits for the player to learn what it can play before failing as nothing
+/// to play. The page reports its first playback 0.3–1.5 s after it is ready.
+const PLAY_HOLD_MS: u64 = 10_000;
+
+fn nothing_to_play(message: &str) -> QueryError {
+    QueryError {
+        code: QueryErrorCode::UnavailableTrack,
+        retriable: true,
+        retry_after_ms: Some(1_000),
+        safe_message: message.to_owned(),
+        request_id: None,
+    }
+}
+
+/// Commands that decide whether or what plays, so they replace a play still held.
+fn replaces_held_play(op: PlayerOp) -> bool {
+    matches!(
+        op,
+        PlayerOp::Play | PlayerOp::Pause | PlayerOp::Stop | PlayerOp::SelectQueueEntry
+    ) || is_restore_play_intent(op)
+        || loads_playback(op)
+}
+
 fn external_playback_stale(message: &str) -> QueryError {
     QueryError {
         code: QueryErrorCode::StaleContext,
@@ -5100,4 +5572,13 @@ fn takes_over_external_playback(op: PlayerOp) -> bool {
         op,
         PlayerOp::SetVolume | PlayerOp::SetMuted | PlayerOp::SetRepeat | PlayerOp::SetQueueFilter
     )
+}
+
+/// A cover reference that names only the page's remote URL: no local asset, no accent.
+fn remote_cover_only(remote_url: &str) -> ytm_protocol::CoverRef {
+    ytm_protocol::CoverRef {
+        asset_id: None,
+        remote_url: Some(remote_url.to_string()),
+        accent_oklch: None,
+    }
 }

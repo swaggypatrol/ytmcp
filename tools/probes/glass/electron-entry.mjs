@@ -5,6 +5,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, screen } from "electron";
 import { runPhase2Acceptance } from "./phase2-acceptance.mjs";
+import { runExit } from "./overlay-exit.mjs";
+import { runCheck } from "./window-check.mjs";
 import { runFlow, runLook, runOverlay, runPerf, runRims, runShots, runTiers, runTransition } from "./real-ui.mjs";
 
 const mode = process.env.GLASS_PROBE_MODE ?? "shots";
@@ -242,7 +244,9 @@ const modes = {
   overlay: (args) => runOverlay(outDir, {
     spike: args.includes("spike"), dialogProfile: args.includes("dialog-profile"),
   }),
+  exit: (args) => runExit(process.env.GLASS_PROBE_EXIT_DIR ?? join(outDir, "exit"), args),
   flow: () => runFlow(join(outDir, "flow.json")),
+  check: (args) => runCheck(join(outDir, "check"), args),
   transition: () => runTransition(join(outDir, "transition")),
   tiers: (args) => runTiers(join(outDir, "tiers"), args.find((a) => a === "dark" || a === "light") ?? null),
   perf: (args) => runPerf(process.env.GLASS_PROBE_PERF_FILE ?? join(outDir, "perf.json"), Number(args.find((a) => /^\d+$/.test(a)) ?? 60), args.includes("collapse") ? "collapse" : null),

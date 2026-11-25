@@ -5,7 +5,7 @@
 <script lang="ts">
   import { untrack, type Snippet } from "svelte";
   import { glass } from "../glass/liquid-glass.js";
-  import { OverlayPresence } from "../glass/overlay-motion.svelte.js";
+  import { OverlayPresence, afterExit, overlayExitDuration } from "../glass/overlay-motion.svelte.js";
   import { t } from "../i18n/index.svelte.js";
 
   interface Props {
@@ -24,11 +24,25 @@
   const presence = new OverlayPresence();
   $effect(() => () => presence.dispose());
 
+  /** The controls Tab stops on inside the dialog, in order: enabled fields and buttons, links, a
+   *  disclosure's summary, editable text and tabindex stops, leaving out what is hidden, inert or
+   *  folded inside a closed disclosure. */
   function getFocusableElements(): HTMLElement[] {
     if (!dialogEl) return [];
     const selector =
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-    return Array.from(dialogEl.querySelectorAll<HTMLElement>(selector));
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), ' +
+      'details > summary:first-of-type, [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"])';
+    return Array.from(dialogEl.querySelectorAll<HTMLElement>(selector)).filter((el) => canTabTo(el, dialogEl!));
+  }
+
+  /** False for an element that is hidden, inert or inside a closed disclosure (other than its summary). */
+  function canTabTo(el: HTMLElement, root: HTMLElement): boolean {
+    for (let node: HTMLElement | null = el; node && node !== root; node = node.parentElement) {
+      if (node.hidden || node.inert) return false;
+      const parent: HTMLElement | null = node.parentElement;
+      if (parent instanceof HTMLDetailsElement && !parent.open && node !== parent.querySelector(":scope > summary")) return false;
+    }
+    return el.checkVisibility?.() ?? true;
   }
 
   /** True when the element or an ancestor is inert, where focus() silently does nothing. */
@@ -69,13 +83,23 @@
   /**
    * Moves the dialog layer to the end of the app shell, so a dialog opened from inside a page
    * (a stacking context of its own) still covers the glass on L5 and still reads the shell's
-   * metrics. Outside the shell it stays where it is.
+   * metrics. Outside the shell it stays where it is. When the page that holds the dialog goes
+   * while the dialog leaves (or is open), the layer finishes its exit before it is removed.
    */
   function toShell(node: HTMLElement) {
     const shell = node.parentElement?.closest(".app-shell");
     if (!shell) return;
     shell.append(node);
-    return () => node.remove();
+    return () => {
+      // After its own exit the layer goes at once; only an unmount while open or leaving waits.
+      const surface = node.querySelector<HTMLElement>(".lg-overlay");
+      if (!surface || (node.dataset.leaving && !presence.exiting)) return node.remove();
+      if (!node.dataset.leaving) {
+        node.inert = true;
+        node.dataset.leaving = surface.dataset.leaving = "dismiss";
+      }
+      afterExit(node, overlayExitDuration(surface, 0), () => node.remove());
+    };
   }
 
   function handleKeydown(e: KeyboardEvent) {

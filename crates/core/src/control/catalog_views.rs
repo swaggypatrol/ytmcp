@@ -269,8 +269,8 @@ impl ControlService {
                 }
                 ControlResponse::Library(LibraryPage::Playlists(page))
             }
-            CatalogResponsePayload::LikedSongs(tracks) => {
-                let page = map_page(tracks, |track| track_projection(&track));
+            CatalogResponsePayload::LikedSongs(liked) => {
+                let page = map_page(liked.page, |track| track_projection(&track));
                 if page.items.len() > limit {
                     return Err(unavailable(
                         "the catalog did not honor the liked music page budget",

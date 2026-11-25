@@ -147,7 +147,6 @@ export const en = {
     no: "No",
     unknownArtist: "Unknown artist",
     cancel: "Cancel",
-    confirm: "Confirm",
     clear: "Clear",
     loadMore: "Load more",
     loadingMore: "Loading the next page…",
@@ -224,6 +223,8 @@ export const en = {
     albums: "Albums",
     artists: "Artists",
     playlists: "Playlists",
+    allSongs: "All songs",
+    backToResults: "Back to all results",
   },
   library: {
     title: "Library",
@@ -275,13 +276,19 @@ export const en = {
     filterLoadedOnly: "Filter applies to loaded playlists.",
     noPlaylists: "No playlists to add to.",
     noMatchingPlaylists: "No matching playlists.",
-    confirmAddTitle: "Confirm",
-    confirmAdd: "Add “{track}” to the playlist “{playlist}”?",
     back: "Back",
   },
   /** Floating messages: short past-tense sentences, at most one action. */
   toast: {
     added: "Added to {playlist}",
+    /** The action on an addition's toast that takes it back. */
+    undo: "Undo",
+    undone: "Removed from {playlist}",
+    undoAlreadyRemoved: "Already removed",
+    undoExpired: "Can no longer undo",
+    /** Nothing was changed and Undo stays on the toast. */
+    undoNotNow: "Couldn’t undo that right now",
+    undoFailed: "Couldn’t remove “{title}” from {playlist}",
     likeFailed: "Couldn’t like “{title}”",
     unlikeFailed: "Couldn’t remove the like from “{title}”",
     addFailed: "Couldn’t add “{title}” to {playlist}",
@@ -346,6 +353,8 @@ export const en = {
     upNextAutoplayOff: "Autoplay is off, so playback stops after the queue",
     upNextRadio: "This radio keeps adding tracks",
     upNextEmpty: "Nothing else is loaded after this track",
+    upNextOpenQueue: "Up next: open the queue",
+    upNextLine: "Next: {track}",
   },
   queue: {
     title: "Queue",
@@ -413,6 +422,8 @@ export const en = {
     seekPreview: "Seek to",
     pending: "Waiting to confirm…",
     noTrackToPlay: "No track is loaded in the player yet. Choose a song to play first",
+    /** The play button's title while the last song is coming back after launch; a press then plays it. */
+    preparingTrack: "Getting your last song ready to play",
     shuffle: "Shuffle",
     shuffleOn: "Shuffle: on",
     shuffleOff: "Shuffle: off",
@@ -478,6 +489,8 @@ export const en = {
     logoutConfirmBody: "This clears the sign-in state and private cache for this account in the app. You will need to sign in again on the official page.",
     advancedSection: "Advanced",
     openDiagnosticsDialog: "View diagnostics",
+    /** Beside View diagnostics: how many recent problems it lists. */
+    problemCount: { one: "1 recent problem", other: "{count} recent problems" },
     clearCache: "Clear local cache",
     cacheClearing: "Clearing the cache…",
     cacheCleared: "Cache cleared. Lists will refresh automatically.",
@@ -542,6 +555,19 @@ export const en = {
     authReason: "Sign-in note",
     lastCommandError: "Last playback command error",
     lastContentError: "Last page error",
+    /** The log of failures and unclear outcomes at the top of Diagnostics, newest first. */
+    recentProblems: "Recent problems",
+    noRecentProblems: "Nothing has gone wrong lately.",
+    /** Opens the error code and message of one problem. */
+    problemDetails: "Details",
+    /** A change whose outcome is unknown, until the listener has looked. */
+    problemNotChecked: "Not checked yet",
+    problemChecked: "Checked",
+    markProblemChecked: "I’ve checked it",
+    /** What to do about a change to the account whose outcome is unknown. */
+    checkWriteAdvice: "Look on the official player page to see whether the change was made. It won’t be retried.",
+    /** What to do about a playback command whose outcome is unknown. */
+    checkCommandAdvice: "Look on the official player page to see whether it happened. It won’t be retried.",
     playbackState: "Playback state",
     network: "Network",
     networkStates: { online: "Online", offline: "Offline", unknown: "Unknown" },

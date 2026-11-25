@@ -260,6 +260,8 @@
 }
 .collection-count {
   margin: 0;
+  /* One line even while empty: the count arrives late and must not push the list down. */
+  min-height: 1lh;
   font-size: var(--text-sm);
   color: var(--text-secondary);
 }
@@ -322,16 +324,18 @@
 :root[data-reduce-transparency="true"] .collection-strip {
   background-color: var(--bg-canvas);
 }
+/* Reduced motion: the strip only fades. !important, because the global reset (motion-a11y.css)
+   sets every transition's duration with !important. */
 :root[data-reduce-motion="true"] .collection-strip,
 :root[data-reduce-motion="true"] .collection-strip.is-shown {
   transform: none;
-  transition: opacity var(--duration-fast) ease-out;
+  transition: opacity var(--duration-fast) ease-out !important;
 }
 @media (prefers-reduced-motion: reduce) {
   .collection-strip,
   .collection-strip.is-shown {
     transform: none;
-    transition: opacity var(--duration-fast) ease-out;
+    transition: opacity var(--duration-fast) ease-out !important;
   }
 }
 

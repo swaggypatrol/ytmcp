@@ -12,6 +12,8 @@ import {
   type MutationRequest,
   type MutationResult,
   type PlayerCommandPayload,
+  type RecentSearchesRequest,
+  type RecentSearchesSnapshot,
   type StateDelta,
 } from "@ytmcp/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +30,7 @@ import {
   type YtmcpUiBridge,
 } from "../../lib/ipc/client.js";
 import { LONG_CJK_MIXED_SAMPLE_TRACK } from "../../fixtures/synthetic.js";
+import { TOAST_DWELL_MS } from "../../lib/feedback/toasts.svelte.js";
 import { en, type NavView } from "../../lib/i18n/en.js";
 import { setLocale } from "../../lib/i18n/index.svelte.js";
 
@@ -56,6 +59,7 @@ interface BridgeOptions {
   queryCatalog?: (req: CatalogQueryRequest) => CatalogResponsePayload | Promise<CatalogResponsePayload>;
   sendMutation?: YtmcpUiBridge["sendMutation"];
   queryLyrics?: YtmcpUiBridge["queryLyrics"];
+  recentSearches?: (req: RecentSearchesRequest, accountEpoch: string | null) => RecentSearchesSnapshot | Promise<RecentSearchesSnapshot>;
 }
 
 /** A non-mock preload bridge backed by the synthetic fake core, with per-test overrides. */
@@ -83,6 +87,7 @@ function createPreloadBridge(options: BridgeOptions = {}) {
     openPlayerWindow: vi.fn(),
     clearCache: vi.fn(),
     sendMutation: options.sendMutation,
+    recentSearches: options.recentSearches,
     logout: vi.fn(),
   } satisfies YtmcpUiBridge;
   return { bridge, snapshot, catalogCalls, emit: (d: StateDelta) => listener?.(d) };
@@ -439,7 +444,10 @@ describe("Catalog browsing", () => {
       expect(screen.getAllByTestId("virtual-track-row").length).toBeGreaterThanOrEqual(2);
     });
 
-    // The list asks for the next page by itself as its end comes near; there is no button.
+    // The grouped view's short Songs block never pages; the full list behind "All songs" asks for
+    // the next page by itself as its end comes near, with no Load more button.
+    expect(catalogCalls.filter((r) => r.kind === "searchSongs" && r.cursor === "cur-1")).toHaveLength(0);
+    await fireEvent.click(screen.getByTestId("search-all-songs"));
     await waitFor(() => expect(screen.getAllByTestId("virtual-track-row")).toHaveLength(4));
     expect(catalogCalls.filter((r) => r.kind === "searchSongs").at(-1)).toMatchObject({ query: "abc", cursor: "cur-1" });
     expect(screen.queryByTestId("search-load-more")).toBeNull();
@@ -523,21 +531,93 @@ describe("Catalog browsing", () => {
     expect(screen.queryByTestId("search-album-alb-1")).toBeNull();
   });
 
-  it("wipes recent searches when the account changes, even while Search is not open", async () => {
-    const { bridge, snapshot, emit } = createPreloadBridge({ queryCatalog: searchCatalog });
-    renderApp(bridge, "search");
-    await waitFor(() => expect(screen.getByTestId("search-input")).toBeTruthy());
-    await submitSearch("kept query");
-    await waitFor(() => expect(localStorage.getItem("ytmcp.recentSearches.v1")).toContain("kept query"));
+  /** A core list per epoch, answered when the test says so. */
+  function heldRecentSearches() {
+    const calls: Array<{ req: RecentSearchesRequest; epoch: string | null; resolve: (items: string[]) => void }> = [];
+    const recentSearches = vi.fn(
+      (req: RecentSearchesRequest, epoch: string | null) =>
+        new Promise<RecentSearchesSnapshot>((resolve) => {
+          calls.push({
+            req,
+            epoch,
+            resolve: (items) => resolve({ items: items.map((query) => ({ query, recordedAtMs: 1 })) }),
+          });
+        })
+    );
+    return { calls, recentSearches };
+  }
 
-    await fireEvent.click(screen.getByTestId("nav-home"));
-    await screen.findByTestId("view-home");
+  const chipTexts = () =>
+    screen.queryAllByTestId("search-recent-chip").map((chip) => chip.textContent?.trim());
+
+  it("asks the core for the signed-in account's recent searches and records and clears through it", async () => {
+    const fake = new FakeCoreClient("normal");
+    const recentSearches = vi.fn((req: RecentSearchesRequest, epoch: string | null) => fake.recentSearches(req, epoch));
+    fake.recentSearches({ action: "record", query: "from an earlier run" }, "mock-account-epoch-1");
+    const { bridge } = createPreloadBridge({ queryCatalog: searchCatalog, recentSearches });
+    renderApp(bridge, "search");
+    await waitFor(() => expect(chipTexts()).toEqual(["from an earlier run"]));
+    expect(recentSearches).toHaveBeenCalledWith({ action: "list" }, "mock-account-epoch-1");
+    expect(localStorage.length).toBe(0);
+
+    await submitSearch("  Kept query  ");
+    expect(recentSearches).toHaveBeenLastCalledWith({ action: "record", query: "Kept query" }, "mock-account-epoch-1");
+    await fireEvent.click(screen.getByTestId("search-clear-btn"));
+    await waitFor(() => expect(chipTexts()).toEqual(["Kept query", "from an earlier run"]));
+
+    await fireEvent.click(screen.getByTestId("search-recent-clear"));
+    expect(recentSearches).toHaveBeenLastCalledWith({ action: "clear" }, "mock-account-epoch-1");
+    await waitFor(() => expect(screen.queryByTestId("search-recent")).toBeNull());
+  });
+
+  it("never shows the old account's list after an account change, even when its reply comes late", async () => {
+    const held = heldRecentSearches();
+    const { bridge, snapshot, emit } = createPreloadBridge({ queryCatalog: searchCatalog, recentSearches: held.recentSearches });
+    // Asked for at sign-in whatever page is open.
+    renderApp(bridge, "home");
+    await waitFor(() => expect(held.calls).toHaveLength(1));
+    expect(held.calls[0]!.epoch).toBe("mock-account-epoch-1");
+
+    // The core announces the new account, then invalidates account state: the new list is
+    // already on its way when the invalidation lands.
     emit({
       deltaType: "authChanged",
       revision: snapshot.revision + 1,
       auth_state: { ...snapshot.authState, accountEpoch: "acct-2", accountScope: "scope-acct-2" },
     });
-    await waitFor(() => expect(localStorage.getItem("ytmcp.recentSearches.v1")).toBeNull());
+    await waitFor(() => expect(held.calls.some((c) => c.epoch === "acct-2")).toBe(true));
+    emit({ deltaType: "resourceInvalidated", revision: snapshot.revision + 2, resource_kind: "accountState" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    held.calls[0]!.resolve(["first account private"]);
+    await new Promise((r) => setTimeout(r, 0));
+    await fireEvent.click(screen.getByTestId("nav-search"));
+    await screen.findByTestId("view-search");
+    expect(screen.queryByTestId("search-recent")).toBeNull();
+
+    await fireEvent.click(screen.getByTestId("nav-home"));
+    await screen.findByTestId("view-home");
+    for (const call of held.calls.filter((c) => c.epoch === "acct-2")) call.resolve(["second account"]);
+    await new Promise((r) => setTimeout(r, 0));
+    await fireEvent.click(screen.getByTestId("nav-search"));
+    await waitFor(() => expect(chipTexts()).toEqual(["second account"]));
+    expect(screen.queryByText("first account private")).toBeNull();
+  });
+
+  it("empties the list on sign-out without asking the core to clear it", async () => {
+    const fake = new FakeCoreClient("normal");
+    fake.recentSearches({ action: "record", query: "mine" }, "mock-account-epoch-1");
+    const recentSearches = vi.fn((req: RecentSearchesRequest, epoch: string | null) => fake.recentSearches(req, epoch));
+    const { bridge, snapshot, emit } = createPreloadBridge({ queryCatalog: searchCatalog, recentSearches });
+    renderApp(bridge, "search");
+    await waitFor(() => expect(chipTexts()).toEqual(["mine"]));
+    emit({
+      deltaType: "authChanged",
+      revision: snapshot.revision + 1,
+      auth_state: { ...snapshot.authState, state: "signedOut", accountEpoch: null, accountScope: null },
+    });
+    await waitFor(() => expect(screen.queryByTestId("search-recent")).toBeNull());
+    expect(recentSearches.mock.calls.some(([req]) => req.action === "clear")).toBe(false);
   });
 });
 
@@ -637,6 +717,104 @@ describe("Account writes and queue controls", () => {
     await waitFor(() => expect(screen.getByTestId("np-like").getAttribute("aria-pressed")).toBe("true"));
   });
 
+  it("keeps an unknown write in Diagnostics after its toast has gone, marked until the listener has checked it", async () => {
+    const sendMutation = vi.fn(
+      async (): Promise<MutationResult> => ({
+        kind: "setLike",
+        outcome: "indeterminate",
+        error: { code: "TIMEOUT", retriable: false, retryAfterMs: null, safeMessage: "no answer from the player", requestId: null },
+      })
+    );
+    const { bridge, emit, snapshot } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "now-playing");
+    await fireEvent.click(await screen.findByTestId("np-like"));
+    await screen.findByTestId("toast-write-unknown");
+    // A later toast replaces it before anyone has read it.
+    emit({
+      deltaType: "commandUpdated",
+      revision: snapshot.revision + 1,
+      receipt: { commandId: "c-x", op: "next", status: "failed", acceptedAtMs: 0, observedAtMs: null, deduplicated: false,
+        error: { code: "BUSY", retriable: true, retryAfterMs: null, safeMessage: "player busy", requestId: null } },
+    });
+    await waitFor(() => expect(screen.queryByTestId("toast-write-unknown")).toBeNull());
+
+    // The failure's own toast lands on its entry; the unknown write is listed below it.
+    await fireEvent.click(await screen.findByTestId("toast-view-diagnostics"));
+    const problems = await screen.findByTestId("diagnostics-problems");
+    const entries = within(problems).getAllByTestId("problem-entry");
+    expect(entries).toHaveLength(2);
+    await waitFor(() => expect(document.activeElement).toBe(entries[0]));
+    expect(entries[0]!.textContent).toContain("Couldn’t skip to the next song");
+    expect(within(entries[0]!).getByTestId("problem-technical").textContent).toBe("BUSY: player busy");
+    const unknown = entries[1]!;
+    expect(unknown.textContent).toContain(en.toast.writeUnknown);
+    expect(unknown.textContent).toContain(en.dialog.checkWriteAdvice);
+    expect(within(unknown).getByTestId("problem-technical").textContent).toBe("TIMEOUT: no answer from the player");
+    expect(within(unknown).getByTestId("problem-not-checked")).toBeTruthy();
+    await fireEvent.keyDown(screen.getByTestId("accessible-dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("accessible-dialog")).toBeNull());
+
+    // Settings > Advanced shows how many there are; the entry stays until it is marked checked.
+    await fireEvent.click(screen.getByTestId("nav-settings"));
+    expect((await screen.findByTestId("settings-problem-count")).textContent).toContain("2");
+    await fireEvent.click(screen.getByTestId("settings-open-diagnostics"));
+    const again = within(await screen.findByTestId("diagnostics-problems")).getAllByTestId("problem-entry")[1]!;
+    await fireEvent.click(within(again).getByTestId("problem-mark-checked"));
+    expect(within(screen.getByTestId("diagnostics-problems")).getByTestId("problem-checked")).toBeTruthy();
+    expect(screen.queryByTestId("problem-not-checked")).toBeNull();
+  });
+
+  it("keeps a failure toast on screen while the window is hidden and counts down once it is back", async () => {
+    let hidden = false;
+    vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
+    const sendMutation = vi.fn(async (): Promise<MutationResult> => ({
+      kind: "setLike",
+      outcome: "rejected",
+      error: { code: "RATE_LIMITED", retriable: false, retryAfterMs: null, safeMessage: "slow down", requestId: null },
+    }));
+    const { bridge } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "now-playing");
+    const like = await screen.findByTestId("np-like");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      await fireEvent.click(like);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByTestId("toast-write-failed")).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(screen.getByTestId("toast-write-failed")).toBeTruthy();
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(TOAST_DWELL_MS + 1_000);
+      expect(screen.queryByTestId("toast-write-failed")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the problem log empty for another account", async () => {
+    const sendMutation = vi.fn(async (): Promise<MutationResult> => ({
+      kind: "setLike",
+      outcome: "rejected",
+      error: { code: "RATE_LIMITED", retriable: false, retryAfterMs: null, safeMessage: "refused", requestId: null },
+    }));
+    const { bridge, emit, snapshot } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "now-playing");
+    await fireEvent.click(await screen.findByTestId("np-like"));
+    await screen.findByTestId("toast-write-failed");
+    await fireEvent.click(screen.getByTestId("nav-settings"));
+    expect((await screen.findByTestId("settings-problem-count")).textContent).toContain("1");
+    emit({
+      deltaType: "authChanged",
+      revision: snapshot.revision + 1,
+      auth_state: { ...snapshot.authState, state: "authenticated", accountEpoch: "acct-2", accountScope: "scope-acct-2", playerCatalogMatched: true },
+    });
+    await waitFor(() => expect(screen.queryByTestId("settings-problem-count")).toBeNull());
+    await fireEvent.click(screen.getByTestId("settings-open-diagnostics"));
+    expect(await screen.findByTestId("diagnostics-problems-empty")).toBeTruthy();
+  });
+
   it("sends confirmed likes with the account epoch, reports indeterminate without retrying", async () => {
     const sendMutation = vi.fn(
       async (req: MutationRequest): Promise<MutationResult> =>
@@ -665,11 +843,12 @@ describe("Account writes and queue controls", () => {
 
     await fireEvent.click(screen.getByTestId("np-actions"));
     await fireEvent.click(await screen.findByTestId("action-add-to-playlist"));
+    // The pick is the explicit request: it is sent at once, and the playlist is not in view, so
+    // its result is a toast (no Undo here: this reply carries no undo token).
     await fireEvent.click(await screen.findByTestId("pick-playlist-mock-pl-late-night"));
-    expect(sendMutation).toHaveBeenCalledTimes(1); // nothing sent before explicit confirm
-    await fireEvent.click(await screen.findByTestId("confirm-add-to-playlist"));
-    // The playlist is not in view, so its result is a toast (no Undo: there is no remove call).
     await waitFor(() => expect(screen.getByTestId("toast-write-done").textContent).toContain("Added to"));
+    expect(screen.queryByTestId("toast-undo")).toBeNull();
+    expect(sendMutation).toHaveBeenCalledTimes(2);
     expect(sendMutation).toHaveBeenLastCalledWith(
       expect.objectContaining({ kind: "addToPlaylist", playlistId: "mock-pl-late-night", confirmedByUser: true }),
       "mock-account-epoch-1"
@@ -683,7 +862,6 @@ describe("Account writes and queue controls", () => {
     await fireEvent.click(await screen.findByTestId("np-add-to-playlist"));
     expect(screen.queryByTestId("action-play")).toBeNull();
     await fireEvent.click(await screen.findByTestId("pick-playlist-mock-pl-late-night"));
-    await fireEvent.click(await screen.findByTestId("confirm-add-to-playlist"));
     await waitFor(() =>
       expect(sendMutation).toHaveBeenLastCalledWith(
         expect.objectContaining({ kind: "addToPlaylist", videoId: "mock-vid-00001", playlistId: "mock-pl-late-night" }),
@@ -759,6 +937,19 @@ describe("Account writes and queue controls", () => {
     expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({ op: "selectQueueEntry", args: { queueEntryId: "qe-mock-3", queueRevision: 1 } })
     );
+  });
+
+  it("starts an Up next row on Now Playing with the queue's own command, and leads to the queue", async () => {
+    const { bridge } = createPreloadBridge({ snapshot: writeReady });
+    renderApp(bridge, "now-playing");
+    const upNext = await screen.findByTestId("np-up-next");
+    const start = (await within(upNext).findAllByTestId("np-up-next-start"))[0]!;
+    await fireEvent.click(start);
+    expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(
+      expect.objectContaining({ op: "selectQueueEntry", args: { queueEntryId: "qe-mock-2", queueRevision: 1 } })
+    );
+    await fireEvent.click(within(upNext).getByTestId("np-up-next-open-queue"));
+    await screen.findByTestId("view-queue");
   });
 });
 
@@ -968,7 +1159,9 @@ describe("Covers, lists and text safety", () => {
       await tick();
     };
 
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "performance"] });
+    // The position clock is one timeout at a time (it used to be a 200 ms interval), so the
+    // timeouts are faked; highlights now switch at their line time, not up to 200 ms later.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     try {
       await anchor(0, true);
       const displays = new Map<number, number>();
@@ -981,6 +1174,8 @@ describe("Covers, lists and text safety", () => {
       const delays = lineTimes.map((time, index) => displays.get(index)! - time).sort((a, b) => a - b);
       expect(delays[0]).toBeGreaterThanOrEqual(0);
       expect(delays[Math.ceil(delays.length * 0.95) - 1]).toBeLessThanOrEqual(300);
+      // Sampled every 20 ms: a line shows within one sample of its time.
+      expect(delays.at(-1)).toBeLessThanOrEqual(40);
 
       await fireEvent.click(screen.getAllByTestId("lyrics-seek-line")[4]!);
       expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1189,6 +1384,10 @@ describe("Keyboard, dialogs and settings", () => {
     expect(failure.textContent).not.toContain("TIMEOUT");
     await fireEvent.click(screen.getByTestId("toast-view-diagnostics"));
     expect((await screen.findByTestId("diagnostics-content")).textContent).toContain("TIMEOUT: player timed out");
+    // The failure reported with the first snapshot is in Recent problems, and the toast lands on it.
+    const landed = within(screen.getByTestId("diagnostics-problems")).getByTestId("problem-entry");
+    await waitFor(() => expect(document.activeElement).toBe(landed));
+    expect(within(landed).getByTestId("problem-technical").textContent).toBe("TIMEOUT: player timed out");
     await fireEvent.keyDown(screen.getByTestId("accessible-dialog"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByTestId("accessible-dialog")).toBeNull());
     expect(screen.queryByTestId("toast-command-failed")).toBeNull();
@@ -1294,6 +1493,48 @@ describe("Raw preload envelope bridge", () => {
     const receipt = await client.sendPlayerCommand("play");
     expect(receipt?.status).toBe("observed");
     expect(client.getState().snapshot?.player.playback).toBe("playing");
+  });
+
+  it("sends recent-search requests with the account epoch and turns core.error into CoreRequestError", async () => {
+    const fake = new FakeCoreClient("normal");
+    const sent: Envelope[] = [];
+    const listeners = new Set<(env: Envelope) => void>();
+    const rawPreload: RawPreloadUiBridge = {
+      onEnvelope(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async sendEnvelope(env) {
+        sent.push(env);
+        let kind: Envelope["kind"] = "core.recentSearches";
+        let payload: unknown;
+        try {
+          payload = fake.recentSearches(env.payload as RecentSearchesRequest, env.accountEpoch ?? null);
+        } catch (err) {
+          kind = "core.error";
+          payload = (err as { error: unknown }).error;
+        }
+        const out: Envelope = { protocolVersion: PROTOCOL_VERSION, kind, coreEpoch: null, requestId: env.requestId, seq: 1, payload };
+        queueMicrotask(() => { for (const l of listeners) l(out); });
+        return { ok: true };
+      },
+    };
+    const bridge = wrapPreloadEnvelopeBridge(rawPreload);
+    const reply = await bridge.recentSearches!({ action: "record", query: "q" }, "mock-account-epoch-1");
+    expect(reply.items.map((i) => i.query)).toEqual(["q"]);
+    expect(sent[0]).toMatchObject({ kind: "ui.recentSearches", accountEpoch: "mock-account-epoch-1" });
+    const refused = await Promise.resolve(bridge.recentSearches!({ action: "list" }, "other-epoch")).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(CoreRequestError);
+    expect((refused as CoreRequestError).error.code).toBe("ACCOUNT_MISMATCH");
+
+    // Mock mode answers from the fake core, with the same error type.
+    const mock = createUiClient({ fakeClient: new FakeCoreClient("normal") });
+    await mock.connect();
+    const mockRefused = await mock.recentSearches({ action: "list" }, "other-epoch").catch((e: unknown) => e);
+    expect(mockRefused).toBeInstanceOf(CoreRequestError);
+    expect((mockRefused as CoreRequestError).error.code).toBe("ACCOUNT_MISMATCH");
+    expect((await mock.recentSearches({ action: "list" }, "mock-account-epoch-1")).items).toEqual([]);
+    mock.disconnect();
   });
 });
 
@@ -1494,6 +1735,10 @@ describe("Queue editing, play gating, cache clear and album context", () => {
     const play = screen.getByTestId("btn-play-pause") as HTMLButtonElement;
     expect(play.disabled).toBe(true);
     expect(play.title).toContain("No track is loaded");
+    // Right after launch the core holds a play until the last track is back: the press is allowed.
+    await rerender({ snapshot: { ...snap, player: { ...snap.player, currentTrack: null, playback: "idle", preparing: true } } });
+    expect(play.disabled).toBe(false);
+    expect(play.title).toBe(en.player.preparingTrack);
 
     await rerender({ snapshot: { ...snap, player: { ...snap.player, currentTrack: null, playback: "playing" } } });
     expect(play.disabled).toBe(false);
@@ -1720,7 +1965,6 @@ describe("Queue editing, play gating, cache clear and album context", () => {
 
     await fireEvent.click(screen.getByTestId("playlist-picker-load-more"));
     await fireEvent.click(await screen.findByTestId("pick-playlist-pl-p2"));
-    await fireEvent.click(await screen.findByTestId("confirm-add-to-playlist"));
     await waitFor(() => expect(screen.getByTestId("toast-write-done").textContent).toContain("Added to"));
     expect(sendMutation).toHaveBeenLastCalledWith(
       expect.objectContaining({ kind: "addToPlaylist", playlistId: "pl-p2", confirmedByUser: true }),
@@ -2048,8 +2292,8 @@ describe("Lyrics toggle and return frame", () => {
       row.focus();
       await ctrlL(row);
       await onView("lyrics");
-      // The shorter lyrics page clamps the page scroll.
-      main.scrollTop = 0;
+      // A page opened forward starts at its top; the page left keeps its offset for the way back.
+      expect(main.scrollTop).toBe(0);
     }
 
     try {
@@ -2073,6 +2317,512 @@ describe("Lyrics toggle and return frame", () => {
       expect(focusedRow() ?? null).toBeNull();
     } finally {
       rect.mockRestore();
+    }
+  });
+});
+
+describe("Feedback at the control: likes, covers and lyrics across a track change", () => {
+  /** A write path whose results the test releases one by one. */
+  function controlledWrites() {
+    const calls: { req: MutationRequest; settle: (result: MutationResult) => void }[] = [];
+    const sendMutation = vi.fn(
+      (req: MutationRequest) => new Promise<MutationResult>((resolve) => calls.push({ req, settle: resolve }))
+    );
+    return { calls, sendMutation };
+  }
+  const confirmed: MutationResult = { kind: "setLike", outcome: "confirmed", error: null };
+
+  it("turns the heart at the click as pending, and puts it back with a toast when the write is refused", async () => {
+    const { calls, sendMutation } = controlledWrites();
+    const { bridge } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "now-playing");
+    const heart = await screen.findByTestId("np-like");
+    expect(heart.getAttribute("aria-pressed")).toBe("true");
+
+    await fireEvent.click(heart);
+    expect(heart.getAttribute("aria-pressed")).toBe("false");
+    expect(heart.getAttribute("aria-busy")).toBe("true");
+    expect(screen.getByTestId("player-like").getAttribute("aria-pressed")).toBe("false");
+
+    calls[0]!.settle({
+      kind: "setLike",
+      outcome: "rejected",
+      error: { code: "BUSY", retriable: false, retryAfterMs: null, safeMessage: "no", requestId: null },
+    });
+    await screen.findByTestId("toast-write-failed");
+    expect(heart.getAttribute("aria-pressed")).toBe("true");
+    expect(heart.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("ends on the listener's last click when clicks arrive while a write is out, and an older result never overrides it", async () => {
+    const { calls, sendMutation } = controlledWrites();
+    const { bridge } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "now-playing");
+    const heart = await screen.findByTestId("np-like");
+
+    await fireEvent.click(heart); // unlike
+    await fireEvent.click(heart); // like again
+    expect(heart.getAttribute("aria-pressed")).toBe("true");
+    expect(calls).toHaveLength(1);
+
+    // The unlike is confirmed; the heart keeps the newer click and that is written next.
+    calls[0]!.settle(confirmed);
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls.map((c) => c.req.liked)).toEqual([false, true]);
+    expect(heart.getAttribute("aria-pressed")).toBe("true");
+    expect(heart.getAttribute("aria-busy")).toBe("true");
+
+    calls[1]!.settle(confirmed);
+    await waitFor(() => expect(heart.getAttribute("aria-busy")).toBe("false"));
+    expect(heart.getAttribute("aria-pressed")).toBe("true");
+    expect(sendMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it("ends a row's heart on the last click when it is clicked again while its write is out", async () => {
+    const { calls, sendMutation } = controlledWrites();
+    const { bridge } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "liked");
+    const heart = (await screen.findAllByTestId("track-like-btn"))[0]!;
+    expect(heart.getAttribute("aria-pressed")).toBe("true");
+    await fireEvent.click(heart);
+    await fireEvent.click(heart);
+    expect(heart.getAttribute("aria-pressed")).toBe("true");
+    expect(heart.getAttribute("aria-busy")).toBe("true");
+    expect(heart.hasAttribute("aria-disabled")).toBe(false);
+    calls[0]!.settle(confirmed);
+    await waitFor(() => expect(calls).toHaveLength(2));
+    calls[1]!.settle(confirmed);
+    await waitFor(() => expect(heart.getAttribute("aria-busy")).toBe("false"));
+    expect(calls.map((c) => c.req.liked)).toEqual([false, true]);
+    expect(heart.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("sends what the play button shows from Space, and shows it at once", async () => {
+    const { bridge } = createPreloadBridge();
+    bridge.sendPlayerCommand.mockImplementation(() => new Promise<CommandReceipt>(() => {}));
+    renderApp(bridge, "home");
+    const play = await screen.findByTestId("btn-play-pause");
+    expect(play.getAttribute("aria-label")).toBe("Play");
+    await fireEvent.keyDown(document.body, { key: " ", code: "Space" });
+    expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(expect.objectContaining({ op: "play" }));
+    expect(play.getAttribute("aria-label")).toBe("Pause");
+    await fireEvent.keyDown(document.body, { key: " ", code: "Space" });
+    expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(expect.objectContaining({ op: "pause" }));
+    expect(play.getAttribute("aria-label")).toBe("Play");
+  });
+
+  it("resolves a toggle's desired playback the way core runs it: buffering pauses, and a second toggle flips the first", async () => {
+    const { bridge } = createPreloadBridge({ snapshot: (s) => ({ ...s, player: { ...s.player, playback: "buffering" } }) });
+    bridge.sendPlayerCommand.mockImplementation(() => new Promise<CommandReceipt>(() => {}));
+    const client = createUiClient({ preloadBridge: bridge });
+    await client.connect();
+    void client.sendPlayerCommand("toggle");
+    expect(client.getState().pendingOverlay.desiredPlayback).toBe("paused");
+    void client.sendPlayerCommand("toggle");
+    expect(client.getState().pendingOverlay.desiredPlayback).toBe("playing");
+  });
+
+  it("moves the shown position at least every 250 ms while playing", async () => {
+    const { bridge, emit, snapshot } = createPreloadBridge();
+    renderApp(bridge, "home");
+    const slider = (await screen.findByTestId("player-seek-slider")) as HTMLInputElement;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      emit({
+        deltaType: "playerChanged",
+        revision: snapshot.revision + 1,
+        pending: snapshot.pending,
+        player: {
+          ...snapshot.player,
+          playback: "playing",
+          timeAnchor: { ...snapshot.player.timeAnchor, positionMs: 10_100, durationMs: 240_000, playbackRate: 1, extrapolating: true },
+        },
+      });
+      await tick();
+      let last = Number(slider.value);
+      for (let i = 0; i < 12; i += 1) {
+        await vi.advanceTimersByTimeAsync(250);
+        const now = Number(slider.value);
+        expect(now).toBeGreaterThan(last);
+        last = now;
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the track menu's other items usable while a like for that track is out", async () => {
+    const { sendMutation } = controlledWrites();
+    const { bridge } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "now-playing");
+    await fireEvent.click(await screen.findByTestId("np-like"));
+    await fireEvent.click(screen.getByTestId("np-actions"));
+    const disabled = async (id: string) => ((await screen.findByTestId(id)) as HTMLButtonElement).disabled;
+    expect(await disabled("action-play")).toBe(false);
+    expect(await disabled("action-play-next")).toBe(false);
+    expect(await disabled("action-add-to-queue")).toBe(false);
+    expect(await disabled("action-like")).toBe(true);
+    expect(await disabled("action-add-to-playlist")).toBe(true);
+  });
+
+  it("keeps the previous cover in the bar and the light while the new one is cached, then switches once", async () => {
+    const track = (videoId: string, assetId: string | null) => ({
+      ...createSyntheticTracks(1, videoId)[0]!,
+      videoId,
+      cover: { assetId, remoteUrl: `https://example.com/${videoId}.jpg` },
+    });
+    const { bridge, emit, snapshot } = createPreloadBridge({
+      snapshot: (s) => ({ ...s, player: { ...s.player, currentTrack: track("a", "asset-a") } }),
+    });
+    renderApp(bridge, "home");
+    const bar = await screen.findByTestId("player-bar");
+    const barCover = () => bar.querySelector("img.player-cover")?.getAttribute("src") ?? null;
+    const light = () =>
+      Array.from(screen.getByTestId("ambient-light").querySelectorAll(".ambient-layer:not([data-leaving]) img")).map((img) =>
+        img.getAttribute("src")
+      );
+    await waitFor(() => expect(barCover()).toBe("app://covers/asset-a"));
+    expect(light()).toEqual(["app://covers/asset-a"]);
+
+    let revision = snapshot.revision;
+    const play = (t: ReturnType<typeof track>, instance: string) =>
+      emit({ deltaType: "playerChanged", revision: ++revision, pending: snapshot.pending, player: { ...snapshot.player, currentTrack: t, trackInstanceId: instance } });
+
+    play(track("b", null), "ti-b");
+    await tick();
+    expect(barCover()).toBe("app://covers/asset-a");
+    expect(bar.querySelector("[data-testid='cover-placeholder']")).toBeNull();
+    expect(light()).toEqual(["app://covers/asset-a"]);
+
+    play(track("b", "asset-b"), "ti-b");
+    await waitFor(() => expect(barCover()).toBe("app://covers/asset-b"));
+    expect(light()).toEqual(["app://covers/asset-b"]);
+
+    // A cover that never arrives gives way to the placeholder after a short wait.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      play(track("c", null), "ti-c");
+      await tick();
+      expect(barCover()).toBe("app://covers/asset-b");
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(barCover()).toBeNull();
+      expect(bar.querySelector("[data-testid='cover-placeholder']")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Now Playing's lyrics layout while the next track's lyrics load", async () => {
+    const synced = (videoId: string): LyricsResult => ({
+      ...DISABLED_LYRICS,
+      videoId,
+      kind: "synced",
+      source: "lrclib",
+      syncedLines: [{ timeMs: 0, text: `Line of ${videoId}` }],
+    });
+    let release!: (value: LyricsResult) => void;
+    const queryLyrics = vi.fn((req: { track: { videoId: string } }) =>
+      req.track.videoId === "mock-vid-00001"
+        ? synced(req.track.videoId)
+        : new Promise<LyricsResult>((resolve) => (release = resolve))
+    );
+    const { bridge, emit, snapshot } = createPreloadBridge({ queryLyrics: queryLyrics as unknown as YtmcpUiBridge["queryLyrics"] });
+    renderApp(bridge, "now-playing");
+    await screen.findByText("Line of mock-vid-00001");
+    const stage = () => document.querySelector(".np-stage")!;
+    expect(stage().classList.contains("has-lyrics")).toBe(true);
+
+    const next = { ...snapshot.player.currentTrack!, videoId: "mock-vid-00002", title: "Second" };
+    emit({ deltaType: "playerChanged", revision: snapshot.revision + 1, pending: snapshot.pending, player: { ...snapshot.player, currentTrack: next, trackInstanceId: "ti-2" } });
+    await waitFor(() => expect(queryLyrics).toHaveBeenCalledTimes(2));
+    expect(stage().classList.contains("has-lyrics")).toBe(true);
+    expect(screen.queryByText("Line of mock-vid-00001")).toBeNull();
+
+    release(synced("mock-vid-00002"));
+    await screen.findByText("Line of mock-vid-00002");
+    expect(stage().classList.contains("has-lyrics")).toBe(true);
+  });
+
+  it("moves the highlight, the bar and the time together at a lyric line click, through the seek bar's own path", async () => {
+    const lyrics: LyricsResult = {
+      ...DISABLED_LYRICS,
+      kind: "synced",
+      source: "lrclib",
+      syncedLines: Array.from({ length: 10 }, (_, i) => ({ timeMs: i * 10_000, text: `Line ${i}` })),
+    };
+    const { bridge } = createPreloadBridge({
+      queryLyrics: () => lyrics,
+      snapshot: (s) => ({ ...s, player: { ...s.player, timeAnchor: { ...s.player.timeAnchor, positionMs: 0, durationMs: 200_000 } } }),
+    });
+    // The seek is accepted but not yet observed: the preview holds, as it does for the seek bar.
+    bridge.sendPlayerCommand.mockImplementation((cmd) => ({
+      commandId: cmd.commandId, op: cmd.op, status: "accepted", acceptedAtMs: 0, observedAtMs: null, deduplicated: false, error: null,
+    }));
+    renderApp(bridge, "lyrics");
+    const list = await screen.findByTestId("lyrics-synced-list");
+    await fireEvent.click(screen.getAllByTestId("lyrics-seek-line")[6]!);
+    expect(bridge.sendPlayerCommand).toHaveBeenLastCalledWith(
+      expect.objectContaining({ op: "seek", args: { positionMs: 60_000, trackInstanceId: "ti-mock-1" } })
+    );
+    await waitFor(() => expect(list.querySelector("[aria-current=true]")?.getAttribute("data-line-index")).toBe("6"));
+    expect(screen.getByTestId("player-pos-text").textContent?.trim()).toBe("1:00");
+    expect((screen.getByTestId("player-seek-slider") as HTMLInputElement).value).toBe("60000");
+  });
+});
+
+describe("Liked songs: Play and Shuffle the whole collection", () => {
+  const likedTracks = createSyntheticTracks(3); // the first is the snapshot's current track
+  type LikedPage = Extract<CatalogResponsePayload, { resultType: "likedSongs" }>;
+  const likedPage = (overrides: Partial<LikedPage> = {}): LikedPage => ({
+    resultType: "likedSongs",
+    ...paged(likedTracks),
+    accountScope: "mock-scope",
+    playback: {
+      playlistId: "LM-from-core",
+      entries: likedTracks.map((_, i) => ({ startIndex: 7 + i, playlistEntryId: `entry-${i}` })),
+    },
+    ...overrides,
+  });
+
+  /** The Liked page with its context; commands are accepted and settle only through `settle`. */
+  function likedApp(options: { page?: Partial<LikedPage>; shuffleCap?: "supported" | "unsupported"; shuffle?: boolean } = {}) {
+    const fake = new FakeCoreClient("normal");
+    const harness = createPreloadBridge({
+      snapshot: (s) => ({
+        ...s,
+        capabilities: { ...s.capabilities, shuffle: options.shuffleCap ?? "supported" },
+        player: { ...s.player, shuffle: options.shuffle ?? false },
+      }),
+      queryCatalog: (req) => (req.kind === "likedSongs" ? likedPage(options.page) : fake.queryCatalog(req)),
+    });
+    harness.bridge.sendPlayerCommand.mockImplementation((cmd): CommandReceipt => ({
+      commandId: cmd.commandId, op: cmd.op, status: "accepted", acceptedAtMs: 0, observedAtMs: null, deduplicated: false, error: null,
+    }));
+    let revision = harness.snapshot.revision;
+    const sent = (op: string) => harness.bridge.sendPlayerCommand.mock.calls.map(([cmd]) => cmd).filter((cmd) => cmd.op === op);
+    const settle = (cmd: PlayerCommandPayload, status: CommandReceipt["status"]) =>
+      harness.emit({
+        deltaType: "commandUpdated",
+        revision: ++revision,
+        receipt: { commandId: cmd.commandId, op: cmd.op, status, acceptedAtMs: 0, observedAtMs: status === "observed" ? 1 : null, deduplicated: false, error: null },
+      });
+    renderApp(harness.bridge, "liked");
+    return { ...harness, sent, settle };
+  }
+
+  it("offers Play and Shuffle only with a fresh context read for the signed-in account, Shuffle only when it can work", async () => {
+    likedApp();
+    expect(await screen.findByTestId("liked-play")).toBeTruthy();
+    expect(screen.getByTestId("liked-shuffle")).toBeTruthy();
+    expect(screen.getByTestId("liked-strip-play")).toBeTruthy();
+    cleanup();
+
+    likedApp({ shuffleCap: "unsupported" });
+    expect(await screen.findByTestId("liked-play")).toBeTruthy();
+    expect(screen.queryByTestId("liked-shuffle")).toBeNull();
+    cleanup();
+
+    for (const page of [{ playback: null }, { freshness: "stale" as const }, { accountScope: "another-scope" }]) {
+      likedApp({ page });
+      await screen.findByText(likedTracks[2]!.title);
+      expect(screen.queryByTestId("liked-play")).toBeNull();
+      expect(screen.queryByTestId("liked-shuffle")).toBeNull();
+      expect(screen.queryByTestId("liked-strip-play")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("plays from the first row with the core's context, once for a double press, and turns shuffle off once started", async () => {
+    const { sent, settle } = likedApp({ shuffle: true });
+    const play = await screen.findByTestId("liked-play");
+    await fireEvent.click(play);
+    await fireEvent.click(play);
+    await fireEvent.click(screen.getByTestId("liked-shuffle"));
+    expect(sent("playCollection")).toHaveLength(1);
+    expect(sent("playCollection")[0]!.args).toEqual({
+      target: { videoId: likedTracks[0]!.videoId, playlistId: "LM-from-core", startIndex: 7 },
+    });
+    expect(play.getAttribute("data-pending")).toBe("true");
+    expect(play.getAttribute("aria-busy")).toBe("true");
+    expect(sent("setShuffle")).toHaveLength(0);
+
+    settle(sent("playCollection")[0]!, "observed");
+    await waitFor(() => expect(sent("setShuffle")).toHaveLength(1));
+    expect(sent("setShuffle")[0]!.args).toEqual({ shuffle: false });
+    expect(play.getAttribute("data-pending")).toBeNull();
+  });
+
+  it("turns shuffle on only after the start is observed, never after an unclear start or for an older press", async () => {
+    const { sent, settle } = likedApp();
+    const shuffle = await screen.findByTestId("liked-shuffle");
+    await fireEvent.click(shuffle);
+    expect(sent("playCollection")).toHaveLength(1);
+    expect(shuffle.getAttribute("data-pending")).toBe("true");
+    expect(sent("setShuffle")).toHaveLength(0);
+
+    const first = sent("playCollection")[0]!;
+    settle(first, "indeterminate");
+    await waitFor(() => expect(shuffle.getAttribute("data-pending")).toBeNull());
+    expect(sent("setShuffle")).toHaveLength(0);
+
+    await fireEvent.click(shuffle);
+    expect(sent("playCollection")).toHaveLength(2);
+    // A late receipt for the first press does not count for the second.
+    settle(first, "observed");
+    await tick();
+    expect(sent("setShuffle")).toHaveLength(0);
+    expect(shuffle.getAttribute("data-pending")).toBe("true");
+
+    settle(sent("playCollection")[1]!, "observed");
+    await waitFor(() => expect(sent("setShuffle")).toHaveLength(1));
+    expect(sent("setShuffle")[0]!.args).toEqual({ shuffle: true });
+  });
+
+  it("leaves shuffle alone when it is already on, and sends nothing more once the listener left the page", async () => {
+    const { sent, settle } = likedApp({ shuffle: true });
+    await fireEvent.click(await screen.findByTestId("liked-shuffle"));
+    settle(sent("playCollection")[0]!, "observed");
+    await waitFor(() => expect(screen.getByTestId("liked-shuffle").getAttribute("data-pending")).toBeNull());
+    expect(sent("setShuffle")).toHaveLength(0);
+    cleanup();
+
+    const away = likedApp();
+    await fireEvent.click(await screen.findByTestId("liked-shuffle"));
+    await fireEvent.click(screen.getByTestId("nav-home"));
+    await screen.findByTestId("view-home");
+    away.settle(away.sent("playCollection")[0]!, "observed");
+    await tick();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(away.sent("setShuffle")).toHaveLength(0);
+  });
+});
+
+describe("Undo after adding to a playlist", () => {
+  const error = (code: string, retriable = false) => ({ code, retriable, retryAfterMs: null, safeMessage: `fixture ${code}`, requestId: null }) as MutationResult["error"];
+
+  /** Adds the current track to Late-Night from Now Playing; `undo` answers the Undo. */
+  async function addWithUndo(undo: (req: MutationRequest) => MutationResult | Promise<MutationResult>, add?: MutationResult) {
+    const sendMutation = vi.fn(async (req: MutationRequest): Promise<MutationResult> =>
+      req.kind === "addToPlaylist"
+        ? (add ?? { kind: "addToPlaylist", outcome: "confirmed", error: null, undoToken: "undo-token-1" })
+        : undo(req)
+    );
+    const harness = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(harness.bridge, "now-playing");
+    await fireEvent.click(await screen.findByTestId("np-add-to-playlist"));
+    await fireEvent.click(await screen.findByTestId("pick-playlist-mock-pl-late-night"));
+    await waitFor(() => expect(screen.getByTestId("toast-write-done").textContent).toContain("Added to"));
+    const undoCalls = () => sendMutation.mock.calls.filter(([req]) => req.kind === "undoAddToPlaylist");
+    return { ...harness, sendMutation, undoCalls };
+  }
+
+  it("offers Undo only with a token, sends the token once and reports the removal", async () => {
+    let answer: ((result: MutationResult) => void) | null = null;
+    const { undoCalls } = await addWithUndo(() => new Promise((resolve) => (answer = resolve)));
+    await fireEvent.click(screen.getByTestId("toast-undo"));
+    expect(undoCalls()).toEqual([[
+      { kind: "undoAddToPlaylist", videoId: "mock-vid-00001", playlistId: "mock-pl-late-night", undoToken: "undo-token-1", liked: null, confirmedByUser: true },
+      "mock-account-epoch-1",
+    ]]);
+    // While it is on its way, Undo stays on the toast, pending, and cannot send again.
+    const pending = screen.getByTestId("toast-undo") as HTMLButtonElement;
+    expect(pending.disabled).toBe(true);
+    expect(pending.getAttribute("data-pending")).toBe("true");
+    await fireEvent.click(pending);
+    expect(undoCalls()).toHaveLength(1);
+
+    answer!({ kind: "undoAddToPlaylist", outcome: "confirmed", error: null });
+    await waitFor(() => expect(screen.getByTestId("toast-undo-done").textContent).toContain("Removed from"));
+    expect(screen.queryByTestId("toast-undo")).toBeNull();
+    // A successful add and its undo are not problems.
+    await fireEvent.click(screen.getByTestId("nav-settings"));
+    expect(screen.queryByTestId("settings-problem-count")).toBeNull();
+  });
+
+  it.each([
+    ["already removed", { kind: "undoAddToPlaylist", outcome: "rejected", error: error("STALE_CONTEXT"), alreadyRemoved: true }, "toast-undo-already-removed", "Already removed"],
+    ["a used or expired token", { kind: "undoAddToPlaylist", outcome: "rejected", error: error("STALE_CONTEXT") }, "toast-undo-expired", "Can no longer undo"],
+    ["a mismatched token (the core's error)", { kind: "undoAddToPlaylist", outcome: "rejected", error: error("INVALID_PAYLOAD") }, "toast-write-failed", "Couldn’t remove"],
+    ["an unclear removal", { kind: "undoAddToPlaylist", outcome: "indeterminate", error: error("TIMEOUT") }, "toast-write-unknown", "Couldn’t confirm the change"],
+  ] as const)("reports %s and offers no Undo again", async (_, result, testId, text) => {
+    const { undoCalls } = await addWithUndo(() => result as MutationResult);
+    await fireEvent.click(screen.getByTestId("toast-undo"));
+    await waitFor(() => expect(screen.getByTestId(testId).textContent).toContain(text));
+    expect(screen.queryByTestId("toast-undo")).toBeNull();
+    expect(undoCalls()).toHaveLength(1);
+  });
+
+  it("logs an unclear removal like other unknown writes", async () => {
+    await addWithUndo(() => ({ kind: "undoAddToPlaylist", outcome: "indeterminate", error: error("TIMEOUT") }));
+    await fireEvent.click(screen.getByTestId("toast-undo"));
+    await screen.findByTestId("toast-write-unknown");
+    await fireEvent.click(screen.getByTestId("nav-settings"));
+    expect((await screen.findByTestId("settings-problem-count")).textContent).toContain("1");
+  });
+
+  it("keeps Undo after a refusal that sent nothing and may work later, without retrying by itself", async () => {
+    let calls = 0;
+    const { undoCalls } = await addWithUndo(() =>
+      ++calls === 1
+        ? { kind: "undoAddToPlaylist", outcome: "rejected", error: error("RATE_LIMITED", true) }
+        : { kind: "undoAddToPlaylist", outcome: "confirmed", error: null }
+    );
+    await fireEvent.click(screen.getByTestId("toast-undo"));
+    await waitFor(() => expect(screen.getByTestId("toast-undo-not-now").textContent).toContain("right now"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(undoCalls()).toHaveLength(1);
+    await fireEvent.click(screen.getByTestId("toast-undo"));
+    await screen.findByTestId("toast-undo-done");
+    expect(undoCalls()).toHaveLength(2);
+    expect(undoCalls()[1]![0]).toMatchObject({ undoToken: "undo-token-1" });
+  });
+
+  it("gives no Undo for an addition without a token or a refused duplicate", async () => {
+    await addWithUndo(() => { throw new Error("no undo expected"); }, { kind: "addToPlaylist", outcome: "confirmed", error: null });
+    expect(screen.queryByTestId("toast-undo")).toBeNull();
+    cleanup();
+
+    const sendMutation = vi.fn(async (): Promise<MutationResult> => ({ kind: "addToPlaylist", outcome: "rejected", error: error("UNAVAILABLE_TRACK") }));
+    const { bridge } = createPreloadBridge({ snapshot: writeReady, sendMutation });
+    renderApp(bridge, "now-playing");
+    await fireEvent.click(await screen.findByTestId("np-add-to-playlist"));
+    await fireEvent.click(await screen.findByTestId("pick-playlist-mock-pl-late-night"));
+    await screen.findByTestId("toast-write-failed");
+    expect(screen.queryByTestId("toast-undo")).toBeNull();
+  });
+
+  it.each([
+    ["a confirmed removal", { kind: "undoAddToPlaylist", outcome: "confirmed", error: null }],
+    ["a refusal that may work later", { kind: "undoAddToPlaylist", outcome: "rejected", error: error("RATE_LIMITED", true) }],
+  ] as const)("says nothing of an undo answered after the account changed (%s), and offers no Undo", async (_, result) => {
+    let answer: ((result: MutationResult) => void) | null = null;
+    const { emit, snapshot, undoCalls } = await addWithUndo(() => new Promise((resolve) => (answer = resolve)));
+    await fireEvent.click(screen.getByTestId("toast-undo"));
+    emit({
+      deltaType: "authChanged",
+      revision: snapshot.revision + 1,
+      auth_state: { ...snapshot.authState, state: "authenticated", accountEpoch: "acct-2", accountScope: "scope-acct-2", playerCatalogMatched: true },
+    });
+    await waitFor(() => expect(screen.queryByTestId("toast-undo")).toBeNull());
+    answer!(result as MutationResult);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId("toast-undo-done")).toBeNull();
+    expect(screen.queryByTestId("toast-undo-not-now")).toBeNull();
+    expect(screen.queryByTestId("toast-undo")).toBeNull();
+    expect(undoCalls()).toHaveLength(1);
+  });
+
+  it("drops the token and its Undo after five minutes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { undoCalls } = await addWithUndo(() => ({ kind: "undoAddToPlaylist", outcome: "confirmed", error: null }));
+      const toast = screen.getByTestId("toast-write-done");
+      await fireEvent.pointerEnter(toast); // held under the pointer, the toast itself would stay
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 10);
+      await waitFor(() => expect(screen.queryByTestId("toast-undo")).toBeNull());
+      expect(undoCalls()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

@@ -1,5 +1,6 @@
 import {
   FakeCoreClient,
+  FakeCoreRequestError,
   PROTOCOL_VERSION,
   type AccountEpoch,
   type AgentActivityRequest,
@@ -25,6 +26,8 @@ import {
   type PlayerOp,
   type PlaybackStatus,
   type QueryError,
+  type RecentSearchesRequest,
+  type RecentSearchesSnapshot,
   type StateDelta,
 } from "@ytmcp/protocol";
 import { activeMessages } from "../i18n/active.js";
@@ -127,6 +130,11 @@ export interface YtmcpUiBridge {
   momentSettings?(
     req: MomentDesktopRequest,
   ): MomentDesktopSnapshot | Promise<MomentDesktopSnapshot>;
+  /** The signed-in account's recent searches; every reply is the whole list. Refusals throw `CoreRequestError`. */
+  recentSearches?(
+    req: RecentSearchesRequest,
+    accountEpoch: AccountEpoch | null,
+  ): RecentSearchesSnapshot | Promise<RecentSearchesSnapshot>;
   logout?(): void | Promise<void>;
   /**
    * Asks core to clear the local cache. Success has no reply (core emits a `catalog`
@@ -431,6 +439,13 @@ export function wrapPreloadEnvelopeBridge(
       return resp.payload as MomentDesktopSnapshot;
     },
 
+    async recentSearches(req: RecentSearchesRequest, accountEpoch: AccountEpoch | null): Promise<RecentSearchesSnapshot> {
+      const resp = await sendRequest("ui.recentSearches", req, "ui-recent", accountEpoch);
+      if (resp.kind === "core.error") throw new CoreRequestError(resp.payload as QueryError);
+      if (resp.kind !== "core.recentSearches") throw new Error(`Unexpected recent searches response: ${resp.kind}`);
+      return resp.payload as RecentSearchesSnapshot;
+    },
+
     async logout(): Promise<void> {
       await sendFireAndForget("ui.logout", {});
     },
@@ -688,6 +703,13 @@ export class YtmUiClient {
       queryLyrics: (req) => fake.queryLyrics(req),
       updateSettings: (patch) => fake.updateSettings(patch),
       momentSettings: (req) => fake.momentSettings(req),
+      recentSearches: (req, accountEpoch) => {
+        try {
+          return fake.recentSearches(req, accountEpoch);
+        } catch (err) {
+          throw err instanceof FakeCoreRequestError ? new CoreRequestError(err.error) : err;
+        }
+      },
       openPlayerWindow: () => {
         // No-op in mock mode
       },
@@ -1057,9 +1079,7 @@ export class YtmUiClient {
           : op === "pause" || op === "stop"
             ? "paused"
             : op === "toggle"
-              ? this.snapshot?.player.playback === "playing"
-                ? "paused"
-                : "playing"
+              ? this.toggleOutcome()
               : null,
       desiredPositionMs: op === "seek" ? (args?.positionMs ?? null) : null,
       desiredVolume: op === "setVolume" ? (args?.volume ?? null) : null,
@@ -1087,6 +1107,17 @@ export class YtmUiClient {
     }
   }
 
+  /**
+   * What a toggle sent now will do, as core resolves it when it runs: against the newest playback
+   * still on its way (this window's, else core's), else the observed playback, where buffering
+   * counts as playing.
+   */
+  private toggleOutcome(): PlaybackStatus {
+    const ahead = this.pendingOverlay.desiredPlayback ?? this.snapshot?.pending.desiredPlayback ?? null;
+    const playback = ahead ?? this.snapshot?.player.playback ?? "idle";
+    return playback === "playing" || playback === "buffering" ? "paused" : "playing";
+  }
+
   private resetPendingCommands(): void {
     this.pendingCommands.clear();
     this.pendingOverlay = emptyPendingOverlay();
@@ -1109,7 +1140,11 @@ export class YtmUiClient {
     if (!receipt || !pending) return false;
     if (terminalReceipt(receipt)) {
       this.pendingCommands.delete(receipt.commandId);
-      this.refreshPendingOverlay(receipt.error ?? null);
+      // The core cancels a queued command when a newer one of the same kind replaces it (a run of
+      // volume or seek steps). The newer command carries the intent, so that is not an error.
+      const replaced =
+        receipt.status === "cancelled" && [...this.pendingCommands.values()].some((cmd) => cmd.op === pending.op);
+      this.refreshPendingOverlay(replaced ? this.pendingOverlay.lastError : (receipt.error ?? null));
       return true;
     }
     pending.acknowledged = true;
@@ -1175,6 +1210,12 @@ export class YtmUiClient {
   public async momentSettings(req: MomentDesktopRequest): Promise<MomentDesktopSnapshot> {
     if (!this.bridge?.momentSettings) throw new Error("Moment DJ settings are unavailable");
     return await this.bridge.momentSettings(req);
+  }
+
+  /** One `ui.recentSearches` request for the given account epoch; refusals throw `CoreRequestError`. */
+  public async recentSearches(req: RecentSearchesRequest, accountEpoch: AccountEpoch): Promise<RecentSearchesSnapshot> {
+    if (!this.bridge?.recentSearches) throw new Error("Recent searches are unavailable");
+    return await this.bridge.recentSearches(req, accountEpoch);
   }
 
   public async queryLyrics(req: LyricsQueryRequest): Promise<LyricsResult> {

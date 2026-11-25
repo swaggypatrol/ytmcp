@@ -442,6 +442,98 @@ impl PreparedEdit {
     }
 }
 
+/// Whether one exact playlist entry can be taken back, decided from a fresh complete read made
+/// before anything is sent (the app's undo of its own addition).
+pub(crate) enum EntryRemovalCheck {
+    Ready(PreparedEntryRemoval),
+    /// The entry is no longer in the playlist; there is nothing to send.
+    Absent,
+    /// Nothing was sent: the playlist could not be read completely, its order was not proven, or
+    /// the entry now holds another song.
+    Unsafe(ControlError),
+}
+
+/// How a sent removal of one exact entry ended.
+pub(crate) enum EntryRemoval {
+    /// A fresh complete read shows the entry gone and every other entry in its earlier order.
+    Removed,
+    /// The provider refused the removal.
+    Rejected(ControlError),
+    /// The removal may have happened; the fresh read did not prove the result.
+    Unknown(ControlError),
+}
+
+/// A removal of exactly one entry, prepared against the order read before it.
+pub(crate) struct PreparedEntryRemoval {
+    playlist: PlaylistId,
+    edit: PreparedEdit,
+}
+
+/// Reads `playlist` completely and prepares removing `entry` (that occurrence only, never
+/// another copy of the same song) with the same checks as a control removal.
+pub(crate) async fn prepare_entry_removal(
+    catalog: &dyn ControlCatalog,
+    context: CatalogReadContext,
+    playlist: &PlaylistId,
+    entry: &PlaylistOccurrenceIdentity,
+) -> EntryRemovalCheck {
+    let before = match load_complete(catalog, context, playlist).await {
+        Ok((_, before)) => before,
+        Err(error) => return EntryRemovalCheck::Unsafe(error),
+    };
+    match before
+        .iter()
+        .find(|found| found.entry_id.as_deref() == Some(entry.entry_id.as_str()))
+    {
+        None => return EntryRemovalCheck::Absent,
+        Some(found) if found.track.video_id != entry.video_id => {
+            return EntryRemovalCheck::Unsafe(stale("the playlist entry now holds another song"));
+        }
+        Some(_) => {}
+    }
+    let action = WriteAction::RemovePlaylistEntries {
+        playlist_id: playlist.clone(),
+        entry_ids: vec![entry.entry_id.clone()],
+    };
+    match PreparedEdit::new(&action, &before) {
+        Ok(edit) => EntryRemovalCheck::Ready(PreparedEntryRemoval {
+            playlist: playlist.clone(),
+            edit,
+        }),
+        Err(error) => EntryRemovalCheck::Unsafe(error),
+    }
+}
+
+impl PreparedEntryRemoval {
+    /// Sends the removal once (never retried) and confirms it by a fresh complete read.
+    pub(crate) async fn send(
+        self,
+        catalog: &dyn ControlCatalog,
+        context: CatalogReadContext,
+    ) -> EntryRemoval {
+        match catalog
+            .edit_playlist(
+                context.clone(),
+                self.playlist.clone(),
+                self.edit.write.clone(),
+            )
+            .await
+        {
+            Ok(()) | Err(CatalogWriteError::Unknown(_)) => {}
+            Err(CatalogWriteError::Rejected(error)) => return EntryRemoval::Rejected(error),
+        }
+        match load_complete(catalog, context, &self.playlist).await {
+            Ok((playlist, entries)) => match self.edit.observe(&playlist, &entries) {
+                EditReadback::All => EntryRemoval::Removed,
+                EditReadback::Removed(_) | EditReadback::Unknown => EntryRemoval::Unknown(
+                    unavailable("fresh YouTube Music data did not confirm the removal"),
+                ),
+            },
+            Err(error) => EntryRemoval::Unknown(error),
+        }
+    }
+}
+
 fn exact_occurrence_order(
     entries: &[PlaylistEntry],
 ) -> Result<Vec<PlaylistOccurrenceIdentity>, ControlError> {

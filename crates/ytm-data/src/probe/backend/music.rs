@@ -634,6 +634,18 @@ fn normalize_added_entries(
         .collect()
 }
 
+/// The one entry an add of `video` created, when the provider's acknowledgement names exactly
+/// one valid entry for that song and nothing else.
+pub(super) fn single_created_entry(video: &VideoId, added: Vec<AddPlaylistItem>) -> Option<String> {
+    match normalize_added_entries(std::slice::from_ref(video), added)
+        .ok()?
+        .as_slice()
+    {
+        [entry] => Some(entry.entry_id.clone()),
+        _ => None,
+    }
+}
+
 fn parse_append_response(
     requested: &[VideoId],
     response: &Value,

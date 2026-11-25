@@ -3,6 +3,7 @@ import type {
   ArtistDetail,
   AuthStatusInfo,
   CatalogQueryRequest,
+  CollectionPlayback,
   CatalogResponsePayload,
   HomeFeed,
   PlaylistDetail,
@@ -14,6 +15,16 @@ import type {
 import type { PageStatus } from "./page-state.js";
 
 export const SEARCH_PAGE_SIZE = 50;
+
+/**
+ * The Liked songs page's own playback context, from its first reply: the collection's playlist
+ * and each loaded first-page row's native index, with the account it was read for. Kept with
+ * the page (and dropped with it), so the whole collection is played only from what the core read.
+ */
+export interface LikedPlayback {
+  readonly playback: CollectionPlayback;
+  readonly accountScope: string;
+}
 export const TRACK_PAGE_SIZE = 100;
 
 export type CatalogRoute = "home" | "search" | "library" | "playlist" | "album" | "artist" | "liked" | "recent";
@@ -30,12 +41,33 @@ interface Parsed<D, I> {
   readonly stale: boolean;
 }
 
+/** Pages of one kind kept besides the one in view, so Back and re-opening show them at once. */
+export const KEPT_PAGES = 3;
+/** An in-place refresh reads at most this many pages again; rows past them wait for paging. */
+export const REFRESH_MAX_PAGES = 20;
+
+/** What happens to the shown content when a page is asked for another key. */
+export type KeyChange =
+  /** Drop it; keep the last few keys' content to show again (marked stale) when they come back. */
+  | "keep"
+  /** Leave it on screen, marked stale, until the new key's reply replaces it (search). */
+  | "replace";
+
+interface Kept<D, I> {
+  readonly detail: D | null;
+  readonly items: readonly I[];
+  readonly nextCursor: string | null;
+}
+
 /**
  * One catalog page: a detail header plus a cursor-paginated item list. `key` identifies what
- * the page shows (query, playlist id, ...). Large item arrays are stored raw (not deeply reactive).
+ * the page asks for (query, playlist id, ...); `dataKey` is the key the shown content belongs
+ * to, which differs from `key` while a new search replaces the previous results. `stale` marks
+ * content that is cached or being read again, never fresh. Large item arrays are stored raw.
  */
 export class CatalogPage<D, I> {
   key = $state<string | null>(null);
+  dataKey = $state<string | null>(null);
   status = $state<PageStatus>("idle");
   error = $state<QueryError | null>(null);
   detail = $state.raw<D | null>(null);
@@ -46,6 +78,10 @@ export class CatalogPage<D, I> {
   moreError = $state<QueryError | null>(null);
   /** Request generation; any response from an older generation is dropped. */
   seq = 0;
+  /** Content of recently shown other keys, oldest first. */
+  #kept = new Map<string, Kept<D, I>>();
+
+  constructor(private readonly keyChange: KeyChange = "keep") {}
 
   get hasData(): boolean {
     return this.detail !== null || this.items.length > 0;
@@ -56,22 +92,74 @@ export class CatalogPage<D, I> {
     this.key = null;
     this.status = "idle";
     this.error = null;
+    this.clearShown();
+    this.loadingMore = false;
+    this.moreError = null;
+    this.#kept.clear();
+  }
+
+  /**
+   * Revokes the in-flight response and marks the content stale; the rows and cursor stay on
+   * screen (paging waits, as the page is no longer "done") until a refresh replaces them.
+   * Kept copies of other keys are dropped, or only `id`'s when the invalidation names one.
+   */
+  invalidate(id?: string | null): void {
+    if (id != null && id !== this.key) {
+      this.#kept.delete(id);
+      return;
+    }
+    this.seq += 1;
+    this.status = "idle";
+    this.error = null;
+    this.stale = true;
+    this.loadingMore = false;
+    this.moreError = null;
+    if (id == null) this.#kept.clear();
+  }
+
+  /**
+   * The listener left the page: an in-place re-read still running (it can take many pages) is
+   * revoked, and the shown content stays marked stale, so it is read again on the next visit.
+   */
+  stopRefresh(): void {
+    if (this.status !== "loading" || this.dataKey !== this.key || !this.hasData) return;
+    this.seq += 1;
+    this.status = "idle";
+    this.stale = true;
+  }
+
+  /** Points the page at another key: parks the shown content and brings back the new key's, if kept. */
+  switchKey(key: string): void {
+    const shown = this.dataKey;
+    if (this.keyChange === "replace") {
+      this.stale = this.hasData;
+    } else {
+      if (shown !== null && shown !== key && this.hasData) {
+        this.#kept.delete(shown);
+        this.#kept.set(shown, { detail: this.detail, items: this.items, nextCursor: this.nextCursor });
+        while (this.#kept.size > KEPT_PAGES) this.#kept.delete(this.#kept.keys().next().value!);
+      }
+      const kept = this.#kept.get(key);
+      this.#kept.delete(key);
+      if (kept) {
+        this.detail = kept.detail;
+        this.items = kept.items;
+        this.nextCursor = kept.nextCursor;
+        this.dataKey = key;
+        this.stale = true;
+      } else {
+        this.clearShown();
+      }
+    }
+    this.key = key;
+  }
+
+  clearShown(): void {
+    this.dataKey = null;
     this.detail = null;
     this.items = [];
     this.nextCursor = null;
     this.stale = false;
-    this.loadingMore = false;
-    this.moreError = null;
-  }
-
-  invalidate(): void {
-    this.seq += 1;
-    this.status = "idle";
-    this.error = null;
-    this.nextCursor = null;
-    this.stale = true;
-    this.loadingMore = false;
-    this.moreError = null;
   }
 }
 
@@ -99,12 +187,12 @@ function invalidPayload(expected: string): QueryError {
  */
 export class CatalogStore {
   readonly home = new CatalogPage<HomeFeed, never>();
-  readonly search = new CatalogPage<SearchResult, Track>();
+  readonly search = new CatalogPage<SearchResult, Track>("replace");
   readonly library = new CatalogPage<null, PlaylistSummary>();
   readonly playlist = new CatalogPage<PlaylistDetail, Track>();
   readonly album = new CatalogPage<AlbumDetail, Track>();
   readonly artist = new CatalogPage<ArtistDetail, Track>();
-  readonly liked = new CatalogPage<null, Track>();
+  readonly liked = new CatalogPage<LikedPlayback, Track>();
   readonly recent = new CatalogPage<null, Track>();
 
   private accountKey: string | null = null;
@@ -124,6 +212,12 @@ export class CatalogStore {
     };
   }
 
+  /** The listener left `route`'s page; see `CatalogPage.stopRefresh`. Other views are ignored. */
+  leave(route: string): void {
+    const page = (this.pages() as Record<string, CatalogPage<unknown, unknown> | undefined>)[route];
+    page?.stopRefresh();
+  }
+
   /** Clears all pages and invalidates in-flight requests when the account identity changes. */
   syncAccount(accountKey: string): boolean {
     if (accountKey === this.accountKey) return false;
@@ -137,7 +231,11 @@ export class CatalogStore {
     for (const page of Object.values(this.pages())) page.reset();
   }
 
-  /** Revoke the old cursor and in-flight response while preserving the route's query key. */
+  /**
+   * Revokes in-flight responses of the pages `kind` affects and marks their content stale; the
+   * returned routes need a refresh (in place: see `load`). History and membership changes drop
+   * their pages outright, so a late read from before the change can never show again.
+   */
   invalidate(kind: string, id: string | null): CatalogRoute[] {
     if (kind === "localHistory") {
       this.home.reset();
@@ -158,9 +256,22 @@ export class CatalogStore {
         case "libraryPlaylists":
           return ["library", "home"];
         case "playlistTracks":
-          return id === null || id === this.playlist.key ? ["playlist"] : [];
-        case "likedSongs":
-          return ["liked"];
+          // A confirmed add names its playlist; only one without a name (or the open one) reads
+          // the open playlist again in place.
+          if (id !== null && id !== this.playlist.key) {
+            this.playlist.invalidate(id);
+            return [];
+          }
+          return ["playlist"];
+        case "likedSongs": {
+          // A like or unlike made on the Liked page itself must not rebuild the list under the
+          // listener (the row's heart already shows it): shown rows stay, marked stale, and are
+          // read again in place when the page is next opened or paged. A page still loading
+          // (or empty) has nothing to keep and is read again now.
+          const shown = this.liked.status === "done" && this.liked.hasData;
+          this.liked.invalidate();
+          return shown ? [] : ["liked"];
+        }
         case "rating": {
           const tracks = [
             ["home", this.home, this.home.detail?.recentTracks ?? []],
@@ -179,7 +290,7 @@ export class CatalogStore {
       }
     })();
     const pages = this.pages();
-    for (const route of affected) pages[route].invalidate();
+    for (const route of affected) pages[route].invalidate(kind === "playlistTracks" ? id : null);
     return affected;
   }
 
@@ -199,55 +310,89 @@ export class CatalogStore {
     return null;
   }
 
+  /**
+   * Fetches `key` into `page`. Content already shown for the same key stays on screen while it
+   * is read again, and the refresh reads as many pages as were loaded (up to
+   * REFRESH_MAX_PAGES) before replacing it in one step, so the list keeps its length and the
+   * listener keeps their place. `more` builds the request for a following page.
+   */
   private async load<D, I>(
     page: CatalogPage<D, I>,
     key: string,
     req: CatalogQueryRequest,
     parse: (res: CatalogResponsePayload) => Parsed<D, I> | null,
-    force: boolean
+    force: boolean,
+    more?: (cursor: string) => CatalogQueryRequest
   ): Promise<void> {
     // Reuse a loaded (or loading) page; a page that ended in error is fetched again.
     if (!force && page.key === key && page.status !== "idle" && !page.error) return;
     const seq = ++page.seq;
     const accountKey = this.accountKey;
-    if (page.key !== key) {
-      page.detail = null;
-      page.items = [];
-      page.nextCursor = null;
-      page.stale = false;
-    }
-    page.key = key;
+    if (page.key !== key) page.switchKey(key);
     page.status = "loading";
     page.error = null;
     page.loadingMore = false;
     page.moreError = null;
+    const shownRows = page.dataKey === key ? page.items.length : 0;
+
+    const fail = (error: QueryError) => {
+      page.status = "done";
+      // Another key's content (the previous search) must not pass for this key's cached copy.
+      if (page.dataKey !== key) page.clearShown();
+      page.error = error;
+    };
+    const current = () => seq === page.seq && accountKey === this.accountKey;
+    const accept = (res: CatalogResponsePayload, request: CatalogQueryRequest): Parsed<D, I> | QueryError =>
+      res.resultType === "error" ? res : (parse(res) ?? invalidPayload(request.kind));
 
     const res = await this.client.queryCatalog(req);
-    if (seq !== page.seq || accountKey !== this.accountKey) return;
-
+    if (!current()) return;
+    const first = accept(res, req);
+    if ("code" in first) return fail(first);
+    let items = first.items;
+    let nextCursor = first.nextCursor;
+    let stale = first.stale;
+    for (let pages = 1; more && nextCursor && items.length < shownRows && pages < REFRESH_MAX_PAGES; pages++) {
+      const request = more(nextCursor);
+      const res = await this.client.queryCatalog(request);
+      if (!current()) return;
+      const next = accept(res, request);
+      if ("code" in next) return fail(next);
+      items = [...items, ...next.items];
+      nextCursor = next.nextCursor;
+      stale = stale || next.stale;
+    }
     page.status = "done";
-    if (res.resultType === "error") {
-      page.error = res;
-      return;
-    }
-    const parsed = parse(res);
-    if (!parsed) {
-      page.error = invalidPayload(req.kind);
-      return;
-    }
-    page.detail = parsed.detail;
-    page.items = parsed.items;
-    page.nextCursor = parsed.nextCursor;
-    page.stale = parsed.stale;
+    page.dataKey = key;
+    page.detail = first.detail;
+    page.items = items;
+    page.nextCursor = nextCursor;
+    page.stale = stale;
   }
 
+  /**
+   * Appends the next page. A page whose content was invalidated while shown is read again in
+   * place first (its old cursor is revoked); paging continues from the refreshed cursor, unless
+   * the page was pointed at another key (or account) meanwhile: `req` belongs to the old one.
+   */
   private async loadMore<D, I>(
     page: CatalogPage<D, I>,
     req: (cursor: string) => CatalogQueryRequest,
-    parse: (res: CatalogResponsePayload) => Parsed<D, I> | null
+    parse: (res: CatalogResponsePayload) => Parsed<D, I> | null,
+    refresh?: () => Promise<void>
   ): Promise<void> {
+    if (page.status === "idle" && page.hasData && refresh) {
+      const key = page.key;
+      const accountKey = this.accountKey;
+      await refresh();
+      if (page.key !== key || this.accountKey !== accountKey) return;
+      // The re-read keeps the row count, so the list does not ask again: go on from its cursor
+      // (only once it is done; never a second refresh).
+      return this.loadMore(page, req, parse);
+    }
     const cursor = page.nextCursor;
-    if (!cursor || page.loadingMore || page.status !== "done") return;
+    // After a failed refresh the cursor is the revoked one; Retry reads the page again first.
+    if (!cursor || page.loadingMore || page.status !== "done" || page.error) return;
     const seq = page.seq;
     const accountKey = this.accountKey;
     page.loadingMore = true;
@@ -275,55 +420,46 @@ export class CatalogStore {
     return this.load(this.home, "home", { kind: "home" }, parseHome, force);
   }
 
-  /** Starts a new search; an empty query clears results and drops any in-flight search. */
+  /**
+   * Starts a new search; an empty query clears results and drops any in-flight search. The
+   * previous results stay on screen, marked stale, until the new reply arrives or fails.
+   */
   runSearch(query: string): Promise<void> {
     const trimmed = query.trim();
     if (!trimmed) {
       this.search.reset();
       return Promise.resolve();
     }
-    return this.load(
-      this.search,
-      trimmed,
-      { kind: "searchSongs", query: trimmed, limit: SEARCH_PAGE_SIZE },
-      parseSearch,
-      true
+    return this.load(this.search, trimmed, searchRequest(trimmed), parseSearch, true, (cursor) =>
+      searchRequest(trimmed, cursor)
     );
   }
 
   loadMoreSearch(): Promise<void> {
     const query = this.search.key ?? "";
-    return this.loadMore(
-      this.search,
-      (cursor) => ({ kind: "searchSongs", query, cursor, limit: SEARCH_PAGE_SIZE }),
-      parseSearch
+    return this.loadMore(this.search, (cursor) => searchRequest(query, cursor), parseSearch, () =>
+      this.runSearch(query)
     );
   }
 
   loadLibrary(force = false): Promise<void> {
-    return this.load(this.library, "library", { kind: "libraryPlaylists" }, parseLibrary, force);
+    return this.load(this.library, "library", { kind: "libraryPlaylists" }, parseLibrary, force, libraryRequest);
   }
 
   loadMoreLibrary(): Promise<void> {
-    return this.loadMore(this.library, (cursor) => ({ kind: "libraryPlaylists", cursor }), parseLibrary);
+    return this.loadMore(this.library, libraryRequest, parseLibrary, () => this.loadLibrary());
   }
 
   openPlaylist(playlistId: string, force = false): Promise<void> {
-    return this.load(
-      this.playlist,
-      playlistId,
-      { kind: "playlistTracks", playlistId, limit: TRACK_PAGE_SIZE },
-      parsePlaylist,
-      force
+    return this.load(this.playlist, playlistId, playlistRequest(playlistId), parsePlaylist, force, (cursor) =>
+      playlistRequest(playlistId, cursor)
     );
   }
 
   loadMorePlaylist(): Promise<void> {
     const playlistId = this.playlist.key ?? "";
-    return this.loadMore(
-      this.playlist,
-      (cursor) => ({ kind: "playlistTracks", playlistId, cursor, limit: TRACK_PAGE_SIZE }),
-      parsePlaylist
+    return this.loadMore(this.playlist, (cursor) => playlistRequest(playlistId, cursor), parsePlaylist, () =>
+      this.openPlaylist(playlistId)
     );
   }
 
@@ -336,20 +472,32 @@ export class CatalogStore {
   }
 
   loadLiked(force = false): Promise<void> {
-    return this.load(this.liked, "liked", { kind: "likedSongs", limit: TRACK_PAGE_SIZE }, parseLiked, force);
+    return this.load(this.liked, "liked", likedRequest(), parseLiked, force, likedRequest);
   }
 
   loadMoreLiked(): Promise<void> {
-    return this.loadMore(
-      this.liked,
-      (cursor) => ({ kind: "likedSongs", cursor, limit: TRACK_PAGE_SIZE }),
-      parseLiked
-    );
+    return this.loadMore(this.liked, likedRequest, parseLiked, () => this.loadLiked());
   }
 
   loadRecent(force = false): Promise<void> {
     return this.load(this.recent, "recent", { kind: "recentHistory" }, parseRecent, force);
   }
+}
+
+function searchRequest(query: string, cursor?: string): CatalogQueryRequest {
+  return { kind: "searchSongs", query, ...(cursor ? { cursor } : {}), limit: SEARCH_PAGE_SIZE };
+}
+
+function libraryRequest(cursor?: string): CatalogQueryRequest {
+  return cursor ? { kind: "libraryPlaylists", cursor } : { kind: "libraryPlaylists" };
+}
+
+function playlistRequest(playlistId: string, cursor?: string): CatalogQueryRequest {
+  return { kind: "playlistTracks", playlistId, ...(cursor ? { cursor } : {}), limit: TRACK_PAGE_SIZE };
+}
+
+function likedRequest(cursor?: string): CatalogQueryRequest {
+  return { kind: "likedSongs", ...(cursor ? { cursor } : {}), limit: TRACK_PAGE_SIZE };
 }
 
 function parseHome(res: CatalogResponsePayload): Parsed<HomeFeed, never> | null {
@@ -410,9 +558,28 @@ function parseArtist(res: CatalogResponsePayload): Parsed<ArtistDetail, Track> |
   return { detail: res, items: res.topSongs ?? [], nextCursor: null, stale: false };
 }
 
-function parseLiked(res: CatalogResponsePayload): Parsed<null, Track> | null {
+/**
+ * A liked page; its playback context is kept only when it lines up one to one with the rows and
+ * its first index is usable. Later pages' contexts are not needed: Play starts at the first row.
+ */
+function parseLiked(res: CatalogResponsePayload): Parsed<LikedPlayback, Track> | null {
   if (res.resultType !== "likedSongs") return null;
-  return { detail: null, items: res.items, nextCursor: res.nextCursor ?? null, stale: res.freshness === "stale" };
+  const playback = res.playback;
+  const start = playback?.entries[0]?.startIndex;
+  const usable =
+    playback &&
+    playback.playlistId &&
+    res.items.length > 0 &&
+    playback.entries.length === res.items.length &&
+    start !== undefined &&
+    Number.isInteger(start) &&
+    start >= 0;
+  return {
+    detail: usable ? { playback, accountScope: res.accountScope } : null,
+    items: res.items,
+    nextCursor: res.nextCursor ?? null,
+    stale: res.freshness === "stale",
+  };
 }
 
 function parseRecent(res: CatalogResponsePayload): Parsed<null, Track> | null {

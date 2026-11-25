@@ -76,6 +76,8 @@ pub enum ListenerActionKind {
     /// Liked, disliked or cleared a rating in the app.
     Rate,
     AddToPlaylist,
+    /// Took back a song just added to a playlist (the app's Undo of that addition).
+    UndoAddToPlaylist,
 }
 
 /// Input of a listener profile read.

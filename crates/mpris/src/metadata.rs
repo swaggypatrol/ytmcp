@@ -228,10 +228,25 @@ impl MprisCachedState {
         None
     }
 
-    /// Play needs a loaded track: the official page ignores play with nothing loaded, and the
-    /// core refuses it, so media controls should not offer it.
+    /// Play needs a loaded track, or a player still preparing one (the core holds the play
+    /// until it knows): with nothing to play the core refuses it, so media controls should
+    /// not offer it.
     pub fn can_play(&self) -> bool {
-        self.supports(self.capabilities.play_pause) && self.player.current_track.is_some()
+        self.supports(self.capabilities.play_pause)
+            && (self.player.current_track.is_some() || self.player.preparing)
+    }
+
+    /// PlayPause pauses while playing and otherwise plays, as the core resolves the toggle,
+    /// so it is offered exactly when that action is.
+    pub fn can_play_pause(&self) -> bool {
+        if matches!(
+            self.player.playback,
+            CorePlaybackStatus::Playing | CorePlaybackStatus::Buffering
+        ) {
+            self.supports(self.capabilities.play_pause)
+        } else {
+            self.can_play()
+        }
     }
 
     pub fn cover_asset_id(&self) -> Option<&AssetId> {

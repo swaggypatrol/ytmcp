@@ -34,8 +34,8 @@ use ytm_protocol::{
     HostHelloPayload, HostWindowVisibilityPayload, LyricsQueryRequest, MAX_COMMAND_QUEUE,
     MAX_FRAME_BYTES, MAX_PENDING_REQUESTS, MessageKind, MomentDesktopRequest, MutationRequest,
     NetworkState, OutputGateResultPayload, PROTOCOL_VERSION, PlayerCommandPayload, QueryError,
-    QueryErrorCode, QueueSnapshot, RequestId, ResolveAssetPayload, SenderRole,
-    SessionMaterialPayload,
+    QueryErrorCode, QueueSnapshot, RecentSearchesRequest, RequestId, ResolveAssetPayload,
+    SenderRole, SessionMaterialPayload,
 };
 use ytm_storage::{CoverCacheConfig, SqliteStorage, StoragePaths};
 
@@ -277,17 +277,23 @@ async fn main() {
 
     let control_registrations = storage.paths().config_dir.join("control-clients.json");
     let operation_store = storage.clone();
-    let core = Arc::new(CoreEngine::start(
-        CoreDeps {
-            clock: Arc::new(SystemClock::new()),
-            bridge: bridge_port,
-            output_gate: output_gate_port.clone(),
-            catalog: Some(catalog.clone()),
-            storage: Some(storage),
-            lyrics: Some(lyrics_service.clone()),
-        },
-        EngineConfig::default(),
+    let control_catalog = Arc::new(control_catalog::YtmControlCatalog::new(
+        catalog_adapter.clone(),
     ));
+    let core = Arc::new(
+        CoreEngine::start(
+            CoreDeps {
+                clock: Arc::new(SystemClock::new()),
+                bridge: bridge_port,
+                output_gate: output_gate_port.clone(),
+                catalog: Some(catalog.clone()),
+                storage: Some(storage),
+                lyrics: Some(lyrics_service.clone()),
+            },
+            EngineConfig::default(),
+        )
+        .with_playlist_editor(control_catalog.clone()),
+    );
     outbound.set_core_epoch(core.core_epoch().clone());
 
     // Restore persisted user settings and Moment DJ config before serving subscriptions.
@@ -300,9 +306,6 @@ async fn main() {
 
     use ytm_core::control::journal::OperationStore;
     let store_recovered = operation_store.recover(core.clock().wall_now_ms()).await;
-    let control_catalog = Arc::new(control_catalog::YtmControlCatalog::new(
-        catalog_adapter.clone(),
-    ));
     let control_service = match store_recovered {
         Ok(()) => Some(Arc::new(
             ytm_core::control::ControlService::new(core.as_ref().clone())
@@ -440,6 +443,7 @@ async fn main() {
                     MessageKind::UiPlayerCommand
                         | MessageKind::UiMutation
                         | MessageKind::UiAgentActivity
+                        | MessageKind::UiRecentSearches
                 ) && env.core_epoch.is_none()
                 {
                     send_error(
@@ -896,6 +900,64 @@ async fn main() {
                                             send_typed_response(
                                                 &out_c,
                                                 MessageKind::CoreMutationResponse,
+                                                req_id,
+                                                resp,
+                                            )
+                                            .await;
+                                        }
+                                        Err(err) => {
+                                            send_error(
+                                                &out_c,
+                                                req_id,
+                                                err.code,
+                                                err.safe_message,
+                                                err.retriable,
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                });
+                            }
+                            Err(err) => {
+                                drop(slot);
+                                send_error(
+                                    &outbound,
+                                    env.request_id.clone(),
+                                    QueryErrorCode::InvalidPayload,
+                                    err.to_string(),
+                                    false,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    MessageKind::UiRecentSearches => {
+                        let Some(slot) =
+                            PendingSlot::try_acquire(&pending_requests, MAX_PENDING_REQUESTS)
+                        else {
+                            send_error(
+                                &outbound,
+                                env.request_id.clone(),
+                                QueryErrorCode::Busy,
+                                "pending request limit (128) reached",
+                                true,
+                            )
+                            .await;
+                            continue;
+                        };
+                        match env.decode_payload::<RecentSearchesRequest>() {
+                            Ok(req) => {
+                                let core_c = Arc::clone(&core);
+                                let out_c = outbound.clone();
+                                let req_id = env.request_id.clone();
+                                let acct_epoch = env.account_epoch.clone();
+                                tokio::spawn(async move {
+                                    let _slot = slot;
+                                    match core_c.recent_searches(req, acct_epoch).await {
+                                        Ok(resp) => {
+                                            send_typed_response(
+                                                &out_c,
+                                                MessageKind::CoreRecentSearches,
                                                 req_id,
                                                 resp,
                                             )

@@ -8,8 +8,17 @@
 //   node tools/probes/glass/run-probe.mjs perf collapse     real UI: only the sidebar collapse transition
 //   node tools/probes/glass/run-probe.mjs look [dark|light] real UI: a few scenes and 2x crops, for visual iteration
 //   node tools/probes/glass/run-probe.mjs flow              real UI: volume wheel, Ctrl+L return, playback indicator
+//   node tools/probes/glass/run-probe.mjs check [feedback|nav|write|nowplaying|search|lyrics|lists|seek|covers|titles|menu|preparing|recent|problems|paint|leave|libback ...]
+//                                                           real UI: the fluency fixes with probe-injected latency
+//                                                           and shaped mock replies (window-check.mjs), out/check
 //   node tools/probes/glass/run-probe.mjs tiers [dark|light] real UI: every main view at the four layout tiers
 //   node tools/probes/glass/run-probe.mjs overlay           real UI: popover motion, frame intervals, input and press spring
+//   node tools/probes/glass/run-probe.mjs exit [menu|toast|dialog|modes|races] [dark|light] [runs]
+//                                                           real UI: overlay exits from the window's frames at real
+//                                                           speed: residue, plateau and final pop (overlay-exit.mjs);
+//                                                           GLASS_PROBE_EXIT_DIR sets the output directory;
+//                                                           overlay-exit-report.mjs <before> <after> [out-dir]
+//                                                           writes the compact evidence (default out/exit-report)
 //   node tools/probes/glass/run-probe.mjs rims              native corner crops in both themes at the selected DPR
 //   node tools/probes/glass/run-probe.mjs transition        real UI: slowed page transitions captured mid-way
 //

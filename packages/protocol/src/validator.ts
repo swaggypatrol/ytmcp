@@ -9,6 +9,10 @@ export const MAX_PENDING_REQUESTS = 128;
 export const MAX_COMMAND_QUEUE = 64;
 export const MAX_PAGE_SIZE = 100;
 export const MAX_SAFE_JS_INT = Number.MAX_SAFE_INTEGER;
+/** Most recent searches the core keeps per account. */
+export const MAX_RECENT_SEARCHES = 8;
+/** Longest recent-search query, in Unicode code points as sent. */
+export const MAX_RECENT_SEARCH_CHARS = 200;
 
 export type SenderRole = "mainUi" | "playerBridge" | "host" | "core";
 
@@ -22,6 +26,7 @@ export const MAIN_UI_ALLOWED_OUTBOUND: ReadonlySet<MessageKind> = new Set<Messag
   "ui.agentActivity",
   "ui.settingsUpdate",
   "ui.momentSettings",
+  "ui.recentSearches",
   "ui.openPlayerWindow",
   "ui.logout",
   "ui.clearCache",
@@ -87,6 +92,7 @@ function ensureValidators(): {
       "ui.agentActivity": compileRef("#/definitions/AgentActivityRequest"),
       "ui.settingsUpdate": compileRef("#/definitions/AppSettingsPatch"),
       "ui.momentSettings": compileRef("#/definitions/MomentDesktopRequest"),
+      "ui.recentSearches": compileRef("#/definitions/RecentSearchesRequest"),
       "ui.openPlayerWindow": compileRef("#/definitions/OpenPlayerWindowPayload"),
       "core.snapshot": compileRef("#/definitions/AppSnapshot"),
       "core.delta": compileRef("#/definitions/StateDelta"),
@@ -97,6 +103,7 @@ function ensureValidators(): {
       "core.agentActivity": compileRef("#/definitions/AgentActivitySnapshot"),
       "core.settingsUpdated": compileRef("#/definitions/AppSettings"),
       "core.momentSettings": compileRef("#/definitions/MomentDesktopSnapshot"),
+      "core.recentSearches": compileRef("#/definitions/RecentSearchesSnapshot"),
       "core.environmentConfig": compileRef("#/definitions/EnvironmentConfigPayload"),
       "core.error": compileRef("#/definitions/QueryError"),
       "bridge.error": compileRef("#/definitions/QueryError"),
@@ -192,6 +199,7 @@ export function isKindAllowedForRole(kind: MessageKind, role: SenderRole): boole
         kind === "core.agentActivity" ||
         kind === "core.settingsUpdated" ||
         kind === "core.momentSettings" ||
+        kind === "core.recentSearches" ||
         kind === "core.environmentConfig" ||
         kind === "core.error" ||
         kind === "core.pong" ||
@@ -271,6 +279,15 @@ export function validatePayloadByKind(
         ok: false,
         code: "INVALID_PAYLOAD",
         message: `limit ${q.limit} outside [1, ${MAX_PAGE_SIZE}]`,
+      };
+    }
+  } else if (kind === "ui.recentSearches") {
+    const req = payload as { action: string; query?: string };
+    if (req.action === "record" && (req.query ?? "").trim() === "") {
+      return {
+        ok: false,
+        code: "INVALID_PAYLOAD",
+        message: "recent search query is empty",
       };
     }
   } else if (kind === "ui.settingsUpdate") {

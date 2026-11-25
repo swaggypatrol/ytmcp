@@ -7,14 +7,14 @@ use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use ytm_core::ports::{
-    BoxFuture, CatalogIdentity, CatalogPort, Clock, OfficialLyrics, SystemClock,
+    BoxFuture, CatalogIdentity, CatalogPort, Clock, OfficialLyrics, PlaylistAddition, SystemClock,
 };
 use ytm_protocol::{
     AccountEpoch, AccountScope, AlbumId, ArtistId, CatalogQueryKind, CatalogQueryRequest,
-    CatalogResponsePayload, CoverRef, CredentialRevision, Freshness, HomeFeed, MAX_PAGE_SIZE,
-    MutationKind, MutationOutcome, MutationRequest, MutationResult, PagedResult, PlaylistDetail,
-    PlaylistId, PlaylistSummary, QueryError, QueryErrorCode, RecentHistoryResult, SearchResult,
-    SessionMaterialPayload, Track, VideoId,
+    CatalogResponsePayload, CollectionPlayback, CoverRef, CredentialRevision, Freshness, HomeFeed,
+    LikedSongsPage, MAX_PAGE_SIZE, MutationKind, MutationOutcome, MutationRequest, MutationResult,
+    PagedResult, PlaylistDetail, PlaylistId, PlaylistSummary, QueryError, QueryErrorCode,
+    RecentHistoryResult, SearchResult, SessionMaterialPayload, Track, VideoId,
 };
 use ytm_storage::{AccountCacheContext, LibraryMembershipCache, SqliteStorage};
 
@@ -1917,16 +1917,30 @@ impl YtmCatalogAdapter {
                 .await
             {
                 Ok(page) => {
+                    // Each row keeps its own native entry through the window, so skipping and
+                    // truncating cannot misalign a track and its index.
+                    let context = page.playback.as_ref();
                     let liked = page
                         .tracks
                         .into_iter()
-                        .map(|mut t| {
+                        .enumerate()
+                        .map(|(row, mut t)| {
                             t.is_liked = Some(true);
-                            t
+                            (
+                                t,
+                                context.and_then(|context| context.entries.get(row).cloned()),
+                            )
                         })
                         .collect();
                     let (window, next) =
                         take_window(liked, &position, limit, page.next_continuation);
+                    let (window, entries): (Vec<_>, Vec<_>) = window.into_iter().unzip();
+                    let playback = page.playback.as_ref().and_then(|context| {
+                        Some(CollectionPlayback {
+                            playlist_id: context.playlist_id.clone(),
+                            entries: entries.into_iter().collect::<Option<Vec<_>>>()?,
+                        })
+                    });
                     let next_cursor = next
                         .map(|pos| {
                             encode_cursor(
@@ -1938,13 +1952,16 @@ impl YtmCatalogAdapter {
                             )
                         })
                         .transpose()?;
-                    let result = PagedResult {
-                        items: window,
-                        next_cursor,
-                        freshness: Freshness::Fresh,
-                        fetched_at_ms: self.clock.wall_now_ms(),
-                        account_scope: scope.clone(),
-                        provider_version: PROVIDER_VERSION.to_string(),
+                    let result = LikedSongsPage {
+                        page: PagedResult {
+                            items: window,
+                            next_cursor,
+                            freshness: Freshness::Fresh,
+                            fetched_at_ms: self.clock.wall_now_ms(),
+                            account_scope: scope.clone(),
+                            provider_version: PROVIDER_VERSION.to_string(),
+                        },
+                        playback,
                     };
                     let cache = self.catalog_cache_for(cache_generation).await;
                     let cache_ctx = self.cache_context(active);
@@ -1975,7 +1992,7 @@ impl YtmCatalogAdapter {
                         )
                         .await?
                     {
-                        cached.value.freshness = Freshness::Stale;
+                        cached.value.page.freshness = Freshness::Stale;
                         return Ok(CatalogResponsePayload::LikedSongs(cached.value));
                     }
                     return Err(err);
@@ -1989,7 +2006,7 @@ impl YtmCatalogAdapter {
             .get_liked_songs(scope, &self.config.locale, request.cursor.as_deref(), limit)
             .await?
         {
-            cached.value.freshness = Freshness::Stale;
+            cached.value.page.freshness = Freshness::Stale;
             return Ok(CatalogResponsePayload::LikedSongs(cached.value));
         }
 
@@ -2319,7 +2336,7 @@ fn response_covers(response: &mut CatalogResponsePayload) -> Vec<&mut CoverRef> 
             .into_iter()
             .chain(tracks(&mut artist.top_songs))
             .collect(),
-        CatalogResponsePayload::LikedSongs(page) => tracks(&mut page.items).collect(),
+        CatalogResponsePayload::LikedSongs(liked) => tracks(&mut liked.page.items).collect(),
         CatalogResponsePayload::RecentHistory(hist) => tracks(&mut hist.items).collect(),
         CatalogResponsePayload::Error(_) => Vec::new(),
     }
@@ -2462,6 +2479,160 @@ struct ResolvedQueryContext {
     offline: bool,
 }
 
+impl YtmCatalogAdapter {
+    /// One user-confirmed library write: the result and, for an add, the entry the provider
+    /// said it created. Nothing is retried.
+    async fn mutate_once(
+        &self,
+        account_epoch: AccountEpoch,
+        account_scope: AccountScope,
+        request: MutationRequest,
+        cancel: CancellationToken,
+    ) -> Result<(MutationResult, Option<String>), QueryError> {
+        if cancel.is_cancelled() {
+            return Err(make_query_error(
+                QueryErrorCode::StaleContext,
+                false,
+                None,
+                "mutation cancelled before dispatch",
+            ));
+        }
+        if !request.confirmed_by_user {
+            return Err(make_query_error(
+                QueryErrorCode::InvalidPayload,
+                false,
+                None,
+                "account mutation requires confirmedByUser=true",
+            ));
+        }
+
+        let (active, offline) = {
+            let guard = self.state.read().map_err(|_| {
+                make_query_error(
+                    QueryErrorCode::StorageError,
+                    false,
+                    None,
+                    "catalog adapter lock poisoned",
+                )
+            })?;
+            let active = guard.active.clone().ok_or_else(|| {
+                make_query_error(
+                    QueryErrorCode::AuthRequired,
+                    false,
+                    None,
+                    "authentication required before mutating YouTube Music library",
+                )
+            })?;
+            (active, guard.network_offline)
+        };
+
+        if active.account_epoch != account_epoch {
+            return Err(make_query_error(
+                QueryErrorCode::StaleContext,
+                false,
+                None,
+                "mutation accountEpoch does not match active session",
+            ));
+        }
+        if active.account_scope != account_scope {
+            return Err(make_query_error(
+                QueryErrorCode::AccountMismatch,
+                false,
+                None,
+                "mutation accountScope does not match active session",
+            ));
+        }
+        if offline {
+            return Err(make_query_error(
+                QueryErrorCode::NetworkOffline,
+                true,
+                Some(1_000),
+                "cannot execute library mutation while offline",
+            ));
+        }
+
+        let res = match request.kind {
+            MutationKind::SetLike => {
+                let liked = request.liked.ok_or_else(|| {
+                    make_query_error(
+                        QueryErrorCode::InvalidPayload,
+                        false,
+                        None,
+                        "setLike mutation requires liked=true|false",
+                    )
+                })?;
+                self.run_backend_call(
+                    &active,
+                    &cancel,
+                    self.backend
+                        .set_like(&active.session, &request.video_id, liked),
+                )
+                .await
+                .map(|()| None)
+            }
+            MutationKind::AddToPlaylist => {
+                let playlist_id = request.playlist_id.as_ref().ok_or_else(|| {
+                    make_query_error(
+                        QueryErrorCode::InvalidPayload,
+                        false,
+                        None,
+                        "addToPlaylist mutation requires playlistId",
+                    )
+                })?;
+                self.run_backend_call(
+                    &active,
+                    &cancel,
+                    self.backend
+                        .add_to_playlist(&active.session, playlist_id, &request.video_id),
+                )
+                .await
+            }
+            MutationKind::UndoAddToPlaylist => {
+                return Err(make_query_error(
+                    QueryErrorCode::InvalidPayload,
+                    false,
+                    None,
+                    "undoing an addition is handled by the core, not as a catalog mutation",
+                ));
+            }
+        };
+
+        match res {
+            Ok(created_entry_id) => Ok((
+                MutationResult::new(request.kind, MutationOutcome::Confirmed, None),
+                created_entry_id,
+            )),
+            // The service answered and refused: nothing was applied.
+            Err(err)
+                if matches!(
+                    err.code,
+                    QueryErrorCode::UnavailableTrack | QueryErrorCode::RateLimited
+                ) =>
+            {
+                Ok((
+                    MutationResult::new(request.kind, MutationOutcome::Rejected, Some(err)),
+                    None,
+                ))
+            }
+            // Credentials were rejected: surfaced as an error so the core expires the session.
+            Err(err)
+                if matches!(
+                    err.code,
+                    QueryErrorCode::AuthExpired | QueryErrorCode::AuthRequired
+                ) =>
+            {
+                Err(err)
+            }
+            // Timeout, transport failure, cancellation in flight or an unreadable response:
+            // the request may have been applied, so the outcome is unknown and never retried.
+            Err(err) => Ok((
+                MutationResult::new(request.kind, MutationOutcome::Indeterminate, Some(err)),
+                None,
+            )),
+        }
+    }
+}
+
 impl CatalogPort for YtmCatalogAdapter {
     fn query(
         &self,
@@ -2534,144 +2705,27 @@ impl CatalogPort for YtmCatalogAdapter {
         cancel: CancellationToken,
     ) -> BoxFuture<'_, Result<MutationResult, QueryError>> {
         Box::pin(async move {
-            if cancel.is_cancelled() {
-                return Err(make_query_error(
-                    QueryErrorCode::StaleContext,
-                    false,
-                    None,
-                    "mutation cancelled before dispatch",
-                ));
-            }
-            if !request.confirmed_by_user {
-                return Err(make_query_error(
-                    QueryErrorCode::InvalidPayload,
-                    false,
-                    None,
-                    "account mutation requires confirmedByUser=true",
-                ));
-            }
+            self.mutate_once(account_epoch, account_scope, request, cancel)
+                .await
+                .map(|(result, _)| result)
+        })
+    }
 
-            let (active, offline) = {
-                let guard = self.state.read().map_err(|_| {
-                    make_query_error(
-                        QueryErrorCode::StorageError,
-                        false,
-                        None,
-                        "catalog adapter lock poisoned",
-                    )
-                })?;
-                let active = guard.active.clone().ok_or_else(|| {
-                    make_query_error(
-                        QueryErrorCode::AuthRequired,
-                        false,
-                        None,
-                        "authentication required before mutating YouTube Music library",
-                    )
-                })?;
-                (active, guard.network_offline)
-            };
-
-            if active.account_epoch != account_epoch {
-                return Err(make_query_error(
-                    QueryErrorCode::StaleContext,
-                    false,
-                    None,
-                    "mutation accountEpoch does not match active session",
-                ));
-            }
-            if active.account_scope != account_scope {
-                return Err(make_query_error(
-                    QueryErrorCode::AccountMismatch,
-                    false,
-                    None,
-                    "mutation accountScope does not match active session",
-                ));
-            }
-            if offline {
-                return Err(make_query_error(
-                    QueryErrorCode::NetworkOffline,
-                    true,
-                    Some(1_000),
-                    "cannot execute library mutation while offline",
-                ));
-            }
-
-            let res = match request.kind {
-                MutationKind::SetLike => {
-                    let liked = request.liked.ok_or_else(|| {
-                        make_query_error(
-                            QueryErrorCode::InvalidPayload,
-                            false,
-                            None,
-                            "setLike mutation requires liked=true|false",
-                        )
-                    })?;
-                    self.run_backend_call(
-                        &active,
-                        &cancel,
-                        self.backend
-                            .set_like(&active.session, &request.video_id, liked),
-                    )
-                    .await
-                }
-                MutationKind::AddToPlaylist => {
-                    let playlist_id = request.playlist_id.as_ref().ok_or_else(|| {
-                        make_query_error(
-                            QueryErrorCode::InvalidPayload,
-                            false,
-                            None,
-                            "addToPlaylist mutation requires playlistId",
-                        )
-                    })?;
-                    self.run_backend_call(
-                        &active,
-                        &cancel,
-                        self.backend.add_to_playlist(
-                            &active.session,
-                            playlist_id,
-                            &request.video_id,
-                        ),
-                    )
-                    .await
-                }
-            };
-
-            match res {
-                Ok(()) => Ok(MutationResult {
-                    kind: request.kind,
-                    outcome: MutationOutcome::Confirmed,
-                    error: None,
-                }),
-                // The service answered and refused: nothing was applied.
-                Err(err)
-                    if matches!(
-                        err.code,
-                        QueryErrorCode::UnavailableTrack | QueryErrorCode::RateLimited
-                    ) =>
-                {
-                    Ok(MutationResult {
-                        kind: request.kind,
-                        outcome: MutationOutcome::Rejected,
-                        error: Some(err),
-                    })
-                }
-                // Credentials were rejected: surfaced as an error so the core expires the session.
-                Err(err)
-                    if matches!(
-                        err.code,
-                        QueryErrorCode::AuthExpired | QueryErrorCode::AuthRequired
-                    ) =>
-                {
-                    Err(err)
-                }
-                // Timeout, transport failure, cancellation in flight or an unreadable response:
-                // the request may have been applied, so the outcome is unknown and never retried.
-                Err(err) => Ok(MutationResult {
-                    kind: request.kind,
-                    outcome: MutationOutcome::Indeterminate,
-                    error: Some(err),
-                }),
-            }
+    fn add_to_playlist(
+        &self,
+        account_epoch: AccountEpoch,
+        account_scope: AccountScope,
+        request: MutationRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<PlaylistAddition, QueryError>> {
+        Box::pin(async move {
+            let (result, created_entry_id) = self
+                .mutate_once(account_epoch, account_scope, request, cancel)
+                .await?;
+            Ok(PlaylistAddition {
+                result,
+                created_entry_id,
+            })
         })
     }
 

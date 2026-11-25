@@ -9,6 +9,8 @@
   interface Props {
     artistId: string;
     artist: ArtistDetail | null;
+    /** The artist's name as the page it was opened from named it, shown until its own page loads. */
+    knownName?: string | null;
     view: PageView;
     tracks: readonly Track[];
     currentVideoId: string | null;
@@ -25,6 +27,7 @@
 
   let {
     artistId,
+    knownName = null,
     artist,
     view,
     tracks,
@@ -51,7 +54,7 @@
 <!-- No Play: an artist's top songs play one at a time (there is no artist playback context). -->
 <TrackCollectionView
   name="artist"
-  title={artist?.name ?? t.artist.title}
+  title={artist?.name ?? knownName ?? t.artist.title}
   cover={artist?.cover}
   coverSeed={artistId}
   roundCover

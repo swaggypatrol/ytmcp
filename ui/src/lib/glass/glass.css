@@ -94,6 +94,9 @@
   --lg-morph-to: 0.91;
   --lg-duration-dissolve: 360ms;
   --lg-duration-dismiss: 160ms;
+  /* Share of an overlay's exit clock over which the surface's own opacity fades at the end: how
+     long a clear pane follows the content and tint out. */
+  --lg-exit-tail: 0.55;
   --lg-morph-content-blur: 3px;
   /* The first 12 of the spring's 20 ms steps, ended on 1: same frequency and 23% overshoot, without
      the tail after about 236 ms, which moves a small control by less than a third of a pixel. For
@@ -288,6 +291,7 @@
       transition:
         transform 245ms cubic-bezier(0.1, 0.8, 0.3, 1),
         box-shadow var(--lg-duration-morph) ease-out,
+        opacity 150ms cubic-bezier(0, 0.9, 0.2, 1),
         --lg-morph-frost 150ms cubic-bezier(0, 0.9, 0.2, 1),
         --lg-morph-tint var(--lg-duration-morph) cubic-bezier(0.3, 0.2, 0.6, 1),
         --lg-morph-rim var(--lg-duration-morph) linear !important;
@@ -308,6 +312,7 @@
     }
     @starting-style {
       & .lg-overlay {
+        opacity: 1;
         --lg-morph-frost: 0;
         --lg-morph-tint: 0;
         --lg-morph-rim: 0;
@@ -316,6 +321,11 @@
       }
       & .lg-overlay > .lg-overlay-content { opacity: 0; filter: blur(var(--lg-morph-content-blur)); }
     }
+    /* Leaving: content and tint go first, then the frost, the scale and the rim. Over the second
+       half of the clock the surface's own opacity eases to 0 on the compositor, so nothing is left
+       when the element is removed: not the refraction (no track drives it), and not the frost or
+       glint the sampled tracks hold while the main thread is busy. See "Where the exit departs
+       from the overlay motion design" in docs/design/liquid-glass.md. */
     & .lg-overlay[data-leaving] {
       --lg-exit-ratio: calc(var(--lg-overlay-exit-duration) / var(--lg-duration-dissolve));
       --lg-morph-frost: 0;
@@ -323,15 +333,19 @@
       --lg-morph-rim: 0;
       box-shadow: none;
       transform: scale(var(--lg-morph-to));
+      opacity: 0;
       transition:
         transform calc(190ms * var(--lg-exit-ratio)) cubic-bezier(0.45, 0, 0.55, 1),
+        opacity calc(var(--lg-overlay-exit-duration) * var(--lg-exit-tail)) cubic-bezier(0.45, 0, 0.55, 1)
+          calc(var(--lg-overlay-exit-duration) * (1 - var(--lg-exit-tail))),
         box-shadow calc(190ms * var(--lg-exit-ratio)) ease-out,
         --lg-morph-frost calc(260ms * var(--lg-exit-ratio)) cubic-bezier(0.5, 0.1, 0.6, 0.9) calc(20ms * var(--lg-exit-ratio)),
         --lg-morph-tint calc(190ms * var(--lg-exit-ratio)) cubic-bezier(0.2, 0.6, 0.4, 1),
         --lg-morph-rim var(--lg-overlay-exit-duration) cubic-bezier(0.05, 0.7, 0.2, 1) !important;
     }
     & .lg-overlay[data-leaving="dissolve"] { --lg-overlay-exit-duration: var(--lg-duration-dissolve); }
-    /* Keep the dialog's large shadow static so its five motion tracks stay within frame budget. */
+    /* Keep the dialog's large shadow static so its five motion tracks stay within frame budget;
+       the exit's opacity tail takes it away. */
     & .app-dialog-layer > .lg-overlay { box-shadow: var(--lg-elevation); }
     & .lg-overlay[data-leaving] > .lg-overlay-content {
       opacity: 0;

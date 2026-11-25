@@ -4,3 +4,5 @@
 {"protocolVersion":1,"kind":"ui.playerCommand","seq":4,"payload":{"commandId":"cmd-unsafe-int","op":"seek","args":{"positionMs":9007199254740992}}}
 {"protocolVersion":1,"kind":"ui.catalogQuery","seq":5,"payload":{"kind":"searchSongs","limit":101}}
 {"protocolVersion":1,"kind":"ui.ping","seq":6,"payload":"not-an-object"
+{"protocolVersion":1,"kind":"ui.recentSearches","coreEpoch":"core-1","accountEpoch":"acct-1","requestId":"req-recent-1","seq":7,"payload":{"action":"record","query":"   "}}
+{"protocolVersion":1,"kind":"ui.recentSearches","coreEpoch":"core-1","accountEpoch":"acct-1","requestId":"req-recent-1","seq":8,"payload":{"action":"record","query":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}

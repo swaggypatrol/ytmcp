@@ -379,3 +379,47 @@ fn rating_toast_is_only_acknowledged_and_neutral_empty_body_is_inconclusive() {
         Err(CatalogMutationError::Unknown(err)) if !err.retriable
     ));
 }
+
+/// The app's own add (`DuplicateHandlingMode::ReturnError`, parsed by the provider library as
+/// `add_to_playlist` does) keeps exactly the one entry it created, and a refused duplicate still
+/// fails with the error the UI reports as `rejected`.
+#[test]
+fn ui_add_reply_maps_to_exactly_one_created_entry() {
+    let playlist = PlaylistId::new("PL_synthetic_target").unwrap();
+    let video = video_id("fixture-a").unwrap();
+    let reply = |response: Value| {
+        let query = AddPlaylistItemsQuery::new_from_videos(
+            PlaylistID::from_raw(playlist.as_str()),
+            [VideoID::from_raw(video.as_str())],
+            DuplicateHandlingMode::ReturnError,
+        );
+        ytmapi_rs::process_json::<_, BrowserToken>(response.to_string(), query)
+    };
+    let ack = |video: &str, entry: &str| json!({"playlistEditVideoAddedResultData": {"videoId": video, "setVideoId": entry}});
+    let added = |results: Vec<Value>| {
+        let parsed = reply(json!({"status": "STATUS_SUCCEEDED", "playlistEditResults": results}));
+        single_created_entry(&video, parsed.unwrap())
+    };
+    assert_eq!(
+        added(vec![ack("fixture-a", "entry-new")]).as_deref(),
+        Some("entry-new")
+    );
+    // An acknowledgement that names nothing, another song, or two entries is no undo target.
+    assert_eq!(added(vec![]), None);
+    assert_eq!(added(vec![ack("fixture-b", "entry-new")]), None);
+    assert_eq!(
+        added(vec![
+            ack("fixture-a", "entry-1"),
+            ack("fixture-a", "entry-2")
+        ]),
+        None
+    );
+    assert_eq!(added(vec![ack("fixture-a", "")]), None);
+
+    let duplicate =
+        reply(json!({"status": "STATUS_FAILED", "actions": [{"addToToastAction": {}}]}));
+    assert_eq!(
+        crate::probe::error::classify_ytmapi_error(duplicate.unwrap_err()).code,
+        QueryErrorCode::UnavailableTrack
+    );
+}

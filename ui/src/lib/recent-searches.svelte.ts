@@ -1,120 +1,120 @@
-/** Most queries kept, newest first. */
-export const RECENT_SEARCH_LIMIT = 8;
-/** Longest query kept; longer input is cut, never stored whole. */
-const MAX_QUERY_LENGTH = 200;
-const STORAGE_KEY = "ytmcp.recentSearches.v1";
+import type { AccountEpoch, QueryErrorCode, RecentSearchesRequest, RecentSearchesSnapshot } from "@ytmcp/protocol";
+import { CoreRequestError } from "./ipc/client.js";
 
-interface StoredRecentSearches {
-  readonly account: string;
-  readonly queries: readonly string[];
+/** Longest query the core keeps, in Unicode code points; a longer one is not recorded at all. */
+export const MAX_RECENT_QUERY_CHARS = 200;
+
+/** Where the list lives: the core's `ui.recentSearches`, asked for one account epoch. */
+export interface RecentSearchesSource {
+  recentSearches(req: RecentSearchesRequest, accountEpoch: AccountEpoch): Promise<RecentSearchesSnapshot>;
 }
 
-/** Collapses whitespace and trims; returns "" for a query that is not worth keeping. */
-export function normalizeQuery(query: string): string {
-  return query.normalize("NFC").replace(/\s+/g, " ").trim().slice(0, MAX_QUERY_LENGTH);
-}
-
-/**
- * The account a recent-searches list belongs to: the catalog account key while signed in
- * (`acct:<scope>:<epoch>`), null otherwise. The epoch changes on sign-out and on account
- * change, so a list from before either never matches again.
- */
-export function recentSearchAccount(accountKey: string | null | undefined): string | null {
-  return accountKey?.startsWith("acct:") ? accountKey : null;
-}
-
-function defaultStorage(): Storage | null {
-  try {
-    return typeof localStorage === "undefined" ? null : localStorage;
-  } catch {
-    return null;
-  }
-}
-
-function readStored(storage: Storage | null): StoredRecentSearches | null {
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const value: unknown = JSON.parse(raw);
-    if (!value || typeof value !== "object") return null;
-    const { account, queries } = value as Record<string, unknown>;
-    if (typeof account !== "string" || !Array.isArray(queries)) return null;
-    const kept = queries
-      .filter((q): q is string => typeof q === "string")
-      .map(normalizeQuery)
-      .filter((q) => q !== "")
-      .slice(0, RECENT_SEARCH_LIMIT);
-    return { account, queries: kept };
-  } catch {
-    return null;
-  }
+/** The query as it is sent to be recorded (NFC, trimmed), or null when it is empty or too long. */
+export function recentSearchQuery(query: string): string | null {
+  const text = query.normalize("NFC").trim();
+  if (text === "" || [...text].length > MAX_RECENT_QUERY_CHARS) return null;
+  return text;
 }
 
 /**
- * Queries the user actually ran, kept in the renderer for one signed-in account. A list is
- * only ever shown to the account that made it; seeing another account (or nobody signed in
- * while recording) replaces it with an empty one. Storage failures fall back to memory.
+ * The Search page's recent searches: a cache of the core's reply for the signed-in account. The
+ * core keeps the list per account across restarts; every reply is the whole list, so it simply
+ * replaces what is shown. `sync` follows the authenticated account epoch (null when there is
+ * none) and asks for the list whenever a new one appears; a reply for any other epoch, or one
+ * older than a reply already shown, is dropped. Failures keep the last list, except that a
+ * refused sign-in empties it until the account can be asked again.
  */
 export class RecentSearches {
-  #account = $state<string | null>(null);
-  #queries = $state.raw<readonly string[]>([]);
-  readonly #storage: Storage | null;
+  #items = $state.raw<readonly string[]>([]);
+  readonly #source: RecentSearchesSource | null;
+  #epoch: AccountEpoch | null = null;
+  /** The epoch whose list has been asked for; null makes the next `sync` (a new epoch, or the same one again) ask again. */
+  #listed: AccountEpoch | null = null;
+  #sent = 0;
+  #applied = 0;
 
-  constructor(storage: Storage | null = defaultStorage()) {
-    this.#storage = storage;
-    const stored = readStored(storage);
-    if (stored) {
-      this.#account = stored.account;
-      this.#queries = stored.queries;
-    }
+  constructor(source: RecentSearchesSource | null) {
+    this.#source = source;
   }
 
-  /** The list for this catalog account key; empty for any other account or while signed out. */
-  itemsFor(accountKey: string | null | undefined): readonly string[] {
-    const account = recentSearchAccount(accountKey);
-    return account !== null && account === this.#account ? this.#queries : [];
+  /** Newest first, at most the core's limit. */
+  get items(): readonly string[] {
+    return this.#items;
+  }
+
+  /** Follows the authenticated account; another account (or none) empties the list at once. */
+  sync(accountEpoch: AccountEpoch | null): void {
+    if (accountEpoch !== this.#epoch) {
+      this.#epoch = accountEpoch;
+      this.#listed = null;
+      this.#applied = this.#sent;
+      this.#items = [];
+    }
+    if (accountEpoch !== null && this.#listed !== accountEpoch) this.#list();
   }
 
   /**
-   * Forgets a list that belongs to someone else: called with the current account key, it
-   * empties the store once a different account (or a sign-out) is seen. Unknown and
-   * signing-in states keep it, so a slow start-up does not wipe it.
+   * The core dropped this account's state (sign-out, account change, expiry): the list is
+   * emptied here, with no clear sent, and asked for again once the deltas of this turn have
+   * settled. Replies sent before are dropped; a sign-out seen meanwhile leaves it empty.
    */
-  sync(accountKey: string | null | undefined): void {
-    if (this.#account === null) return;
-    if (accountKey === "none:signedOut" || (recentSearchAccount(accountKey) ?? this.#account) !== this.#account) {
-      this.#replace(null, []);
-    }
+  invalidate(): void {
+    this.#applied = this.#sent;
+    this.#listed = null;
+    this.#items = [];
+    queueMicrotask(() => {
+      if (this.#epoch !== null && this.#listed === null) this.#list();
+    });
   }
 
-  /** Puts a query the user ran at the front, dropping a case-insensitive duplicate. */
-  record(accountKey: string | null | undefined, query: string): void {
-    const account = recentSearchAccount(accountKey);
-    const text = normalizeQuery(query);
-    if (account === null || text === "") return;
-    const previous = account === this.#account ? this.#queries : [];
-    const folded = text.toLowerCase();
-    this.#replace(account, [text, ...previous.filter((q) => q.toLowerCase() !== folded)].slice(0, RECENT_SEARCH_LIMIT));
+  /** Records a query the listener actually ran; empty or overlong ones are not sent. */
+  record(query: string): void {
+    const text = recentSearchQuery(query);
+    if (text !== null) this.#send({ action: "record", query: text });
   }
 
-  /** Empties the list of the current account. */
+  /** Asks the core to forget this account's list; the reply (empty) replaces it. */
   clear(): void {
-    if (this.#account !== null) this.#replace(this.#account, []);
+    this.#send({ action: "clear" });
   }
 
-  #replace(account: string | null, queries: readonly string[]): void {
-    this.#account = account;
-    this.#queries = queries;
-    if (!this.#storage) return;
+  #list(): void {
+    this.#listed = this.#epoch;
+    this.#send({ action: "list" });
+  }
+
+  #send(req: RecentSearchesRequest): void {
+    const epoch = this.#epoch;
+    if (epoch === null || !this.#source) return;
+    const seq = ++this.#sent;
+    const current = () => epoch === this.#epoch && seq > this.#applied;
+    let reply: Promise<RecentSearchesSnapshot>;
     try {
-      if (account === null) this.#storage.removeItem(STORAGE_KEY);
-      else this.#storage.setItem(STORAGE_KEY, JSON.stringify({ account, queries } satisfies StoredRecentSearches));
-    } catch {
-      // Storage is a convenience: the list keeps working in memory.
+      reply = this.#source.recentSearches(req, epoch);
+    } catch (err) {
+      reply = Promise.reject(err);
     }
+    reply.then(
+      (snapshot) => {
+        if (!current()) return;
+        this.#applied = seq;
+        this.#items = snapshot.items.map((item) => item.query);
+      },
+      (err: unknown) => {
+        if (!current()) return;
+        const code: QueryErrorCode | null = err instanceof CoreRequestError ? err.error.code : null;
+        if (code === "AUTH_REQUIRED") {
+          // No session behind this epoch yet: nothing to show; asked again when an epoch appears.
+          this.#applied = seq;
+          this.#items = [];
+          this.#listed = null;
+        } else if (code === "ACCOUNT_MISMATCH") {
+          // The core is on another account than this epoch; its own epoch arrives as a delta
+          // and `sync` asks for that list. Nothing is replayed for the new account.
+          this.#listed = null;
+        }
+        // Anything else (stale context, storage, busy, transport): the last list stays.
+      }
+    );
   }
 }
-
-/** The app's one list, shared by every mount of the search page. */
-export const recentSearches = new RecentSearches();

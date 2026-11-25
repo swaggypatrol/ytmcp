@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   CALIBRATED_LRC_FIXTURE,
   FakeCoreClient,
+  FakeCoreRequestError,
   MAX_FRAME_BYTES,
   createSyntheticTracks,
   isKindAllowedForRole,
@@ -60,6 +61,9 @@ describe("protocol validator", () => {
     expect(isKindAllowedForRole("ui.settingsUpdate", "playerBridge")).toBe(false);
     expect(isKindAllowedForRole("core.settingsUpdated", "core")).toBe(true);
     expect(isKindAllowedForRole("core.settingsUpdated", "mainUi")).toBe(false);
+    expect(isKindAllowedForRole("ui.recentSearches", "mainUi")).toBe(true);
+    expect(isKindAllowedForRole("core.recentSearches", "core")).toBe(true);
+    expect(isKindAllowedForRole("ui.recentSearches", "playerBridge")).toBe(false);
   });
 
   it("validates partial settings patches and rejects out-of-range UI scale", () => {
@@ -150,5 +154,42 @@ describe("FakeCoreClient", () => {
     const updated = client.updateSettings({ uiLanguage: "zh-CN" });
     expect(updated.reduceTransparency).toBe(true);
     expect(updated.uiLanguage).toBe("zh-CN");
+  });
+
+  it("keeps recent searches for the signed-in mock account with the core's rules", () => {
+    const client = new FakeCoreClient("normal");
+    const epoch = "mock-account-epoch-1";
+    const refused = (run: () => unknown) => {
+      try {
+        run();
+      } catch (err) {
+        if (err instanceof FakeCoreRequestError) return err.error.code;
+        throw err;
+      }
+      return null;
+    };
+    const record = (query: string) => client.recentSearches({ action: "record", query }, epoch);
+    const queries = () => client.recentSearches({ action: "list" }, epoch).items.map((item) => item.query);
+
+    expect(queries()).toEqual([]);
+    for (let i = 0; i < 10; i++) record(`query ${i}`);
+    expect(queries()).toHaveLength(8);
+    expect(queries()[0]).toBe("query 9");
+    // Case and spacing do not make a second entry; the new spelling moves to the front.
+    record("  QUERY   5 ");
+    expect(queries()).toHaveLength(8);
+    expect(queries()[0]).toBe("QUERY   5");
+    expect(queries().filter((q) => q.toLowerCase().includes("5"))).toHaveLength(1);
+
+    expect(refused(() => record("   "))).toBe("INVALID_PAYLOAD");
+    expect(refused(() => record("x".repeat(201)))).toBe("INVALID_PAYLOAD");
+    expect(refused(() => client.recentSearches({ action: "list" }, null))).toBe("INVALID_PAYLOAD");
+    expect(refused(() => client.recentSearches({ action: "list" }, "another-epoch"))).toBe("ACCOUNT_MISMATCH");
+
+    expect(client.recentSearches({ action: "clear" }, epoch).items).toEqual([]);
+    expect(queries()).toEqual([]);
+
+    const expired = new FakeCoreClient("authExpired");
+    expect(refused(() => expired.recentSearches({ action: "list" }, epoch))).toBe("AUTH_REQUIRED");
   });
 });

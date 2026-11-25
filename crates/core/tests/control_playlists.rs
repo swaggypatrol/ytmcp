@@ -13,19 +13,20 @@ use ytm_control_api::{
 };
 use ytm_core::control::catalog::{
     AddedOccurrence, CatalogReadContext, CatalogWriteError, ControlCatalog, PlaylistEdit,
-    PlaylistWrite, PlaylistWriteAck, PlaylistWriteError, RatingEvidence,
+    PlaylistOccurrenceIdentity, PlaylistWrite, PlaylistWriteAck, PlaylistWriteError,
+    RatingEvidence,
 };
 use ytm_core::control::journal::{
     AccountOperation, Claim, JournalEntry, OperationKey, OperationStore,
 };
 use ytm_core::control::{ControlService, DispatchAuthority, DispatchGrant, ReadGrant};
-use ytm_core::ports::{CatalogIdentity, CatalogPort, OfficialLyrics};
+use ytm_core::ports::{CatalogIdentity, CatalogPort, OfficialLyrics, PlaylistAddition};
 use ytm_core::{BoxFuture, CoreDeps, CoreEngine, EngineConfig, MockClock};
 use ytm_protocol::{
     AccountEpoch, AccountScope, AlbumId, ArtistId, BridgeEpoch, BridgeReadyPayload,
-    CatalogQueryRequest, CatalogResponsePayload, CredentialRevision, Freshness, MutationRequest,
-    MutationResult, PlaylistId, QueryError, QueryErrorCode, SessionMaterialPayload, StateDelta,
-    TrackAvailability, VideoId,
+    CatalogQueryRequest, CatalogResponsePayload, CredentialRevision, Freshness, MutationKind,
+    MutationOutcome, MutationRequest, MutationResult, PlaylistId, QueryError, QueryErrorCode,
+    SessionMaterialPayload, StateDelta, TrackAvailability, VideoId,
 };
 
 const SCOPE: &str = "scope-playlist-fixture";
@@ -221,6 +222,12 @@ struct Remote {
     rating_invalidations: usize,
     subscribed: Option<bool>,
     subscription_writes: Vec<bool>,
+    /// The app's own adds (`CatalogPort::add_to_playlist`), and whether their replies name the
+    /// created entry.
+    ui_adds: usize,
+    unnamed_ui_add: bool,
+    /// After a removal, the provider also swaps the first two remaining entries.
+    reorder_on_removal: bool,
 }
 
 #[derive(Default)]
@@ -245,6 +252,53 @@ impl CatalogPort for Catalog {
         _cancel: CancellationToken,
     ) -> BoxFuture<'_, Result<MutationResult, QueryError>> {
         Box::pin(async { panic!("playlist writes must use the dedicated catalog port") })
+    }
+
+    /// The app's add: one new entry at the end, refused like the provider's duplicate check when
+    /// the song is already there.
+    fn add_to_playlist(
+        &self,
+        account_epoch: AccountEpoch,
+        account_scope: AccountScope,
+        request: MutationRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'_, Result<PlaylistAddition, QueryError>> {
+        Box::pin(async move {
+            assert_eq!(account_scope.as_str(), SCOPE);
+            assert_eq!(account_epoch.as_str(), EPOCH);
+            let mut remote = self.0.lock().await;
+            remote.ui_adds += 1;
+            let named = !remote.unnamed_ui_add;
+            let stored = remote.playlist.as_mut().unwrap();
+            assert_eq!(Some(&stored.playlist_id), request.playlist_id.as_ref());
+            let entries = &mut stored.entries.items;
+            if entries
+                .iter()
+                .any(|entry| entry.track.video_id == request.video_id)
+            {
+                let refused = QueryError {
+                    code: QueryErrorCode::UnavailableTrack,
+                    retriable: false,
+                    retry_after_ms: None,
+                    safe_message: "YouTube Music returned STATUS_FAILED".into(),
+                    request_id: None,
+                };
+                return Ok(PlaylistAddition {
+                    result: MutationResult::new(
+                        request.kind,
+                        MutationOutcome::Rejected,
+                        Some(refused),
+                    ),
+                    created_entry_id: None,
+                });
+            }
+            let entry_id = format!("ui-occurrence-{}", entries.len());
+            entries.push(entry(&entry_id, request.video_id.as_str(), entries.len()));
+            Ok(PlaylistAddition {
+                result: MutationResult::new(request.kind, MutationOutcome::Confirmed, None),
+                created_entry_id: named.then_some(entry_id),
+            })
+        })
     }
 
     fn apply_session_material(
@@ -628,6 +682,11 @@ impl ControlCatalog for Catalog {
                     return Ok(());
                 }
             }
+            if remote.reorder_on_removal {
+                let entries = &mut remote.playlist.as_mut().unwrap().entries.items;
+                entries.swap(0, 1);
+            }
+            let entries = &mut remote.playlist.as_mut().unwrap().entries.items;
             for (position, entry) in entries.iter_mut().enumerate() {
                 entry.position = position as u32;
             }
@@ -640,6 +699,24 @@ impl ControlCatalog for Catalog {
             }
             Ok(())
         })
+    }
+}
+
+/// A playlist entry of `video` at `position`.
+fn entry(entry_id: &str, video: &str, position: usize) -> PlaylistEntry {
+    PlaylistEntry {
+        entry_id: Some(entry_id.into()),
+        position: position as u32,
+        track: Track {
+            title: video.into(),
+            video_id: VideoId::new(video).unwrap(),
+            artists: vec![],
+            album: None,
+            duration_ms: None,
+            availability: TrackAvailability::Available,
+            version_tag: None,
+            rating: Rating::Unknown,
+        },
     }
 }
 
@@ -736,6 +813,7 @@ impl DispatchAuthority for EditGrant {
 
 struct Harness {
     engine: CoreEngine,
+    clock: Arc<MockClock>,
     catalog: Arc<Catalog>,
     service: Arc<ControlService>,
     journal: Arc<Journal>,
@@ -746,14 +824,16 @@ impl Harness {
     async fn new() -> Self {
         let catalog = Arc::<Catalog>::default();
         let journal = Arc::<Journal>::default();
+        let clock = Arc::new(MockClock::new(1000));
         let engine = CoreEngine::start(
             CoreDeps {
-                clock: Arc::new(MockClock::new(1000)),
+                clock: clock.clone(),
                 catalog: Some(catalog.clone()),
                 ..Default::default()
             },
             EngineConfig::default(),
-        );
+        )
+        .with_playlist_editor(catalog.clone());
         engine
             .on_bridge_ready(
                 1,
@@ -796,6 +876,7 @@ impl Harness {
         );
         Self {
             engine,
+            clock,
             catalog,
             service,
             journal,
@@ -1992,4 +2073,275 @@ async fn an_append_of_a_track_already_present_is_refused_before_anything_is_sent
     assert_eq!(catalog.invalidations.len(), invalidations);
     drop(catalog);
     harness.engine.shutdown().await.unwrap();
+}
+
+const UI_PLAYLIST: &str = "PL_fixture_ui";
+
+impl Harness {
+    /// A playlist the listener can add to: `videos` in order, entry IDs `pre-<n>`.
+    async fn ui_playlist(&self, videos: &[&str]) {
+        self.catalog.0.lock().await.playlist = Some(Playlist {
+            playlist_id: PlaylistId::new(UI_PLAYLIST).unwrap(),
+            identity_confirmed: true,
+            title: "Fixture mix".into(),
+            description: None,
+            privacy: Some(PlaylistPrivacy::Private),
+            editable: Some(true),
+            snapshot_fingerprint: None,
+            entries: Page {
+                items: videos
+                    .iter()
+                    .enumerate()
+                    .map(|(n, video)| entry(&format!("pre-{n}"), video, n))
+                    .collect(),
+                next_cursor: None,
+                complete: true,
+                source: "fixture".into(),
+                freshness: Freshness::Fresh,
+                captured_at_ms: 1000,
+            },
+        });
+    }
+
+    /// The app's own add, as the player window sends it.
+    async fn ui_add(&self, video: &str) -> MutationResult {
+        let request = MutationRequest {
+            kind: MutationKind::AddToPlaylist,
+            video_id: VideoId::new(video).unwrap(),
+            liked: None,
+            playlist_id: Some(PlaylistId::new(UI_PLAYLIST).unwrap()),
+            undo_token: None,
+            confirmed_by_user: true,
+        };
+        self.engine
+            .mutate(request, Some(AccountEpoch::new(EPOCH).unwrap()))
+            .await
+            .unwrap()
+    }
+
+    /// The Undo of an addition, in the account session `epoch`.
+    async fn ui_undo(&self, video: &str, token: &str, epoch: &str) -> MutationResult {
+        let request = MutationRequest {
+            kind: MutationKind::UndoAddToPlaylist,
+            video_id: VideoId::new(video).unwrap(),
+            liked: None,
+            playlist_id: Some(PlaylistId::new(UI_PLAYLIST).unwrap()),
+            undo_token: Some(token.into()),
+            confirmed_by_user: true,
+        };
+        self.engine
+            .mutate(request, Some(AccountEpoch::new(epoch).unwrap()))
+            .await
+            .unwrap()
+    }
+
+    /// The remote playlist as `(entryId, videoId)` in order.
+    async fn ui_entries(&self) -> Vec<(String, String)> {
+        let remote = self.catalog.0.lock().await;
+        remote
+            .playlist
+            .as_ref()
+            .unwrap()
+            .entries
+            .items
+            .iter()
+            .map(|entry| {
+                (
+                    entry.entry_id.clone().unwrap(),
+                    entry.track.video_id.as_str().to_owned(),
+                )
+            })
+            .collect()
+    }
+}
+
+fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+    items
+        .iter()
+        .map(|(entry, video)| ((*entry).to_owned(), (*video).to_owned()))
+        .collect()
+}
+
+/// Undo removes the one entry the addition created even when the same song is in the playlist
+/// twice, confirms it by a fresh read, and is logged as the listener's own action.
+#[tokio::test]
+async fn ui_undo_removes_only_the_entry_its_addition_created() {
+    let harness = Harness::new().await;
+    harness.ui_playlist(&["first", "second"]).await;
+    let mut deltas = harness.engine.subscribe_snapshot().await.unwrap().1;
+    let added = harness.ui_add("song").await;
+    assert_eq!(added.outcome, MutationOutcome::Confirmed);
+    let token = added.undo_token.expect("an addition that named its entry");
+    assert!(!token.contains("ui-occurrence"), "the token is opaque");
+    // Another device adds the same song again, ahead of the app's copy.
+    {
+        let mut remote = harness.catalog.0.lock().await;
+        let items = &mut remote.playlist.as_mut().unwrap().entries.items;
+        items.insert(1, entry("elsewhere", "song", 1));
+        for (position, item) in items.iter_mut().enumerate() {
+            item.position = position as u32;
+        }
+    }
+    harness.invalidated(&mut deltas).await;
+
+    let undone = harness.ui_undo("song", &token, EPOCH).await;
+    assert_eq!(undone.outcome, MutationOutcome::Confirmed, "{undone:?}");
+    assert!(!undone.already_removed && undone.undo_token.is_none());
+    assert_eq!(
+        harness.ui_entries().await,
+        pairs(&[
+            ("pre-0", "first"),
+            ("elsewhere", "song"),
+            ("pre-1", "second")
+        ])
+    );
+    let remote = harness.catalog.0.lock().await;
+    assert_eq!(
+        remote.edits,
+        [PlaylistEdit::Remove(vec![PlaylistOccurrenceIdentity {
+            video_id: VideoId::new("song").unwrap(),
+            entry_id: "ui-occurrence-2".into(),
+        }])]
+    );
+    assert_eq!(
+        remote.invalidations,
+        [PlaylistId::new(UI_PLAYLIST).unwrap()]
+    );
+    drop(remote);
+    assert_eq!(
+        harness.invalidated(&mut deltas).await,
+        [("playlistTracks".to_owned(), UI_PLAYLIST.to_owned()),]
+    );
+    let ControlResponse::Context(context) = harness
+        .service
+        .execute(
+            &harness.grant,
+            ControlRequest::GetContext(ytm_control_api::ContextInput {
+                preview_limit: Some(0),
+            }),
+        )
+        .await
+    else {
+        panic!("expected a context");
+    };
+    let kinds: Vec<_> = context
+        .listener_actions
+        .iter()
+        .map(|action| action.action)
+        .collect();
+    // Newest first.
+    assert_eq!(
+        kinds,
+        [
+            ytm_control_api::ListenerActionKind::UndoAddToPlaylist,
+            ytm_control_api::ListenerActionKind::AddToPlaylist,
+        ]
+    );
+
+    // The token was used: a second undo sends nothing.
+    let again = harness.ui_undo("song", &token, EPOCH).await;
+    assert_eq!(again.outcome, MutationOutcome::Rejected);
+    assert_eq!(again.error.unwrap().code, QueryErrorCode::StaleContext);
+    assert_eq!(harness.catalog.0.lock().await.edits.len(), 1);
+}
+
+/// A token is refused once it expired or the account session changed; nothing is read or sent.
+#[tokio::test]
+async fn ui_undo_is_refused_after_expiry_or_an_account_change() {
+    let harness = Harness::new().await;
+    harness.ui_playlist(&["first"]).await;
+    let expiring = harness.ui_add("song").await.undo_token.unwrap();
+    harness
+        .clock
+        .advance(ytm_core::playlist_undo::UNDO_LIFETIME_MS);
+    let expired = harness.ui_undo("song", &expiring, EPOCH).await;
+    assert_eq!(expired.outcome, MutationOutcome::Rejected);
+    assert_eq!(expired.error.unwrap().code, QueryErrorCode::StaleContext);
+
+    harness.ui_playlist(&["first"]).await;
+    let token = harness.ui_add("song").await.undo_token.unwrap();
+    let reads = harness.catalog.0.lock().await.reads;
+    harness
+        .engine
+        .on_session_material(SessionMaterialPayload {
+            account_epoch: AccountEpoch::new("epoch-after-switch").unwrap(),
+            credential_revision: CredentialRevision::new("credential-2").unwrap(),
+            cookie_pairs: Default::default(),
+            auth_user_index: None,
+            channel_label: None,
+        })
+        .await
+        .unwrap();
+    let stale = harness.ui_undo("song", &token, "epoch-after-switch").await;
+    assert_eq!(stale.outcome, MutationOutcome::Rejected);
+    assert!(!stale.already_removed);
+    let remote = harness.catalog.0.lock().await;
+    assert!(remote.edits.is_empty());
+    assert_eq!(remote.reads, reads);
+}
+
+/// The entry already gone is reported as such; a fresh read in another order stays unknown.
+#[tokio::test]
+async fn ui_undo_reports_already_removed_and_unknown_order() {
+    let harness = Harness::new().await;
+    harness.ui_playlist(&["first", "second"]).await;
+    let token = harness.ui_add("song").await.undo_token.unwrap();
+    harness
+        .catalog
+        .0
+        .lock()
+        .await
+        .playlist
+        .as_mut()
+        .unwrap()
+        .entries
+        .items
+        .pop();
+    let gone = harness.ui_undo("song", &token, EPOCH).await;
+    assert_eq!(gone.outcome, MutationOutcome::Rejected);
+    assert!(gone.already_removed);
+    assert!(harness.catalog.0.lock().await.edits.is_empty());
+
+    let token = harness.ui_add("song").await.undo_token.unwrap();
+    harness.catalog.0.lock().await.reorder_on_removal = true;
+    let unknown = harness.ui_undo("song", &token, EPOCH).await;
+    assert_eq!(
+        unknown.outcome,
+        MutationOutcome::Indeterminate,
+        "{unknown:?}"
+    );
+    assert_eq!(harness.catalog.0.lock().await.edits.len(), 1);
+    // Unknown is never retried, and the token is used up.
+    let again = harness.ui_undo("song", &token, EPOCH).await;
+    assert_eq!(again.outcome, MutationOutcome::Rejected);
+    assert_eq!(harness.catalog.0.lock().await.edits.len(), 1);
+}
+
+/// A duplicate add keeps its refusal and gives no token that could remove the earlier copy; an
+/// add whose reply names no entry is confirmed without one.
+#[tokio::test]
+async fn ui_add_without_a_named_new_entry_cannot_be_undone() {
+    let harness = Harness::new().await;
+    harness.ui_playlist(&["song", "second"]).await;
+    let duplicate = harness.ui_add("song").await;
+    assert_eq!(duplicate.outcome, MutationOutcome::Rejected);
+    assert_eq!(
+        duplicate.error.unwrap().code,
+        QueryErrorCode::UnavailableTrack
+    );
+    assert!(duplicate.undo_token.is_none());
+
+    harness.catalog.0.lock().await.unnamed_ui_add = true;
+    let unnamed = harness.ui_add("third").await;
+    assert_eq!(unnamed.outcome, MutationOutcome::Confirmed);
+    assert!(unnamed.undo_token.is_none());
+    assert_eq!(
+        harness.ui_entries().await,
+        pairs(&[
+            ("pre-0", "song"),
+            ("pre-1", "second"),
+            ("ui-occurrence-2", "third"),
+        ])
+    );
+    assert!(harness.catalog.0.lock().await.edits.is_empty());
 }

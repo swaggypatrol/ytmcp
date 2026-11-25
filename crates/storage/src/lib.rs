@@ -13,9 +13,9 @@ use crate::migrations::{LATEST_SCHEMA_VERSION, open_and_migrate};
 use crate::paths::write_atomic_0600;
 use crate::repo::{
     LIBRARY_PLAYLIST_PAGE_KIND, LIKED_SONGS_PAGE_KIND, PLAYLIST_DETAIL_PAGE_KIND, SEARCH_PAGE_KIND,
-    album_cache_key, artist_cache_key, catalog_page_cache_key, clear_account_data_tx,
-    clear_pending_account_tx, get_catalog_entry_tx, get_lyrics_conn, get_lyrics_user_offset_conn,
-    invalidate_account_epoch_tx, invalidate_library_playlist_views_tx,
+    album_cache_key, apply_recent_searches_tx, artist_cache_key, catalog_page_cache_key,
+    clear_account_data_tx, clear_pending_account_tx, get_catalog_entry_tx, get_lyrics_conn,
+    get_lyrics_user_offset_conn, invalidate_account_epoch_tx, invalidate_library_playlist_views_tx,
     last_active_account_scope_conn, list_recent_playback_conn, patch_home_freshness,
     patch_paged_freshness, patch_playlist_detail_freshness, patch_search_freshness,
     playlist_detail_cache_key, put_catalog_entry_tx, put_library_playlists_tx, put_lyrics_tx,
@@ -33,9 +33,9 @@ use ytm_core::ports::{
 };
 use ytm_protocol::{
     AccountEpoch, AccountScope, AlbumDetail, AlbumId, AppSettings, ArtistDetail, ArtistId, AssetId,
-    AssetResolvedPayload, HomeFeed, LyricsMatchMetadata, LyricsResult, OwnerMomentConfig,
-    PagedResult, PlaylistDetail, PlaylistId, PlaylistSummary, QueryError, SearchResult, Track,
-    VideoId,
+    AssetResolvedPayload, HomeFeed, LikedSongsPage, LyricsMatchMetadata, LyricsResult,
+    OwnerMomentConfig, PagedResult, PlaylistDetail, PlaylistId, PlaylistSummary, QueryError,
+    RecentSearchesRequest, RecentSearchesSnapshot, SearchResult, VideoId,
 };
 
 pub use cover::{
@@ -538,7 +538,7 @@ impl SqliteStorage {
         ctx: &AccountCacheContext,
         cursor: Option<&str>,
         limit: usize,
-        page: &PagedResult<Track>,
+        page: &LikedSongsPage,
         ttl_secs: Option<u64>,
     ) -> Result<(), QueryError> {
         let conn = self.conn.clone();
@@ -564,7 +564,7 @@ impl SqliteStorage {
         locale: &str,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<Option<CachedValue<PagedResult<Track>>>, QueryError> {
+    ) -> Result<Option<CachedValue<LikedSongsPage>>, QueryError> {
         let conn = self.conn.clone();
         let clock = self.clock.clone();
         let scope = account_scope.clone();
@@ -573,10 +573,10 @@ impl SqliteStorage {
         run_blocking(move || {
             let now_ms = clock.wall_now_ms();
             let guard = lock_conn(&conn)?;
-            let mut cached: Option<CachedValue<PagedResult<Track>>> =
+            let mut cached: Option<CachedValue<LikedSongsPage>> =
                 get_catalog_entry_tx(&guard, &scope, &locale, LIKED_SONGS_PAGE_KIND, &key, now_ms)?;
             if let Some(ref mut entry) = cached {
-                patch_paged_freshness(&mut entry.value, entry.freshness);
+                patch_paged_freshness(&mut entry.value.page, entry.freshness);
             }
             Ok(cached)
         })
@@ -954,6 +954,15 @@ impl StoragePort for SqliteStorage {
         self.covers.pin(asset_id.as_ref());
     }
 
+    fn cached_cover(&self, remote_url: &str) -> Option<CachedCover> {
+        self.covers
+            .cached(remote_url)
+            .map(|(asset_id, accent_oklch)| CachedCover {
+                asset_id,
+                accent_oklch,
+            })
+    }
+
     fn cache_cover(&self, remote_url: String) -> BoxFuture<'_, Result<CachedCover, QueryError>> {
         Box::pin(async move {
             let info = self.fetch_and_cache_cover(&remote_url).await?;
@@ -1030,6 +1039,25 @@ impl StoragePort for SqliteStorage {
             self.record_recent_playback(&account_scope, &account_epoch, entry)
                 .await
         })
+    }
+
+    fn recent_searches(
+        &self,
+        account_scope: AccountScope,
+        account_epoch: AccountEpoch,
+        request: RecentSearchesRequest,
+    ) -> BoxFuture<'_, Result<RecentSearchesSnapshot, QueryError>> {
+        let conn = self.conn.clone();
+        let clock = self.clock.clone();
+        Box::pin(run_blocking(move || {
+            let now_ms = clock.wall_now_ms();
+            let mut guard = lock_conn(&conn)?;
+            let tx = guard.transaction()?;
+            let snapshot =
+                apply_recent_searches_tx(&tx, &account_scope, &account_epoch, &request, now_ms)?;
+            tx.commit()?;
+            Ok(snapshot)
+        }))
     }
 
     fn update_playback_position(

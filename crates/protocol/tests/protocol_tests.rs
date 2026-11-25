@@ -3,8 +3,8 @@ use ytm_protocol::{
     AccountEpoch, AppSettings, AppSettingsPatch, BridgeEpoch, CodecError, CommandId, CoreEpoch,
     CredentialRevision, Envelope, MAX_FRAME_BYTES, MAX_SAFE_JS_INT, MessageKind, PROTOCOL_VERSION,
     PlayerCommandArgs, PlayerCommandPayload, PlayerOp, QueryErrorCode, RequestId, SenderRole,
-    SessionMaterialPayload, TrackInstanceId, UiLanguage, decode_ndjson_bytes, decode_ndjson_str,
-    encode_ndjson_line,
+    SessionMaterialPayload, StateDelta, TrackInstanceId, UiLanguage, decode_ndjson_bytes,
+    decode_ndjson_str, encode_ndjson_line,
 };
 
 #[test]
@@ -18,6 +18,80 @@ fn valid_contract_fixtures_round_trip() {
         assert_eq!(env.kind, reparsed.kind);
         assert_eq!(env.seq, reparsed.seq);
     }
+}
+
+/// `player.preparing` is optional on the wire: an older frame without it reads as false, and
+/// false is not written back.
+#[test]
+fn player_preparing_defaults_to_false_and_is_written_only_when_true() {
+    let raw = include_str!("../../../fixtures/contracts/valid_envelopes.ndjson");
+    let preparing: Vec<bool> = raw
+        .lines()
+        .map(|line| decode_ndjson_str(line).unwrap())
+        .filter(|env| env.kind == MessageKind::CoreDelta)
+        .map(|env| match env.decode_payload::<StateDelta>().unwrap() {
+            StateDelta::PlayerChanged { player, .. } => {
+                let written = serde_json::to_value(&player).unwrap();
+                assert_eq!(written.get("preparing").is_some(), player.preparing);
+                player.preparing
+            }
+            other => panic!("unexpected delta {other:?}"),
+        })
+        .collect();
+    assert_eq!(preparing, vec![true, false]);
+}
+
+/// The liked page's playback context and the undo fields are optional: payloads written before
+/// them still parse, the page stays flat on the wire, and absent values are not written back.
+#[test]
+fn liked_playback_and_undo_fields_are_additive() {
+    use ytm_protocol::{CatalogResponsePayload, MutationKind, MutationRequest, MutationResult};
+    let raw = include_str!("../../../fixtures/contracts/valid_envelopes.ndjson");
+    let envelopes: Vec<Envelope> = raw.lines().map(|l| decode_ndjson_str(l).unwrap()).collect();
+    let liked: Vec<_> = envelopes
+        .iter()
+        .filter(|env| env.kind == MessageKind::CoreCatalogResponse)
+        .map(
+            |env| match env.decode_payload::<CatalogResponsePayload>().unwrap() {
+                CatalogResponsePayload::LikedSongs(page) => page,
+                other => panic!("unexpected payload {other:?}"),
+            },
+        )
+        .collect();
+    let [with_context, older] = liked.as_slice() else {
+        panic!("expected two liked pages");
+    };
+    let playback = with_context.playback.as_ref().unwrap();
+    assert_eq!(playback.playlist_id.as_str(), "LM");
+    assert_eq!(playback.entries.len(), with_context.page.items.len());
+    assert_eq!(playback.entries[1].start_index, 1);
+    assert!(older.playback.is_none());
+    let written = serde_json::to_value(CatalogResponsePayload::LikedSongs(older.clone())).unwrap();
+    assert!(written.get("items").is_some() && written.get("page").is_none());
+    assert!(written.get("playback").is_none());
+
+    let requests: Vec<MutationRequest> = envelopes
+        .iter()
+        .filter(|env| env.kind == MessageKind::UiMutation)
+        .map(|env| env.decode_payload().unwrap())
+        .collect();
+    assert_eq!(requests[0].undo_token, None);
+    assert_eq!(requests[1].kind, MutationKind::UndoAddToPlaylist);
+    assert!(requests[1].undo_token.is_some());
+    let results: Vec<MutationResult> = envelopes
+        .iter()
+        .filter(|env| env.kind == MessageKind::CoreMutationResponse)
+        .map(|env| env.decode_payload().unwrap())
+        .collect();
+    assert!(results[0].undo_token.is_some() && !results[0].already_removed);
+    assert!(results[1].already_removed && results[1].undo_token.is_none());
+    let plain = serde_json::to_value(MutationResult::new(
+        MutationKind::AddToPlaylist,
+        ytm_protocol::MutationOutcome::Confirmed,
+        None,
+    ))
+    .unwrap();
+    assert!(plain.get("undoToken").is_none() && plain.get("alreadyRemoved").is_none());
 }
 
 #[test]

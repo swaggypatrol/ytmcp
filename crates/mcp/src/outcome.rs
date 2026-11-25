@@ -748,6 +748,9 @@ fn action_words(action: &ListenerAction) -> String {
             None => format!("rated {about}{unknown_subject}"),
         },
         Kind::AddToPlaylist => format!("added {about} to a playlist{unknown_subject}"),
+        Kind::UndoAddToPlaylist => {
+            format!("took {about} back out of the playlist it was just added to{unknown_subject}")
+        }
     };
     if action.ago_ms >= 60_000 {
         format!("{words} ({} ago)", minutes(action.ago_ms))
