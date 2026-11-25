@@ -64,6 +64,9 @@ pub struct PlaylistOccurrence {
     pub entry_id: Option<String>,
     /// Zero-based within this provider page until the account-scoped adapter offsets it.
     pub position: u32,
+    /// The native index this row's own play button starts the playlist from, when it says;
+    /// after a greyed-out row it can differ from `position`. Absolute, never offset.
+    pub playback_index: Option<u32>,
     pub track: Track,
     pub rating: SongRating,
 }
@@ -344,7 +347,7 @@ fn normalize_song_radio(
     })
 }
 
-fn parse_fresh_playlist(
+pub(super) fn parse_fresh_playlist(
     playlist: &PlaylistId,
     query: &GetPlaylistTracksQuery<'_>,
     json: Json,
@@ -401,9 +404,12 @@ fn parse_fresh_playlist(
         ));
         let position = u32::try_from(position)
             .map_err(|_| invalid_music_response("playlist page position exceeded bounds"))?;
+        let playback_index =
+            super::playlist_playback::row_playback_index(item, playlist, track.video_id.as_str());
         entries.push(PlaylistOccurrence {
             entry_id,
             position,
+            playback_index,
             track,
             rating,
         });

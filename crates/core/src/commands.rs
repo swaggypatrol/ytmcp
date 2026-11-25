@@ -19,8 +19,12 @@ pub const SEEK_TOLERANCE_MS: u64 = 2_000;
 /// Extra forward drift allowed while playing during `Seek` observation.
 pub const SEEK_PLAYING_FORWARD_DRIFT_MS: u64 = 4_000;
 
-/// Tolerance for matching floating-point volume `[0.0, 1.0]`.
-pub const VOLUME_TOLERANCE: f64 = 0.02;
+/// Whether an observed volume shows a `setVolume` target. The page player takes whole percent
+/// (the bridge sends `round(target * 100)`), so the two match when they name the same percent.
+/// A one-point step therefore never matches the observation from before the command.
+fn volume_matches(observed: f64, target: f64) -> bool {
+    (observed * 100.0).round() == (target * 100.0).round()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopPhase {
@@ -1021,7 +1025,7 @@ pub fn evaluate_active_command(
             }
         }
         PendingOpPlan::SetVolume { volume } => {
-            if (observed.volume - *volume).abs() <= VOLUME_TOLERANCE {
+            if volume_matches(observed.volume, *volume) {
                 PlanEvaluation::ReadyToComplete {
                     sets_stopped_confirmed: false,
                     clears_stopped_confirmed: false,

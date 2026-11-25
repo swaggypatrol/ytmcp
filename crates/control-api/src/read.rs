@@ -56,6 +56,11 @@ pub struct PlaylistEntry {
     pub entry_id: Option<String>,
     pub position: u32,
     pub track: Track,
+    /// In-process only, never sent: the native index this row's own play button starts the
+    /// playlist from, when a fresh read saw one. A collection play starts there instead of at
+    /// `position`, which counts greyed-out rows the page's own index may skip.
+    #[serde(skip)]
+    pub playback_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -172,6 +177,13 @@ pub struct PlayerState {
     pub active_op: Option<PlayerOp>,
     pub pending_commands: u32,
     pub stopped_confirmed: bool,
+    /// The player is still finding out what it can play (shortly after launch: the page has not
+    /// reported playback yet, or the saved session is being restored). No track then does not
+    /// mean nothing will play: a resume (`play`) sent now waits up to 10 seconds for the player
+    /// instead of failing at once; starting a track or collection is sent at once as usual.
+    /// Absent means false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preparing: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

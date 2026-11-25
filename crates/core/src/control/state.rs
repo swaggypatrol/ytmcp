@@ -95,6 +95,7 @@ fn player_projection(snapshot: &AppSnapshot) -> PlayerState {
         active_op: snapshot.pending.active_op,
         pending_commands: snapshot.pending.pending_command_count,
         stopped_confirmed: player.stopped_confirmed,
+        preparing: player.preparing,
     }
 }
 

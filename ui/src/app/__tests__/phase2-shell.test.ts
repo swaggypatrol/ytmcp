@@ -639,6 +639,22 @@ describe("Shell: feedback review fixes", () => {
     await waitFor(() => expect(screen.queryByTestId("toast-refresh-failed")).toBeNull());
   });
 
+  it("does not re-read the open playlist picker after a write to one named playlist, only after a wider change", async () => {
+    const { bridge, emit, snapshot } = preload();
+    renderPreload(bridge, "now-playing");
+    await fireEvent.click(await screen.findByTestId("np-actions"));
+    await fireEvent.click(await screen.findByTestId("action-add-to-playlist"));
+    const libraryReads = () => bridge.queryCatalog.mock.calls.filter(([req]) => req.kind === "libraryPlaylists").length;
+    await waitFor(() => expect(libraryReads()).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 20));
+    const before = libraryReads();
+    emit({ deltaType: "resourceInvalidated", revision: snapshot.revision + 1, resource_kind: "libraryPlaylists", resource_id: "PL-target" });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(libraryReads()).toBe(before);
+    emit({ deltaType: "resourceInvalidated", revision: snapshot.revision + 2, resource_kind: "library" });
+    await waitFor(() => expect(libraryReads()).toBe(before + 1));
+  });
+
   it("gives the offline toast a way to Diagnostics, which shows the network state", async () => {
     const { bridge } = preload({ snapshot: (s) => ({ ...s, networkState: "offline" }) });
     renderPreload(bridge, "home");

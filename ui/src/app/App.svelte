@@ -1501,6 +1501,8 @@
     window.addEventListener("keydown", handleGlobalKeydown);
 
     const dirtyRoutes = new Set<CatalogRoute>();
+    // Set when the library went stale for a reason other than a write to one named playlist.
+    let libraryRereadInPicker = false;
     let refreshQueued = false;
     let mounted = true;
     const unsubInvalidations = client.subscribeInvalidations(({ resource_kind: kind, resource_id: id }) => {
@@ -1517,7 +1519,10 @@
         const track = untrack(() => currentTrack);
         if (track && id === track.videoId && requestedLyricsKey !== null) void requestLyrics(track);
       }
-      for (const affected of store.invalidate(kind, id ?? null)) dirtyRoutes.add(affected);
+      for (const affected of store.invalidate(kind, id ?? null)) {
+        dirtyRoutes.add(affected);
+        if (affected === "library" && !(kind === "libraryPlaylists" && id)) libraryRereadInPicker = true;
+      }
       if (refreshQueued || dirtyRoutes.size === 0) return;
       refreshQueued = true;
       queueMicrotask(() => {
@@ -1525,7 +1530,12 @@
         if (!mounted) return;
         const current = untrack(() => route);
         if (dirtyRoutes.has(current.view as CatalogRoute)) loadRoute(current);
-        if (dirtyRoutes.has("library") && actionsFor && pickerRequested) loadRoute({ view: "library" });
+        // An open playlist picker is read again, except when the only change is a write to one
+        // named playlist (an add made from this picker): re-reading then would reorder the list
+        // under the pointer while the listener picks the next one. The library stays stale and is
+        // read again the next time the picker or the Library opens.
+        if (dirtyRoutes.has("library") && libraryRereadInPicker && actionsFor && pickerRequested) loadRoute({ view: "library" });
+        libraryRereadInPicker = false;
         dirtyRoutes.clear();
       });
     });

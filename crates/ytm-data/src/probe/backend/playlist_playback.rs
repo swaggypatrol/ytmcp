@@ -72,6 +72,22 @@ pub(super) fn playlist_rows_playback(
     })
 }
 
+/// The native index one playlist row's own play button starts this playlist from, as the
+/// fresh playlist read records it beside the row's position. `None` unless the row is playable
+/// (not greyed out), its button names this playlist (with or without `VL`) and this row's
+/// video, and gives an index: after a greyed-out row the native index can differ from the
+/// row's position, and it is never inferred from one.
+/// `item` is the shelf item that holds the row (`musicResponsiveListItemRenderer`).
+pub(super) fn row_playback_index(item: &Value, playlist: &PlaylistId, video: &str) -> Option<u32> {
+    let (_, endpoint) = playable_rows(std::slice::from_ref(item)).next()?;
+    if endpoint.get("videoId")?.as_str()? != video
+        || strip_vl_prefix(endpoint.get("playlistId")?.as_str()?) != playlist.as_str()
+    {
+        return None;
+    }
+    u32::try_from(endpoint.get("index")?.as_u64()?).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -243,5 +259,57 @@ mod tests {
         conflicting[0]["musicResponsiveListItemRenderer"]["playlistItemData"] =
             json!({"videoId": "likedVid1", "playlistSetVideoId": "another-set"});
         assert!(playlist_rows_playback(&conflicting, &tracks[..1]).is_none());
+    }
+
+    /// A fresh playlist read keeps every row's position (greyed-out rows count) for edits, and
+    /// beside it the native index each playable row's own button gives, which after a
+    /// greyed-out row is not the position.
+    #[test]
+    fn fresh_playlist_rows_carry_their_native_index_beside_their_position() {
+        let playlist = PlaylistId::new("PL_fixture").unwrap();
+        let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw("VLPL_fixture"));
+        let mut value = page(
+            true,
+            &[
+                (Some("plVid1"), Some(("VLPL_fixture", 100))),
+                (None, None),
+                (Some("plVid3"), Some(("PL_fixture", 101))),
+                // A button that plays another playlist, or gives no index, says nothing.
+                (Some("plVid4"), Some(("PL_other", 102))),
+                (Some("plVid5"), None),
+            ],
+        );
+        // The greyed-out row still names its video, so the read keeps it as unavailable.
+        value.pointer_mut(NEXT_ROWS).unwrap()[1]["musicResponsiveListItemRenderer"]["playlistItemData"] =
+            json!({"videoId": "plVid2"});
+        let fresh = super::super::music::parse_fresh_playlist(
+            &playlist,
+            &query,
+            serde_json::from_value(value).unwrap(),
+            true,
+        )
+        .unwrap();
+        let rows: Vec<_> = fresh
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.position,
+                    entry.playback_index,
+                    entry.track.availability,
+                )
+            })
+            .collect();
+        use ytm_protocol::TrackAvailability::{Available, Unavailable};
+        assert_eq!(
+            rows,
+            [
+                (0, Some(100), Available),
+                (1, None, Unavailable),
+                (2, Some(101), Available),
+                (3, None, Available),
+                (4, None, Available),
+            ]
+        );
     }
 }

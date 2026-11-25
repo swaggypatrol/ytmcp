@@ -125,6 +125,7 @@ impl ControlCatalog for Catalog {
                         entry_id: Some(format!("entry-{video}")),
                         position: position as u32,
                         track: project_track(&track(video)),
+                        playback_index: None,
                     })
                     .collect()
             } else {

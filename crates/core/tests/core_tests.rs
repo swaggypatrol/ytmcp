@@ -1941,6 +1941,99 @@ async fn clear_upcoming_no_op_honors_page_rejection_and_ack_sequence_gaps() {
     engine.shutdown().await.unwrap();
 }
 
+/// A one-point volume step must wait for the page to report it: the observation from before the
+/// command is a point away and does not count, even once the bridge has acknowledged dispatch.
+#[tokio::test]
+async fn a_one_point_volume_step_waits_for_an_observation_that_shows_it() {
+    let (engine, _clock, bridge, _gate) = setup_engine().await;
+    init_ready_bridge(&engine, "bridge-1", 1).await;
+    let observed_at = |volume: f64| {
+        let mut obs = make_obs(
+            "bridge-1",
+            PlaybackStatus::Paused,
+            "ti-1",
+            "vid-1",
+            "qe-1",
+            500,
+            Some(200_000),
+        );
+        obs.volume = volume;
+        obs
+    };
+    let set_volume = |id: &str, volume: f64| {
+        let mut args = make_args();
+        args.volume = Some(volume);
+        make_cmd(id, PlayerOp::SetVolume, Some(args))
+    };
+    let status = |id: &'static str| {
+        let engine = &engine;
+        async move {
+            engine
+                .command_receipt(CommandId::new(id).unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+        }
+    };
+    engine
+        .on_bridge_playback_observed(2, observed_at(0.50))
+        .await
+        .unwrap();
+
+    engine
+        .submit_player_command(set_volume("v51", 0.51))
+        .await
+        .unwrap();
+    engine
+        .on_bridge_command_ack(
+            3,
+            BridgeCommandAckPayload {
+                command_id: CommandId::new("v51").unwrap(),
+                bridge_epoch: BridgeEpoch::new("bridge-1").unwrap(),
+                dispatched: true,
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
+    // The stale observation (0.50) and an unrelated re-report of it do not settle the step.
+    engine
+        .on_bridge_playback_observed(4, observed_at(0.50))
+        .await
+        .unwrap();
+    assert_eq!(status("v51").await, CommandLifecycleStatus::Dispatched);
+
+    // Later steps queue behind it and coalesce to the latest as before.
+    engine
+        .submit_player_command(set_volume("v52", 0.52))
+        .await
+        .unwrap();
+    engine
+        .submit_player_command(set_volume("v53", 0.53))
+        .await
+        .unwrap();
+    assert_eq!(status("v52").await, CommandLifecycleStatus::Cancelled);
+
+    engine
+        .on_bridge_playback_observed(5, observed_at(0.51))
+        .await
+        .unwrap();
+    assert_eq!(status("v51").await, CommandLifecycleStatus::Observed);
+    assert_eq!(status("v53").await, CommandLifecycleStatus::Dispatched);
+
+    engine
+        .on_bridge_playback_observed(6, observed_at(0.53))
+        .await
+        .unwrap();
+    assert_eq!(status("v53").await, CommandLifecycleStatus::Observed);
+    assert_eq!(
+        bridge.sent_ops(),
+        vec![PlayerOp::SetVolume, PlayerOp::SetVolume]
+    );
+    engine.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn seek_and_volume_coalesce_to_latest_and_reject_stale_track_instance() {
     let (engine, _clock, bridge, _gate) = setup_engine().await;
@@ -3657,7 +3750,8 @@ async fn invalidations(
     seen
 }
 
-/// A confirmed write invalidates the entity it wrote, so a client can leave other lists alone.
+/// A confirmed write invalidates the entity it wrote (and, for a playlist, the library's summary
+/// of it), so a client can leave other lists alone.
 #[tokio::test]
 async fn confirmed_writes_name_the_playlist_or_song_they_changed() {
     let catalog = Arc::new(ScriptedCatalog::new("acct:aaaa"));
@@ -3679,7 +3773,14 @@ async fn confirmed_writes_name_the_playlist_or_song_they_changed() {
     assert_eq!(res.outcome, MutationOutcome::Confirmed);
     assert_eq!(
         invalidations(&engine, &mut events).await,
-        vec![("playlistTracks".to_string(), Some("PL-target".to_string()))]
+        vec![
+            ("playlistTracks".to_string(), Some("PL-target".to_string())),
+            // The library's track count for that playlist changed too, as on the control path.
+            (
+                "libraryPlaylists".to_string(),
+                Some("PL-target".to_string())
+            ),
+        ]
     );
 
     let res = engine.mutate(like_request(), epoch.clone()).await.unwrap();

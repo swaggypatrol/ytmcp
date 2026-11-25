@@ -623,6 +623,7 @@ impl ControlCatalog for YtmControlCatalog {
                         entry_id: item.entry_id,
                         position: item.position,
                         track,
+                        playback_index: item.playback_index,
                     }
                 })
                 .collect();
@@ -1099,11 +1100,13 @@ mod tests {
                         entry_id: Some("one".into()),
                         position: 0,
                         track: track.clone(),
+                        playback_index: None,
                     },
                     PlaylistEntry {
                         entry_id: Some("two".into()),
                         position: 1,
                         track,
+                        playback_index: None,
                     },
                 ],
                 next_cursor: None,

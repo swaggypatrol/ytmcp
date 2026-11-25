@@ -37,7 +37,12 @@ describe("Mock playlist additions", () => {
     expect(fake.sendMutation(undo(NEW_SONG, token), ACCOUNT)).toEqual({ kind: "undoAddToPlaylist", outcome: "confirmed", error: null });
     expect(fake.sendMutation(undo(NEW_SONG, token), ACCOUNT)).toMatchObject({ outcome: "rejected", error: { code: "STALE_CONTEXT" } });
     expect(deltas.filter((delta) => delta.deltaType === "resourceInvalidated").map((delta) => [delta.resource_kind, delta.resource_id]))
-      .toEqual([["playlistTracks", PLAYLIST], ["playlistTracks", PLAYLIST]]);
+      .toEqual([
+        ["playlistTracks", PLAYLIST],
+        ["libraryPlaylists", PLAYLIST],
+        ["playlistTracks", PLAYLIST],
+        ["libraryPlaylists", PLAYLIST],
+      ]);
   });
 
   it("reports an entry removed elsewhere, refuses an expired token, and stays off where adds are unsupported", () => {

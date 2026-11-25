@@ -556,6 +556,7 @@ impl CatalogBackend for MockCatalogBackend {
                     .map(|(position, track)| PlaylistOccurrence {
                         entry_id: None,
                         position: u32::try_from(position).unwrap(),
+                        playback_index: None,
                         track,
                         rating: SongRating::Unknown,
                     })

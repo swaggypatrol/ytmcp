@@ -1887,6 +1887,13 @@ export interface PlayerState {
   pendingCommands: number;
   playback: PlaybackStatus;
   playbackContext?: PlaybackContext | null;
+  /**
+   * The player is still finding out what it can play (shortly after launch: the page has not
+   * reported playback yet, or the saved session is being restored). No track then does not
+   * mean nothing will play: a play sent now is held until this ends, not refused. Absent
+   * means false.
+   */
+  preparing?: boolean;
   repeat?: RepeatMode | null;
   shuffle?: boolean | null;
   stoppedConfirmed: boolean;

@@ -6114,6 +6114,10 @@
             }
           ]
         },
+        "preparing": {
+          "description": "The player is still finding out what it can play (shortly after launch: the page has not\nreported playback yet, or the saved session is being restored). No track then does not\nmean nothing will play: a play sent now is held until this ends, not refused. Absent\nmeans false.",
+          "type": "boolean"
+        },
         "repeat": {
           "anyOf": [
             {

@@ -1344,6 +1344,19 @@ fn official_summary(queue: &ytm_control_api::QueueProjection) -> String {
         .unwrap_or_default()
 }
 
+/// The playback sentence of a player or context read; while the player is still preparing it
+/// says so, because no track then does not mean nothing will play.
+fn playback_text(state: &ytm_control_api::PlayerState) -> String {
+    if state.preparing {
+        format!(
+            "Playback: {:?}. The player is still preparing (finding out what it can play); a resume sent now waits up to 10 s for it, and starting a track or collection is sent at once.",
+            state.playback
+        )
+    } else {
+        format!("Playback: {:?}.", state.playback)
+    }
+}
+
 /// Renders a tool result's text content for clients that ignore structuredContent: one sentence
 /// for writes and errors, the whole prompt for a DJ cue, and for reads a summary line followed by
 /// the reply as one line of JSON, unless that JSON exceeds [`TEXT_JSON_LIMIT`].
@@ -1378,21 +1391,16 @@ fn render_tool_content(
                     let actions = outcome::listener_actions_text(&snapshot.listener_actions, 0)
                         .map(|line| format!(" {line}"))
                         .unwrap_or_default();
+                    let playback = playback_text(&snapshot.player);
                     if let Some(moment) = &snapshot.moment {
                         let extra = outcome::moment_text_lines(moment).join(" ");
-                        format!(
-                            "Playback: {:?}.{upcoming} {extra}{actions}",
-                            snapshot.player.playback
-                        )
+                        format!("{playback}{upcoming} {extra}{actions}")
                     } else {
-                        format!(
-                            "Playback: {:?}.{upcoming}{actions}",
-                            snapshot.player.playback
-                        )
+                        format!("{playback}{upcoming}{actions}")
                     }
                 }
                 ControlResponse::Player(player) => match &player.observed {
-                    Some(state) => format!("Playback: {:?}.", state.playback),
+                    Some(state) => playback_text(state),
                     None => "Audio observations from the player.".into(),
                 },
                 ControlResponse::Queue(queue) => format!(
@@ -2187,6 +2195,50 @@ mod tests {
             "Playback: Playing. Then YouTube Music: its own suggestions (not listed) (filter: \
              Familiar)."
         );
+    }
+
+    /// A read made while the player is still preparing says so on its summary line, so an
+    /// agent that sees no track right after launch knows a play will be held, not refused.
+    #[test]
+    fn player_read_text_says_when_the_player_is_still_preparing() {
+        let player = |preparing: bool| -> ControlResponse {
+            serde_json::from_value(serde_json::json!({
+                "result": "player",
+                "value": {
+                    "bridgeEpoch": null, "freshness": "fresh", "pending": null, "audio": null,
+                    "observed": {
+                        "connection": "ready", "playback": "idle", "trackInstanceId": null,
+                        "track": null,
+                        "timeAnchor": { "positionMs": 0, "playbackRate": 1.0,
+                                        "anchorCoreMonotonicMs": 0, "extrapolating": false },
+                        "volume": 1.0, "muted": false, "shuffle": null, "repeat": null,
+                        "autoplay": null, "activeOp": null, "pendingCommands": 0,
+                        "stoppedConfirmed": false, "preparing": preparing
+                    }
+                }
+            }))
+            .unwrap()
+        };
+        let summary = |response: &ControlResponse| {
+            let payload = serde_json::to_value(response).unwrap();
+            let text =
+                render_tool_content(MusicTool::Player, &JsonObject::new(), response, &payload);
+            (
+                text.split_once('\n').expect("summary + json").0.to_owned(),
+                payload,
+            )
+        };
+        let (text, payload) = summary(&player(true));
+        assert_eq!(
+            text,
+            "Playback: Idle. The player is still preparing (finding out what it can play); a \
+             resume sent now waits up to 10 s for it, and starting a track or collection is sent \
+             at once."
+        );
+        assert_eq!(payload["value"]["observed"]["preparing"], true);
+        let (text, payload) = summary(&player(false));
+        assert_eq!(text, "Playback: Idle.");
+        assert!(payload["value"]["observed"].get("preparing").is_none());
     }
 
     #[test]

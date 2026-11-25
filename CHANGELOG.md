@@ -18,6 +18,7 @@ Versions are `<app version>-<package revision>`; see [docs/building.md](docs/bui
 - **Reduced motion** keeps its short fades (they had become instant) and still removes all movement.
 - **Play and Shuffle for Liked songs.** The Liked songs header has Play and Shuffle, as playlists have Play: Play starts your liked songs from the first one in order, and Shuffle starts them and turns shuffle on once the first song is playing. They show only when the app has a fresh read of the list for your account. Not yet tried against the real YouTube Music page.
 - **Undo after adding to a playlist.** Choosing a playlist adds the song right away, without a confirmation step. The "Added to" toast has **Undo**, which removes exactly the copy you just added, for up to five minutes; if it was already removed, or can no longer be undone, the toast says so. Not yet tried on a real account.
+- **For agents.** `ytm_get_player` and `ytm_get_context` say when the player is still getting ready right after launch (`preparing`), so an agent knows a resume sent then will wait for the player. A volume change is confirmed only once the player shows the new value. Adding to a playlist, or undoing it, also refreshes the Library.
 
 ## 1.3.0-1
 

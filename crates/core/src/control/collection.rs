@@ -103,7 +103,9 @@ impl MusicOperation {
                     playlist_entry_id: entry_id.map(str::to_owned),
                     browse_id: None,
                     queue_entry_id: None,
-                    start_index: Some(entry.position),
+                    // The page's own index for this row when the read saw it; otherwise the
+                    // row position, which a greyed-out row before it makes unconfirmable.
+                    start_index: Some(entry.playback_index.unwrap_or(entry.position)),
                 });
             }
             let Some(next) = result.entries.next_cursor else {

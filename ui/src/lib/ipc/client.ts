@@ -539,15 +539,44 @@ export function isExplicitMockEnabled(): boolean {
   return false;
 }
 
+/**
+ * Structural equality for small JSON values (a track, the pending summary). Every
+ * playerChanged delta carries fresh objects even when only the position moved; comparing
+ * lets the merge keep the previous objects so identity-based consumers stay asleep.
+ */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const other = b as unknown[];
+    return a.length === other.length && a.every((item, i) => sameJson(item, other[i]));
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => Object.hasOwn(right, key) && sameJson(left[key], right[key]));
+}
+
+/** Keeps `previous` when `next` has the same content, so its identity survives the delta. */
+function keepIfSame<T>(previous: T, next: T): T {
+  return sameJson(previous, next) ? previous : next;
+}
+
 export function applyStateDelta(snapshot: AppSnapshot, delta: StateDelta): AppSnapshot {
   switch (delta.deltaType) {
-    case "playerChanged":
+    case "playerChanged": {
+      const previous = snapshot.player;
+      const currentTrack = keepIfSame(previous.currentTrack, delta.player.currentTrack);
       return {
         ...snapshot,
         revision: delta.revision,
-        player: delta.player,
-        pending: delta.pending,
+        player:
+          currentTrack === delta.player.currentTrack ? delta.player : { ...delta.player, currentTrack },
+        pending: keepIfSame(snapshot.pending, delta.pending),
       };
+    }
     case "queueReplaced":
       return {
         ...snapshot,

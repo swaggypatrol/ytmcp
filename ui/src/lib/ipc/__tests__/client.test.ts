@@ -7,6 +7,7 @@ import {
 } from "@ytmcp/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  applyStateDelta,
   createUiClient,
   wrapPreloadEnvelopeBridge,
   type RawPreloadUiBridge,
@@ -161,5 +162,46 @@ describe("resubscribe after a core restart", () => {
     client.disconnect();
     await vi.advanceTimersByTimeAsync(10_000);
     expect(state.attempts).toBe(2);
+  });
+});
+
+describe("merging a playerChanged delta", () => {
+  /** A delta built the way the core sends one: brand-new objects, nothing shared with `base`. */
+  function playerDelta(base: AppSnapshot, change: (player: AppSnapshot["player"]) => void) {
+    const player = structuredClone(base.player);
+    change(player);
+    return {
+      deltaType: "playerChanged" as const,
+      revision: base.revision + 1,
+      player,
+      pending: structuredClone(base.pending),
+    };
+  }
+
+  it("keeps the current track and pending objects when only the position moved", () => {
+    const base = new FakeCoreClient().subscribeSnapshot(() => {}).snapshot;
+    expect(base.player.currentTrack).toBeTruthy();
+    const next = applyStateDelta(
+      base,
+      playerDelta(base, (player) => {
+        player.timeAnchor = { ...player.timeAnchor, positionMs: player.timeAnchor.positionMs + 1000 };
+      }),
+    );
+    expect(next.player).not.toBe(base.player);
+    expect(next.player.timeAnchor.positionMs).toBe(base.player.timeAnchor.positionMs + 1000);
+    expect(next.player.currentTrack).toBe(base.player.currentTrack);
+    expect(next.pending).toBe(base.pending);
+  });
+
+  it("replaces the current track when something about it changed", () => {
+    const base = new FakeCoreClient().subscribeSnapshot(() => {}).snapshot;
+    const next = applyStateDelta(
+      base,
+      playerDelta(base, (player) => {
+        player.currentTrack = { ...player.currentTrack!, isLiked: !player.currentTrack!.isLiked };
+      }),
+    );
+    expect(next.player.currentTrack).not.toBe(base.player.currentTrack);
+    expect(next.player.currentTrack?.isLiked).toBe(!base.player.currentTrack!.isLiked);
   });
 });

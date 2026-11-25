@@ -1218,24 +1218,34 @@ impl CoreEngine {
             MutationKind::SetLike | MutationKind::AddToPlaylist => result.outcome == Confirmed,
         };
         if changed && same_account {
-            let resource = match kind {
-                MutationKind::SetLike => "likedSongs",
-                MutationKind::AddToPlaylist | MutationKind::UndoAddToPlaylist => "playlistTracks",
+            // A playlist write also changes the library's summary of it (its track count), as
+            // the control path's playlist writes publish.
+            let resources: &[&str] = match kind {
+                MutationKind::SetLike => &["likedSongs"],
+                MutationKind::AddToPlaylist | MutationKind::UndoAddToPlaylist => {
+                    &["playlistTracks", "libraryPlaylists"]
+                }
             };
-            let _ = match written_id {
-                // Published only while this write's account is still the active one.
-                Some(id) => {
-                    self.invalidate_control_resource(account_epoch, resource.to_string(), id)
+            for resource in resources {
+                let _ = match &written_id {
+                    // Published only while this write's account is still the active one.
+                    Some(id) => {
+                        self.invalidate_control_resource(
+                            account_epoch.clone(),
+                            (*resource).to_string(),
+                            id.clone(),
+                        )
                         .await
-                }
-                None if kind != MutationKind::UndoAddToPlaylist => {
-                    self.send_msg(CoreMsg::InvalidateResource {
-                        resource_kind: resource.to_string(),
-                    })
-                    .await
-                }
-                None => Ok(()),
-            };
+                    }
+                    None if kind != MutationKind::UndoAddToPlaylist => {
+                        self.send_msg(CoreMsg::InvalidateResource {
+                            resource_kind: (*resource).to_string(),
+                        })
+                        .await
+                    }
+                    None => Ok(()),
+                };
+            }
         }
         Ok(result)
     }

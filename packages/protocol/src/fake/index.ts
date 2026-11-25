@@ -555,7 +555,7 @@ export class FakeCoreClient {
     entries.push({ entryId, videoId: req.videoId });
     const undoToken = `undo-mock-${this.nextEntry}`;
     this.undoRecords.set(undoToken, { accountEpoch, playlistId, videoId: req.videoId, entryId, atMs: Date.now() });
-    this.emit({ deltaType: "resourceInvalidated", resource_kind: "playlistTracks", resource_id: playlistId, revision: ++this.snapshot.revision });
+    this.publishPlaylistChange(playlistId);
     return { kind: req.kind, outcome: "confirmed", error: null, undoToken };
   }
 
@@ -584,8 +584,15 @@ export class FakeCoreClient {
       return { ...refuse("STALE_CONTEXT", "the song this addition created is no longer in the playlist"), alreadyRemoved: true };
     }
     entries.splice(at, 1);
-    this.emit({ deltaType: "resourceInvalidated", resource_kind: "playlistTracks", resource_id: record.playlistId, revision: ++this.snapshot.revision });
+    this.publishPlaylistChange(record.playlistId);
     return { kind: req.kind, outcome: "confirmed", error: null };
+  }
+
+  /** A playlist write changes its tracks and the library's summary of it (its track count), as the core publishes. */
+  private publishPlaylistChange(playlistId: string): void {
+    for (const resource_kind of ["playlistTracks", "libraryPlaylists"]) {
+      this.emit({ deltaType: "resourceInvalidated", resource_kind, resource_id: playlistId, revision: ++this.snapshot.revision });
+    }
   }
 
   private publishTrackRating(track: Track): void {

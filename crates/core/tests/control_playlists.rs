@@ -536,6 +536,7 @@ impl ControlCatalog for Catalog {
                         stored.entries.items.push(PlaylistEntry {
                             entry_id: Some(entry_id.clone()),
                             position: (offset + i) as u32,
+                            playback_index: None,
                             track: Track {
                                 title: video_id.as_str().into(),
                                 video_id: video_id.clone(),
@@ -707,6 +708,7 @@ fn entry(entry_id: &str, video: &str, position: usize) -> PlaylistEntry {
     PlaylistEntry {
         entry_id: Some(entry_id.into()),
         position: position as u32,
+        playback_index: None,
         track: Track {
             title: video.into(),
             video_id: VideoId::new(video).unwrap(),
@@ -822,12 +824,18 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
+        Self::with_bridge(Arc::new(ytm_core::NoopBridgePort)).await
+    }
+
+    /// The harness with `bridge` as the page bridge, for tests that read what was dispatched.
+    async fn with_bridge(bridge: Arc<dyn ytm_core::BridgePort>) -> Self {
         let catalog = Arc::<Catalog>::default();
         let journal = Arc::<Journal>::default();
         let clock = Arc::new(MockClock::new(1000));
         let engine = CoreEngine::start(
             CoreDeps {
                 clock: clock.clone(),
+                bridge,
                 catalog: Some(catalog.clone()),
                 ..Default::default()
             },
@@ -2210,7 +2218,10 @@ async fn ui_undo_removes_only_the_entry_its_addition_created() {
     drop(remote);
     assert_eq!(
         harness.invalidated(&mut deltas).await,
-        [("playlistTracks".to_owned(), UI_PLAYLIST.to_owned()),]
+        [
+            ("playlistTracks".to_owned(), UI_PLAYLIST.to_owned()),
+            ("libraryPlaylists".to_owned(), UI_PLAYLIST.to_owned()),
+        ]
     );
     let ControlResponse::Context(context) = harness
         .service
@@ -2344,4 +2355,179 @@ async fn ui_add_without_a_named_new_entry_cannot_be_undone() {
         ])
     );
     assert!(harness.catalog.0.lock().await.edits.is_empty());
+}
+
+/// Right after launch an agent sees no track; the control projection says the player is still
+/// preparing (a play sent now is held), and stops saying so once the page reports playback.
+#[tokio::test]
+async fn control_player_reads_say_when_the_player_is_still_preparing() {
+    let harness = Harness::new().await;
+    let read_preparing = || async {
+        let ControlResponse::Player(player) = harness
+            .service
+            .execute(&harness.grant, ControlRequest::GetPlayer { include: None })
+            .await
+        else {
+            panic!("expected a player read");
+        };
+        let ControlResponse::Context(context) = harness
+            .service
+            .execute(
+                &harness.grant,
+                ControlRequest::GetContext(ytm_control_api::ContextInput {
+                    preview_limit: Some(0),
+                }),
+            )
+            .await
+        else {
+            panic!("expected a context");
+        };
+        let observed = player.observed.expect("state included");
+        assert_eq!(observed.preparing, context.player.preparing);
+        assert!(observed.track.is_none());
+        observed.preparing
+    };
+    assert!(
+        read_preparing().await,
+        "bridge ready, no playback reported yet"
+    );
+
+    harness
+        .engine
+        .on_bridge_playback_observed(2, empty_page())
+        .await
+        .unwrap();
+    assert!(!read_preparing().await, "the page reported an empty player");
+}
+
+/// Records the player commands the core sends to the page.
+#[derive(Default)]
+struct SentCommands(std::sync::Mutex<Vec<ytm_protocol::PlayerCommandPayload>>);
+
+impl ytm_core::BridgePort for SentCommands {
+    fn send_player_command(
+        &self,
+        _bridge_epoch: BridgeEpoch,
+        payload: ytm_protocol::PlayerCommandPayload,
+    ) -> BoxFuture<'_, Result<(), QueryError>> {
+        self.0.lock().unwrap().push(payload);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn request_snapshot(
+        &self,
+        _bridge_epoch: BridgeEpoch,
+    ) -> BoxFuture<'_, Result<(), QueryError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// ytm_play_context on a playlist names a row by its position, which counts a greyed-out row;
+/// the collection play starts at the index the row's own play button gives, so the page's
+/// confirmation (its own native index) can match. Without one it falls back to the position.
+#[tokio::test]
+async fn playlist_play_context_starts_at_the_rows_native_index_after_a_greyed_out_row() {
+    for (position, expected) in [(2, 1), (3, 3)] {
+        let bridge = Arc::new(SentCommands::default());
+        let harness = Harness::with_bridge(bridge.clone()).await;
+        // Plays are held until the page has reported its player once.
+        harness
+            .engine
+            .on_bridge_playback_observed(2, empty_page())
+            .await
+            .unwrap();
+        let mut rows = vec![
+            entry("e0", "first", 0),
+            entry("e1", "greyed", 1),
+            entry("e2", "third", 2),
+            entry("e3", "fourth", 3),
+        ];
+        rows[0].playback_index = Some(0);
+        rows[1].track.availability = TrackAvailability::Unavailable;
+        rows[2].playback_index = Some(1);
+        harness.ui_playlist(&[]).await;
+        harness
+            .catalog
+            .0
+            .lock()
+            .await
+            .playlist
+            .as_mut()
+            .unwrap()
+            .entries
+            .items = rows;
+
+        let receipt = harness
+            .service
+            .submit(
+                harness.grant.clone(),
+                Arc::new(AnyGrant),
+                WriteInput {
+                    operation_id: "play".into(),
+                    preconditions: Preconditions {
+                        expected_account_epoch: Some(AccountEpoch::new(EPOCH).unwrap()),
+                        expected_bridge_epoch: Some(BridgeEpoch::new("bridge-fixture").unwrap()),
+                        expected_queue_revision: None,
+                        expected_entity_revision: None,
+                    },
+                    action: WriteAction::Play {
+                        target: ytm_control_api::PlayContextTarget::Playlist {
+                            playlist_id: PlaylistId::new(UI_PLAYLIST).unwrap(),
+                            start_index: Some(position),
+                            start_entry_id: None,
+                        },
+                    },
+                },
+            )
+            .await;
+        assert!(receipt.is_ok(), "{receipt:?}");
+        let sent = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(target) = bridge.0.lock().unwrap().first().and_then(|cmd| {
+                    assert_eq!(cmd.op, ytm_protocol::PlayerOp::PlayCollection);
+                    cmd.args.as_ref()?.target.clone()
+                }) {
+                    return target;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the collection play was dispatched");
+        assert_eq!(sent.start_index, Some(expected), "row {position}");
+        assert_eq!(
+            sent.playlist_id.as_ref().map(PlaylistId::as_str),
+            Some(UI_PLAYLIST)
+        );
+        harness.engine.shutdown().await.unwrap();
+    }
+}
+
+/// What the page reports when its player is empty.
+fn empty_page() -> ytm_protocol::BridgePlaybackObservedPayload {
+    ytm_protocol::BridgePlaybackObservedPayload {
+        bridge_epoch: BridgeEpoch::new("bridge-fixture").unwrap(),
+        playback: ytm_protocol::PlaybackStatus::Idle,
+        track_instance_id: None,
+        current_track: None,
+        current_queue_entry_id: None,
+        playback_context: None,
+        position_ms: 0,
+        duration_ms: None,
+        buffered_ms: None,
+        playback_rate: 1.0,
+        sample_age_ms: 5,
+        volume: 1.0,
+        muted: false,
+        shuffle: None,
+        repeat: None,
+        autoplay: None,
+        codec: None,
+        audio_mode: None,
+        quality_label: None,
+        audio_itag: None,
+        audio_quality: None,
+        audio_bitrate_kbps: None,
+        drm_protected: None,
+    }
 }

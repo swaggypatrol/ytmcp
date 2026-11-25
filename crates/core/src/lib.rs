@@ -10,7 +10,6 @@ pub mod queue_window;
 pub use clock::PlaybackClock;
 pub use commands::{
     CommandDeduplicator, DEDUP_TTL_MS, MAX_DEDUP_ENTRIES, PlaybackFence, SEEK_TOLERANCE_MS,
-    VOLUME_TOLERANCE,
 };
 pub use engine::{CoreDeps, CoreDiagnostics, CoreEngine, DEFAULT_CONTROL_TIMEOUT_MS, EngineConfig};
 pub use error::CoreError;
